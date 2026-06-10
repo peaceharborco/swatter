@@ -63,10 +63,10 @@ VERIFY_GOOD_CRAWLERS="true"
 CLOUDFLARE_IPS_FILE="/etc/swatter/cloudflare.cidr"
 
 CF_MODE="direct"
-CF_API_TOKEN=""
-CF_ZONES=""
 CF_ACTION="block"
 CF_RULE_PREFIX="swatter"
+CF_CREDS_FILE="/etc/swatter/cloudflare.creds"
+CF_DOMAINS_MAP="/etc/swatter/cf-domains.map"
 
 INTEL_PROVIDERS="ipsum spamhaus abuseipdb"
 ABUSEIPDB_KEY=""

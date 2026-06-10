@@ -1,131 +1,197 @@
 #!/usr/bin/env bash
-# lib/block_cf.sh — the Cloudflare WAF plane (offenders arriving via the proxy).
+# lib/block_cf.sh — the Cloudflare plane (offenders arriving via the proxy).
 #
 # Used for offenders classified VIA_CF, whose TCP socket is a Cloudflare edge and
-# therefore must NOT be CSF-denied. Two modes:
-#   direct  — call the Cloudflare API and add a custom firewall rule per zone
-#             (ip.src eq <ip> -> block|managed_challenge). TTL is emulated:
-#             swatter_cf_sweep_expired removes rules past their TTL each run.
-#   native  — let CSF mirror the deny to Cloudflare via `csf --cloudflare deny`
-#             (operator must have populated csf.cloudflare).
+# therefore must NOT be CSF-denied. Blocks via zone-level IP Access Rules
+# (`/zones/{id}/firewall/access_rules/rules`) — deliberately a DIFFERENT product
+# from the WAF Rulesets that cf-push-rules.sh owns, so the two never clobber each
+# other. IP Access Rules also scale to many entries (unlike the 5-custom-rule cap
+# on Free zones), and a minimal "Firewall Services: Edit" token is enough.
 #
-# Cloudflare has no native per-rule TTL on custom rules, so Swatter stamps the
-# expiry into the rule description and sweeps. Requires jq + curl in direct mode.
+# Multi-account: each offender is blocked in the specific zone it attacked (the
+# top vhost from scoring). The vhost maps to a CF account via CF_DOMAINS_MAP; the
+# account maps to a token via CF_CREDS_FILE. Zone IDs are resolved once and
+# cached. Cloudflare IP Access Rules have no native TTL, so Swatter stamps the
+# expiry into the rule notes and sweeps expired rules each run.
+#
+# CF_MODE: direct = use the IP Access Rules API (this file). off = skip the CF
+# plane entirely (CSF-direct offenders still handled).
 
 CF_API="https://api.cloudflare.com/client/v4"
 
-_cf_zone_ids() {
-    # CF_ZONES = "domain:zoneid domain2:zoneid2" -> emit zoneids, one per line.
-    local pair
-    for pair in ${CF_ZONES}; do
-        [[ "$pair" == *:* ]] && printf '%s\n' "${pair#*:}"
+# --- credential + mapping loaders (cached per run) --------------------------
+# CF_CREDS_FILE: lines "account<TAB>token" (mode 0600). CF_DOMAINS_MAP: lines
+# "domain<TAB>account" (skip-profile domains omitted at deploy time).
+declare -A _CF_TOKEN _CF_ACCT_OF_DOMAIN
+_CF_LOADED=0
+
+_cf_load() {
+    [[ "${_CF_LOADED}" -eq 1 ]] && return 0
+    _CF_LOADED=1
+    if [[ -r "${CF_CREDS_FILE:-/etc/swatter/cloudflare.creds}" ]]; then
+        local acct tok
+        while IFS=$'\t ' read -r acct tok _; do
+            [[ -z "$acct" || "${acct:0:1}" == "#" || -z "$tok" ]] && continue
+            _CF_TOKEN["$acct"]="$tok"
+        done < "${CF_CREDS_FILE:-/etc/swatter/cloudflare.creds}"
+    fi
+    if [[ -r "${CF_DOMAINS_MAP:-/etc/swatter/cf-domains.map}" ]]; then
+        local dom ac
+        while IFS=$'\t ' read -r dom ac _; do
+            [[ -z "$dom" || "${dom:0:1}" == "#" || -z "$ac" ]] && continue
+            _CF_ACCT_OF_DOMAIN["$dom"]="$ac"
+        done < "${CF_DOMAINS_MAP:-/etc/swatter/cf-domains.map}"
+    fi
+}
+
+# Resolve a vhost to its CF account. Tries the exact host, then the registrable
+# parent (strip leading labels) so www./sub. hosts map to the zone's account.
+_cf_account_for_vhost() {
+    local vh="$1" probe="$1"
+    while [[ -n "$probe" ]]; do
+        if [[ -n "${_CF_ACCT_OF_DOMAIN[$probe]:-}" ]]; then printf '%s' "${_CF_ACCT_OF_DOMAIN[$probe]}"; return 0; fi
+        [[ "$probe" != *.*.* ]] && break
+        probe="${probe#*.}"
     done
+    return 1
 }
 
 _cf_api() {
-    # _cf_api <method> <path> [json-body]
-    local method="$1" path="$2" body="${3:-}"
+    # _cf_api <token> <method> <path> [json-body]
+    local token="$1" method="$2" path="$3" body="${4:-}"
     local args=(-sS -X "$method" "${CF_API}${path}"
-        -H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json")
+        -H "Authorization: Bearer ${token}" -H "Content-Type: application/json")
     [[ -n "$body" ]] && args+=(--data "$body")
     curl --max-time 10 "${args[@]}" 2>/dev/null
 }
 
-# swatter_cf_block <ip> <ttl_seconds> <reason>
-swatter_cf_block() {
-    local ip="$1" ttl="$2" reason="$3"
-    local expiry; expiry=$(( $(swatter_now) + ttl ))
-    local note="${CF_RULE_PREFIX}|exp=${expiry}|${reason}"
+# Resolve + cache a zone id for a domain (per-account token). Cache file keyed by
+# domain under $STATE_DIR/cf-zones/.
+_cf_zone_id() {
+    local domain="$1" token="$2"
+    local cache="${STATE_DIR}/cf-zones/${domain}"
+    if [[ -f "$cache" ]]; then cat "$cache"; return 0; fi
+    local zid
+    zid="$(_cf_api "$token" GET "/zones?name=${domain}&status=active" | jq -r '.result[0].id // empty' 2>/dev/null)"
+    [[ -n "$zid" ]] || return 1
+    mkdir -p "${STATE_DIR}/cf-zones" 2>/dev/null || true
+    printf '%s' "$zid" > "$cache" 2>/dev/null || true
+    printf '%s' "$zid"
+}
 
-    if [[ "${CF_MODE}" == "off" ]]; then
-        log_debug "CF_MODE=off; not blocking ${ip} on Cloudflare plane"
-        return 0
+# swatter_cf_block <ip> <ttl> <reason> <vhost>
+swatter_cf_block() {
+    local ip="$1" ttl="$2" reason="$3" vhost="${4:-}"
+    [[ "${CF_MODE}" == "off" ]] && { log_debug "CF_MODE=off; not CF-blocking ${ip}"; return 0; }
+    _cf_load
+
+    if [[ -z "$vhost" ]]; then
+        log_warn "CF block ${ip}: no target vhost in evidence; cannot pick a zone — skipping"
+        return 1
     fi
+    local acct; acct="$(_cf_account_for_vhost "$vhost")" || {
+        log_warn "CF block ${ip}: vhost ${vhost} not in CF_DOMAINS_MAP — skipping (add it or it's a skip-profile domain)"
+        return 1
+    }
+    local token="${_CF_TOKEN[$acct]:-}"
+    [[ -n "$token" ]] || { log_warn "CF block ${ip}: no token for account ${acct} in CF_CREDS_FILE — skipping"; return 1; }
 
     if [[ "${SWATTER_MODE}" != "enforce" ]]; then
-        log_info "[dry-run] cloudflare ${CF_ACTION} ${ip} (${reason})"
+        log_info "[dry-run] cloudflare ${CF_ACTION} ${ip} in ${vhost} (acct ${acct}; ${reason})"
         return 0
     fi
+    [[ "${SWATTER_HAVE_JQ}" -eq 1 && "${SWATTER_HAVE_CURL}" -eq 1 ]] || { log_error "CF plane needs jq+curl"; return 1; }
 
-    if [[ "${CF_MODE}" == "native" ]]; then
-        if [[ "${SWATTER_HAVE_CSF}" -eq 1 ]]; then
-            csf --cloudflare deny "$ip" >/dev/null 2>&1 \
-                && { log_info "cloudflare(native) deny ${ip}"; return 0; }
-        fi
-        log_error "native CF deny failed for ${ip}"; return 1
+    local zid; zid="$(_cf_zone_id "$vhost" "$token")" || { log_warn "CF block ${ip}: could not resolve zone for ${vhost}"; return 1; }
+    local expiry note payload resp rid
+    expiry=$(( $(swatter_now) + ttl ))
+    note="${CF_RULE_PREFIX:-swatter}|exp=${expiry}|${reason}"
+    payload="$(jq -nc --arg ip "$ip" --arg mode "${CF_ACTION}" --arg note "$note" \
+        '{mode:$mode, configuration:{target:"ip", value:$ip}, notes:$note}')"
+    resp="$(_cf_api "$token" POST "/zones/${zid}/firewall/access_rules/rules" "$payload")"
+    if printf '%s' "$resp" | jq -e '.success == true' >/dev/null 2>&1; then
+        rid="$(printf '%s' "$resp" | jq -r '.result.id')"
+        # Record the (zone,rule) ref so unblock/sweep are O(1).
+        printf '%s\t%s\t%s\t%s\n' "$ip" "$zid" "$rid" "$expiry" >> "${STATE_DIR}/cf-rules.tsv" 2>/dev/null || true
+        log_info "cloudflare ${CF_ACTION} ${ip} in ${vhost} (zone ${zid}, acct ${acct})"
+        return 0
     fi
-
-    # direct mode
-    if [[ "${SWATTER_HAVE_JQ}" -ne 1 || "${SWATTER_HAVE_CURL}" -ne 1 ]]; then
-        log_error "CF direct mode needs jq+curl; cannot block ${ip}"; return 1
+    # A duplicate (already blocked) is success for our purposes.
+    if printf '%s' "$resp" | jq -e '[.errors[]?.message] | any(test("already exists|identical"))' >/dev/null 2>&1; then
+        log_info "cloudflare ${ip} already blocked in ${vhost}"
+        return 0
     fi
-    if [[ -z "${CF_API_TOKEN}" || -z "${CF_ZONES}" ]]; then
-        log_error "CF_API_TOKEN/CF_ZONES unset; cannot block ${ip} on Cloudflare"; return 1
-    fi
-
-    local zid rc ok=0
-    while IFS= read -r zid; do
-        [[ -n "$zid" ]] || continue
-        # Cloudflare Rulesets API: add a custom-rule to the zone's
-        # http_request_firewall_custom phase entrypoint.
-        local payload
-        payload="$(jq -nc --arg ip "$ip" --arg act "${CF_ACTION}" --arg note "$note" '
-            {action:$act, expression:("ip.src eq "+$ip), description:$note, enabled:true}')"
-        rc="$(_cf_api POST "/zones/${zid}/rulesets/phases/http_request_firewall_custom/entrypoint/rules" "$payload")"
-        if printf '%s' "$rc" | jq -e '.success == true' >/dev/null 2>&1; then
-            ok=1
-        else
-            log_warn "CF rule add failed zone=${zid} ip=${ip}: $(printf '%s' "$rc" | jq -rc '.errors // empty' 2>/dev/null)"
-        fi
-    done < <(_cf_zone_ids)
-
-    if (( ok )); then log_info "cloudflare ${CF_ACTION} ${ip} (${reason})"; return 0; fi
+    log_warn "CF block ${ip} in ${vhost} failed: $(printf '%s' "$resp" | jq -rc '.errors // empty' 2>/dev/null)"
     return 1
 }
 
-# Remove a Swatter-owned CF rule for an IP across all zones (unblock).
+# swatter_cf_unblock <ip>: remove every Swatter-created access rule for this IP,
+# using the (zone,rule) refs we recorded.
 swatter_cf_unblock() {
-    local ip="$1"
-    [[ "${CF_MODE}" == "direct" && "${SWATTER_HAVE_JQ}" -eq 1 && "${SWATTER_HAVE_CURL}" -eq 1 ]] || return 0
-    [[ -n "${CF_API_TOKEN}" && -n "${CF_ZONES}" ]] || return 0
-    local zid
-    while IFS= read -r zid; do
-        [[ -n "$zid" ]] || continue
-        local rules
-        rules="$(_cf_api GET "/zones/${zid}/rulesets/phases/http_request_firewall_custom/entrypoint")"
-        local rid
-        while IFS= read -r rid; do
-            [[ -n "$rid" ]] || continue
-            _cf_api DELETE "/zones/${zid}/rulesets/phases/http_request_firewall_custom/entrypoint/rules/${rid}" >/dev/null
-            log_info "cloudflare unblock ${ip} (rule ${rid} zone ${zid})"
-        done < <(printf '%s' "$rules" | jq -r --arg ip "$ip" --arg px "${CF_RULE_PREFIX}" \
-            '.result.rules[]? | select(.description|startswith($px)) | select(.expression | test("ip.src eq "+($ip|gsub("\\.";"\\.")))) | .id' 2>/dev/null)
-    done < <(_cf_zone_ids)
+    local ip="$1" refs="${STATE_DIR}/cf-rules.tsv"
+    [[ "${CF_MODE}" == "direct" ]] || return 0
+    [[ -f "$refs" ]] || return 0
+    _cf_load
+    local rip zid rid exp
+    while IFS=$'\t' read -r rip zid rid exp; do
+        [[ "$rip" == "$ip" ]] || continue
+        # Find a token whose account owns this zone: try every token (cheap, few).
+        local acct tok
+        for acct in "${!_CF_TOKEN[@]}"; do
+            tok="${_CF_TOKEN[$acct]}"
+            if _cf_api "$tok" DELETE "/zones/${zid}/firewall/access_rules/rules/${rid}" | jq -e '.success==true' >/dev/null 2>&1; then
+                log_info "cloudflare unblock ${ip} (zone ${zid}, rule ${rid})"
+                break
+            fi
+        done
+    done < "$refs"
+    # Drop this IP's refs.
+    if grep -qv "^${ip}	" "$refs" 2>/dev/null || true; then
+        grep -v "^${ip}$(printf '\t')" "$refs" > "${refs}.tmp" 2>/dev/null && mv "${refs}.tmp" "$refs"
+    fi
 }
 
-# Sweep expired Swatter rules (TTL emulation). Run once per scan.
+# Sweep expired Swatter access rules (TTL emulation) using recorded refs.
 swatter_cf_sweep_expired() {
     [[ "${CF_MODE}" == "direct" ]] || return 0
+    local refs="${STATE_DIR}/cf-rules.tsv"
+    [[ -f "$refs" ]] || return 0
     [[ "${SWATTER_HAVE_JQ}" -eq 1 && "${SWATTER_HAVE_CURL}" -eq 1 ]] || return 0
-    [[ -n "${CF_API_TOKEN}" && -n "${CF_ZONES}" ]] || return 0
+    _cf_load
     local now; now="$(swatter_now)"
-    local zid
-    while IFS= read -r zid; do
-        [[ -n "$zid" ]] || continue
-        local rules
-        rules="$(_cf_api GET "/zones/${zid}/rulesets/phases/http_request_firewall_custom/entrypoint")"
-        local rid
-        while IFS= read -r rid; do
-            [[ -n "$rid" ]] || continue
+    local keep; keep="$(mktemp "${TMPDIR:-/tmp}/swatter-cfrules.XXXXXX")"
+    local rip zid rid exp acct tok removed
+    while IFS=$'\t' read -r rip zid rid exp; do
+        [[ -z "$rip" ]] && continue
+        if [[ "${exp:-0}" =~ ^[0-9]+$ ]] && (( exp < now )); then
             if [[ "${SWATTER_MODE}" == "enforce" ]]; then
-                _cf_api DELETE "/zones/${zid}/rulesets/phases/http_request_firewall_custom/entrypoint/rules/${rid}" >/dev/null
-                log_info "cloudflare sweep: removed expired rule ${rid} zone ${zid}"
+                removed=0
+                for acct in "${!_CF_TOKEN[@]}"; do
+                    tok="${_CF_TOKEN[$acct]}"
+                    if _cf_api "$tok" DELETE "/zones/${zid}/firewall/access_rules/rules/${rid}" | jq -e '.success==true' >/dev/null 2>&1; then
+                        log_info "cloudflare sweep: expired rule ${rid} (zone ${zid}) removed"; removed=1; break
+                    fi
+                done
+                (( removed )) || printf '%s\t%s\t%s\t%s\n' "$rip" "$zid" "$rid" "$exp" >> "$keep"
             else
-                log_info "[dry-run] cloudflare sweep would remove expired rule ${rid} zone ${zid}"
+                log_info "[dry-run] cloudflare sweep would remove expired rule ${rid} (zone ${zid})"
+                printf '%s\t%s\t%s\t%s\n' "$rip" "$zid" "$rid" "$exp" >> "$keep"
             fi
-        done < <(printf '%s' "$rules" | jq -r --arg px "${CF_RULE_PREFIX}" --argjson now "$now" '
-            .result.rules[]? | select(.description|startswith($px))
-            | (.description | capture("exp=(?<e>[0-9]+)").e | tonumber) as $exp
-            | select($exp < $now) | .id' 2>/dev/null)
-    done < <(_cf_zone_ids)
+        else
+            printf '%s\t%s\t%s\t%s\n' "$rip" "$zid" "$rid" "$exp" >> "$keep"
+        fi
+    done < "$refs"
+    mv "$keep" "$refs" 2>/dev/null || rm -f "$keep"
+}
+
+# List Swatter-owned CF blocks (from recorded refs).
+swatter_cf_list_rules() {
+    local refs="${STATE_DIR}/cf-rules.tsv"
+    [[ -f "$refs" ]] || { echo "(no Cloudflare blocks recorded)"; return 0; }
+    printf '%-16s %-34s %-22s %s\n' "IP" "ZONE" "RULE" "EXPIRES"
+    local rip zid rid exp
+    while IFS=$'\t' read -r rip zid rid exp; do
+        [[ -z "$rip" ]] && continue
+        printf '%-16s %-34s %-22s %s\n' "$rip" "$zid" "$rid" "$(date -u -d "@${exp}" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$exp")"
+    done < "$refs"
 }

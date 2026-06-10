@@ -85,6 +85,8 @@ swatter_scan() {
         # novhost subscore drives the direct/CF classifier.
         novhost="$(printf '%s' "$ev" | sed -n 's/.*"novhost":\([0-9]*\).*/\1/p')"
         [[ "$novhost" =~ ^[0-9]+$ ]] || novhost=0
+        # top_vhost = the zone the attacker mainly hit (CF plane needs it).
+        local top_vhost; top_vhost="$(printf '%s' "$ev" | sed -n 's/.*"top_vhost":"\([^"]*\)".*/\1/p')"
 
         # Reputation enrichment only for IPs past WATCH (we are already there).
         rep=0; replabel=""
@@ -159,7 +161,7 @@ swatter_scan() {
                 # Cloudflare plane has no "permanent" vs temp distinction here; a
                 # perm decision just uses the longest TTL.
                 [[ "$action" == "perm" ]] && ttl="$(_swatter_pick_ttl 99)"
-                swatter_cf_block "$ip" "$ttl" "$reason" && did=1
+                swatter_cf_block "$ip" "$ttl" "$reason" "$top_vhost" && did=1
             fi
 
             if (( did )); then

@@ -144,18 +144,6 @@ cmd_list() {
     esac
 }
 
-# Optional helper: list Swatter-owned CF rules.
-swatter_cf_list_rules() {
-    [[ "${CF_MODE}" == "direct" && "${SWATTER_HAVE_JQ}" -eq 1 && -n "${CF_API_TOKEN}" ]] || { echo "(CF direct mode not configured)"; return 0; }
-    local pair zid dom
-    for pair in ${CF_ZONES}; do
-        dom="${pair%%:*}"; zid="${pair#*:}"
-        echo "== ${dom} =="
-        _cf_api GET "/zones/${zid}/rulesets/phases/http_request_firewall_custom/entrypoint" \
-            | jq -r --arg px "${CF_RULE_PREFIX}" '.result.rules[]? | select(.description|startswith($px)) | "\(.action)\t\(.expression)\t\(.description)"' 2>/dev/null
-    done
-}
-
 cmd_report() {
     swatter_init_dirs
     swatter_report "$@"
@@ -199,8 +187,12 @@ cmd_test_config() {
     for f in ${DOMLOGS_GLOB}; do [[ -f "$f" ]] && n=$(( n + 1 )); done
     echo "  domlogs:        ${n} files match ${DOMLOGS_GLOB}"
     if [[ "${CF_MODE}" == "direct" ]]; then
-        echo "  CF token:       $( [[ -n ${CF_API_TOKEN} ]] && echo set || echo 'UNSET' )"
-        echo "  CF zones:       $( [[ -n ${CF_ZONES} ]] && echo "${CF_ZONES}" || echo 'UNSET' )"
+        local ncreds=0 ndoms=0
+        [[ -r "${CF_CREDS_FILE}" ]] && ncreds="$(grep -cvE '^[[:space:]]*(#|$)' "${CF_CREDS_FILE}" 2>/dev/null || echo 0)"
+        [[ -r "${CF_DOMAINS_MAP}" ]] && ndoms="$(grep -cvE '^[[:space:]]*(#|$)' "${CF_DOMAINS_MAP}" 2>/dev/null || echo 0)"
+        echo "  CF creds:       ${CF_CREDS_FILE} ($( [[ -r ${CF_CREDS_FILE} ]] && echo "${ncreds} account token(s)" || echo 'MISSING — run swatter-deploy-cf-creds.sh' ))"
+        echo "  CF domain map:  ${CF_DOMAINS_MAP} ($( [[ -r ${CF_DOMAINS_MAP} ]] && echo "${ndoms} domain(s)" || echo 'MISSING' ))"
+        echo "  CF action:      ${CF_ACTION}"
     fi
 }
 

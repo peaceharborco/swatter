@@ -158,6 +158,32 @@ When you trust it, set `SWATTER_MODE="enforce"` in `/etc/swatter/swatter.conf`.
 The installer adds a cron entry that scans every 5 minutes and refreshes feeds
 daily.
 
+### Enabling the Cloudflare plane
+
+To block proxied attackers at Cloudflare (not just CSF-direct ones), Swatter
+needs a token per CF account scoped to **only** `Firewall Services: Edit` (zone
+IP Access Rules — a different product from the WAF Rulesets, so it never collides
+with your existing WAF automation). It blocks each attacker in the specific zone
+they hit, using your domain→account map.
+
+1. In the Cloudflare dashboard, create an API token per account with the single
+   permission *Zone → Firewall Services → Edit* over that account's zones.
+2. Build a root-only creds file (`account<TAB>token`, one line per account) and a
+   `cf-domains.conf`-style domain list, then deploy both from your workstation —
+   no secret is committed and only the minimal token lands on the server:
+
+   ```bash
+   ./install/swatter-deploy-cf-creds.sh \
+     --creds   /path/to/cloudflare.creds \
+     --domains /path/to/cf-domains.conf \
+     --host    root@your-server
+   ```
+
+   This writes `/etc/swatter/cloudflare.creds` (0600) and
+   `/etc/swatter/cf-domains.map` (0644), then runs `test-config`. A dry-run will
+   then show `cloudflare block <ip> in <domain>` for proxied offenders. (Hosts
+   not behind Cloudflare can skip all of this and set `CF_MODE="off"`.)
+
 ### Recommended: make Cloudflare classification exact
 
 By default Swatter infers direct-vs-proxied from your logs. For ground truth, add

@@ -125,6 +125,12 @@ BEGIN {
     # No-vhost / raw-IP hit: vhost empty or literal default.
     vh = $8
     if (vh == "" || vh == "-" || vh ~ /^[0-9.]+$/) novhost[ip]++
+    # Track the vhost this IP hit most (the zone to block in on the CF plane).
+    if (vh != "" && vh != "-") {
+        vhk = ip SUBSEP vh
+        vhcount[vhk]++
+        if (vhcount[vhk] > topvh_n[ip]) { topvh_n[ip] = vhcount[vhk]; topvh[ip] = vh }
+    }
 }
 
 # --- scoring & emit ---------------------------------------------------------
@@ -214,6 +220,7 @@ END {
         ev = ev ",\"badpath_cat\":\"" (badcat[ip] == "" ? "" : badcat[ip]) "\""
         ev = ev ",\"badpath_hits\":" (badhits[ip]+0)
         ev = ev ",\"decisive_rule\":\"" frule "\""
+        ev = ev ",\"top_vhost\":\"" jesc(topvh[ip]) "\""
         ev = ev ",\"sample_ua\":\"" jesc(sample_ua[ip]) "\""
         ev = ev ",\"sample_paths\":[" paths_json "]"
         ev = ev "}"
