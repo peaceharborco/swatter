@@ -16,3 +16,6 @@ swatter.conf
 *.tmp
 .DS_Store
 test/fixtures/*.local
+
+# draft marketing — keep out of the public repo
+docs/launch-post.md
