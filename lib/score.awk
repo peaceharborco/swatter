@@ -146,7 +146,17 @@ END {
 
     for (ip in reqs) {
         n = reqs[ip]
-        if (n < MIN_REQS && badmax[ip] < 100) continue   # below floor, unless CRITICAL
+        # Coerce every per-IP counter to a numeric scalar ONCE. An IP with no
+        # bad-path hits (etc.) leaves these elements uninitialized, and gawk
+        # 5.2.1 double-frees when an uninitialized array element is compared
+        # more than once (fixed upstream in 5.2.2; Ubuntu 24.04 still ships
+        # 5.2.1). The scalars are also what the rest of this block reads.
+        bm = badmax[ip] + 0;   hf = hibad_fail[ip] + 0
+        nerr = cerr[ip] + 0;   nburst = cburst[ip] + 0
+        ndist = distinct[ip] + 0; npost = post[ip] + 0
+        nnov = novhost[ip] + 0; nuae = ua_empty[ip] + 0; nuas = ua_susp[ip] + 0
+
+        if (n < MIN_REQS && bm < 100) continue   # below floor, unless CRITICAL
 
         span = last_ep[ip] - first_ep[ip]
         if (span < 1) span = 1
@@ -155,26 +165,26 @@ END {
         s_rate = clamp100(100 * (rps / RATE_SAT))
 
         s_err = 0
-        if (n >= MIN_REQS) s_err = clamp100(100 * (cerr[ip] / n))
+        if (n >= MIN_REQS) s_err = clamp100(100 * (nerr / n))
 
         # Error burst: absolute count of 403/404/444 over a knee of 40.
-        s_burst = clamp100(100 * (cburst[ip] / 40.0))
+        s_burst = clamp100(100 * (nburst / 40.0))
 
         # Fanout: high distinct-path ratio AND absolute breadth.
-        fr = distinct[ip] / n
+        fr = ndist / n
         s_fanout = 0
-        if (distinct[ip] >= 10) s_fanout = clamp100(100 * fr * (distinct[ip] / 50.0))
+        if (ndist >= 10) s_fanout = clamp100(100 * fr * (ndist / 50.0))
 
-        s_bad = clamp100(badmax[ip])
+        s_bad = clamp100(bm)
 
         s_ua = 0
-        if (ua_empty[ip] > 0) s_ua = clamp100(100 * (ua_empty[ip] / n))
-        if (ua_susp[ip] > 0)  { v = clamp100(100 * (ua_susp[ip] / n)); if (v > s_ua) s_ua = v }
+        if (nuae > 0) s_ua = clamp100(100 * (nuae / n))
+        if (nuas > 0) { v = clamp100(100 * (nuas / n)); if (v > s_ua) s_ua = v }
 
         s_post = 0
-        if (post[ip] > 0 && n >= MIN_REQS) s_post = clamp100(100 * (post[ip] / n) * (rps / RATE_SAT))
+        if (npost > 0 && n >= MIN_REQS) s_post = clamp100(100 * (npost / n) * (rps / RATE_SAT))
 
-        s_nov = clamp100(100 * (novhost[ip] / n))
+        s_nov = clamp100(100 * (nnov / n))
 
         # Behavioral baseline: weighted average of all signals. Conservative by
         # design — it catches IPs that are suspicious across several weak signals
@@ -190,18 +200,18 @@ END {
         # averaged down to safety. The reason is recorded for the audit trail.
         floor = 0; frule = ""
         # CRITICAL secret/RCE path — block on sight, any volume.
-        if (badmax[ip] >= 100)                               { floor = 90; frule = "critical_badpath" }
+        if (bm >= 100)                                       { floor = 90; frule = "critical_badpath" }
         # Repeated FAILED targeting of a sensitive HIGH endpoint (brute force /
         # probe). Gated on failure evidence (hibad_fail: errors or POSTs on
         # HIGH+ paths), NOT mere path presence — a site owner logging in and
         # working in wp-admin hits the same paths with successful GETs and a
         # couple of login POSTs, and must never trip this floor. A credential
         # brute is dozens of failed POSTs; 10 is far above any human session.
-        if (badmax[ip] >= 70 && hibad_fail[ip] >= 10 && floor < 80) { floor = 80; frule = "high_badpath_repeat" }
+        if (bm >= 70 && hf >= 10 && floor < 80)              { floor = 80; frule = "high_badpath_repeat" }
         # Scanner profile: broad path fanout with a high error ratio.
-        if (distinct[ip] >= 25 && n >= MIN_REQS && (cerr[ip] / n) >= 0.6 && floor < 78) { floor = 78; frule = "scanner_profile" }
+        if (ndist >= 25 && n >= MIN_REQS && (nerr / n) >= 0.6 && floor < 78) { floor = 78; frule = "scanner_profile" }
         # Error burst: a large absolute volume of 403/404/444.
-        if (cburst[ip] >= 100 && floor < 75)                 { floor = 75; frule = "error_burst" }
+        if (nburst >= 100 && floor < 75)                     { floor = 75; frule = "error_burst" }
         # Sustained request flood.
         if (rps >= RATE_SAT && n >= 60 && floor < 75)        { floor = 75; frule = "request_flood" }
 
@@ -223,14 +233,14 @@ END {
         ev = ev ",\"fanout\":" int(s_fanout+0.5) ",\"badpath\":" int(s_bad+0.5) ",\"ua\":" int(s_ua+0.5)
         ev = ev ",\"post\":" int(s_post+0.5) ",\"novhost\":" int(s_nov+0.5) "}"
         ev = ev ",\"reqs\":" n ",\"rps\":" sprintf("%.2f", rps)
-        ev = ev ",\"distinct_paths\":" distinct[ip]
+        ev = ev ",\"distinct_paths\":" ndist
         ev = ev ",\"status\":{\"2xx\":" (c2xx[ip]+0) ",\"3xx\":" (c3xx[ip]+0) \
                 ",\"401\":" (c401[ip]+0) ",\"403\":" (c403[ip]+0) ",\"404\":" (c404[ip]+0) \
                 ",\"444\":" (c444[ip]+0) ",\"5xx\":" (c5xx[ip]+0) "}"
-        ev = ev ",\"post\":" (post[ip]+0)
+        ev = ev ",\"post\":" npost
         ev = ev ",\"badpath_cat\":\"" (badcat[ip] == "" ? "" : badcat[ip]) "\""
         ev = ev ",\"badpath_hits\":" (badhits[ip]+0)
-        ev = ev ",\"hibad_fail\":" (hibad_fail[ip]+0)
+        ev = ev ",\"hibad_fail\":" hf
         ev = ev ",\"decisive_rule\":\"" frule "\""
         ev = ev ",\"top_vhost\":\"" jesc(topvh[ip]) "\""
         ev = ev ",\"sample_ua\":\"" jesc(sample_ua[ip]) "\""
