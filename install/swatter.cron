@@ -2,6 +2,9 @@
 # Installed to /etc/cron.d/swatter (mode 0644, owner root:root).
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 MAILTO=""
+# Pin the report to a wall-clock timezone (follows DST). Uncomment + set yours;
+# cron otherwise runs in the server's local time. The */5 scan is unaffected.
+#CRON_TZ=America/Los_Angeles
 
 # minute hour dom month dow user  command
 */5 * * * * root /usr/local/bin/swatter scan
@@ -11,6 +14,5 @@ MAILTO=""
 
 # Nightly combined digest (bad actors + server errors) of the last 24h, grouped
 # by offense + action. No-op unless REPORT_EMAIL is set; silent on a quiet window.
-# Default 11:00 UTC = 03:00 US/Pacific (PDT) / 04:00 during PST. Adjust the hour
-# to your own timezone — cron runs in the server's local time.
-0 11 * * *  root /usr/local/bin/swatter report
+# Runs at 03:00 in CRON_TZ (or server time if CRON_TZ is unset). Adjust to taste.
+0 3 * * *   root /usr/local/bin/swatter report
