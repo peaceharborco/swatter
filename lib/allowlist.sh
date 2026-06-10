@@ -169,6 +169,9 @@ swatter_is_never_block() {
         rm -f "$of"
     fi
 
+    # Operator allow file (managed by `swatter allow`).
+    if _ip_in_cidr_file "$ip" "${OPERATOR_ALLOW_FILE}"; then echo "operator-allow"; return 0; fi
+
     # Monitoring ranges file.
     if _ip_in_cidr_file "$ip" "${MONITORING_RANGES_FILE}"; then echo "monitoring"; return 0; fi
 

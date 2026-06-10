@@ -14,6 +14,7 @@
 #   swatter status                       summary of state and last run
 #   swatter top [-n N]                   worst tracked offenders
 #   swatter why IP                       evidence/decision history for an IP
+#   swatter allow IP|CIDR [note]         add to the never-block set (both planes)
 #   swatter unblock IP [--perm-allow]    remove blocks; optionally allowlist
 #   swatter list [temp|perm|cf|allow]    list current blocks/allowlist
 #   swatter report [WINDOW] [--test]     email a digest grouped by offense+action
@@ -125,12 +126,39 @@ cmd_unblock() {
     swatter_cf_unblock "$ip"
     swatter_store_unblock "$ip"
     if (( perm_allow )); then
+        cmd_allow "$ip" "perm-allow after unblock"
         if [[ "${SWATTER_HAVE_CSF}" -eq 1 && "${SWATTER_MODE}" == "enforce" ]]; then
             csf -a "$ip" "swatter allowlist" >/dev/null 2>&1 || true
         fi
-        log_info "added ${ip} to allowlist (perm-allow)"
     fi
     echo "unblocked ${ip}"
+}
+
+# swatter allow IP|CIDR [note] — add to the never-block set (OPERATOR_ALLOW_FILE).
+# This is the guardrail against blocking your own clients: run report mode for a
+# while, review would-blocks with `swatter why`, and allow the legitimate ones
+# BEFORE enabling enforce.
+cmd_allow() {
+    local ip="${1:-}"; shift || true
+    local note="${*:-}"
+    [[ -n "$ip" ]] || die "usage: swatter allow IP|CIDR [note]"
+    # Literal IPv4/IPv6, optionally /len — never a hostname or stray token.
+    if [[ ! "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]{1,2})?$ \
+       && ! "$ip" =~ ^[0-9A-Fa-f:]+(/[0-9]{1,3})?$ ]]; then
+        die "not an IP or CIDR: ${ip}"
+    fi
+    local f="${OPERATOR_ALLOW_FILE}"
+    if [[ -f "$f" ]] && grep -q "^${ip}\([[:space:]]\|\$\)" "$f"; then
+        echo "already allowed: ${ip}"
+        return 0
+    fi
+    mkdir -p "$(dirname "$f")" 2>/dev/null || true
+    printf '%s # %s - %s\n' "$ip" "${note:-added via swatter allow}" \
+        "$(date -u '+%Y-%m-%d %H:%M:%S UTC' -d "@${SWATTER_NOW_EPOCH}" 2>/dev/null \
+           || date -u -r "${SWATTER_NOW_EPOCH}" '+%Y-%m-%d %H:%M:%S UTC')" >> "$f"
+    chmod 0644 "$f" 2>/dev/null || true
+    log_info "never-block allow: ${ip}${note:+ (${note})}"
+    echo "allowed ${ip} (never-block, both planes)"
 }
 
 cmd_list() {
@@ -138,7 +166,12 @@ cmd_list() {
     case "$what" in
         temp) have csf && csf -t 2>/dev/null | grep -i swatter || echo "(none / csf unavailable)";;
         perm) have csf && grep -i swatter /etc/csf/csf.deny 2>/dev/null || echo "(none)";;
-        allow) [[ -f /etc/csf/csf.allow ]] && grep -v '^#' /etc/csf/csf.allow || echo "(none)";;
+        allow)
+            echo "# never-block (${OPERATOR_ALLOW_FILE}):"
+            [[ -s "${OPERATOR_ALLOW_FILE}" ]] && grep -v '^#' "${OPERATOR_ALLOW_FILE}" || echo "(none)"
+            echo "# csf.allow:"
+            [[ -f /etc/csf/csf.allow ]] && grep -v '^#' /etc/csf/csf.allow || echo "(none)"
+            ;;
         cf) swatter_cf_list_rules ;;
         *) die "usage: swatter list [temp|perm|cf|allow]";;
     esac
@@ -205,6 +238,7 @@ main() {
         status)        cmd_status ;;
         top)           cmd_top "$@" ;;
         why)           cmd_why "$@" ;;
+        allow)         cmd_allow "$@" ;;
         unblock)       cmd_unblock "$@" ;;
         list)          cmd_list "$@" ;;
         report)        cmd_report "$@" ;;

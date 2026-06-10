@@ -117,6 +117,42 @@ assert_band "below-min-reqs" "$(score_of example.com "$tmp/lowvol.log")" 0 49
 emit_spread "$tmp/xmlrpc.log" "91.219.236.7" "POST /xmlrpc.php HTTP/1.1" 200 "Mozilla/5.0" 40
 assert_band "xmlrpc-flood" "$(score_of example.com "$tmp/xmlrpc.log")" 80 100
 
+# --- 8: site owner logging in and working in wp-admin -> never blockable ----
+# Modeled on a real 2026-06-10 false positive: one login (two mistyped
+# passwords), then a dashboard session — admin-ajax heartbeats and plugin
+# assets, ~99% 2xx. The HIGH wp-login entry plus LOW admin-ajax hits must not
+# add up to a block when there is no failure evidence.
+: > "$tmp/owner.log"
+UA_CHROME="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/148.0.0.0"
+emit_spread "$tmp/owner.log" "205.220.208.99" "GET /wp-login.php HTTP/1.1" 200 "$UA_CHROME" 1
+emit_spread "$tmp/owner.log" "205.220.208.99" "POST /wp-login.php HTTP/1.1" 200 "$UA_CHROME" 2
+emit_spread "$tmp/owner.log" "205.220.208.99" "POST /wp-login.php HTTP/1.1" 302 "$UA_CHROME" 1
+emit_spread "$tmp/owner.log" "205.220.208.99" "POST /wp-admin/admin-ajax.php HTTP/1.1" 200 "$UA_CHROME" 50
+for i in $(seq 1 10); do
+    emit_spread "$tmp/owner.log" "205.220.208.99" "GET /wp-admin/edit.php?page=$i HTTP/1.1" 200 "$UA_CHROME" 1
+done
+for i in $(seq 1 30); do
+    emit_spread "$tmp/owner.log" "205.220.208.99" "GET /wp-content/plugins/some-plugin/assets/style-$i.css HTTP/1.1" 200 "$UA_CHROME" 1
+done
+assert_band "owner-wp-admin-session" "$(score_of example.com "$tmp/owner.log")" 0 69
+
+# --- 9: owner with asset-heavy page loads (fanout at saturation) ------------
+# Second real 2026-06-10 false positive: a login plus pages pulling ~300
+# distinct asset URLs. High fanout on 2xx traffic must not combine with the
+# wp-login HIGH hit into a block.
+: > "$tmp/owner2.log"
+emit_spread "$tmp/owner2.log" "203.0.113.77" "GET /wp-login.php HTTP/1.1" 200 "$UA_CHROME" 3
+emit_spread "$tmp/owner2.log" "203.0.113.77" "POST /wp-login.php HTTP/1.1" 302 "$UA_CHROME" 1
+for i in $(seq 1 290); do
+    emit_spread "$tmp/owner2.log" "203.0.113.77" "GET /wp-content/themes/site/asset-$i.js HTTP/1.1" 200 "$UA_CHROME" 1
+done
+assert_band "owner-asset-fanout" "$(score_of example.com "$tmp/owner2.log")" 0 69
+
+# --- 10: low-volume credential brute — failed POSTs alone must still floor ---
+: > "$tmp/slowbrute.log"
+emit_spread "$tmp/slowbrute.log" "45.146.165.11" "POST /wp-login.php HTTP/1.1" 200 "python-requests/2.31" 15
+assert_band "slow-wp-login-brute" "$(score_of example.com "$tmp/slowbrute.log")" 80 100
+
 echo
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"

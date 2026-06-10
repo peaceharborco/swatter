@@ -109,6 +109,12 @@ BEGIN {
             w = bad_w[i]
             if (w > badmax[ip]) { badmax[ip] = w; badcat[ip] = bad_cat[i] }
             badhits[ip]++
+            # Failure evidence on HIGH+ paths only: an error status or a POST
+            # (an actual credential/exploit attempt). HIGH paths like
+            # wp-login.php are also visited by legitimate site owners, whose
+            # sessions produce successful GETs here — never error bursts or
+            # POST floods.
+            if (w >= 70 && (status >= 400 || method == "POST")) hibad_fail[ip]++
             break        # one category per request (table is severity-ordered)
         }
     }
@@ -185,8 +191,13 @@ END {
         floor = 0; frule = ""
         # CRITICAL secret/RCE path — block on sight, any volume.
         if (badmax[ip] >= 100)                               { floor = 90; frule = "critical_badpath" }
-        # Repeated targeting of a sensitive HIGH endpoint (brute force / probe).
-        if (badmax[ip] >= 70 && badhits[ip] >= 3 && floor < 80) { floor = 80; frule = "high_badpath_repeat" }
+        # Repeated FAILED targeting of a sensitive HIGH endpoint (brute force /
+        # probe). Gated on failure evidence (hibad_fail: errors or POSTs on
+        # HIGH+ paths), NOT mere path presence — a site owner logging in and
+        # working in wp-admin hits the same paths with successful GETs and a
+        # couple of login POSTs, and must never trip this floor. A credential
+        # brute is dozens of failed POSTs; 10 is far above any human session.
+        if (badmax[ip] >= 70 && hibad_fail[ip] >= 10 && floor < 80) { floor = 80; frule = "high_badpath_repeat" }
         # Scanner profile: broad path fanout with a high error ratio.
         if (distinct[ip] >= 25 && n >= MIN_REQS && (cerr[ip] / n) >= 0.6 && floor < 78) { floor = 78; frule = "scanner_profile" }
         # Error burst: a large absolute volume of 403/404/444.
@@ -219,6 +230,7 @@ END {
         ev = ev ",\"post\":" (post[ip]+0)
         ev = ev ",\"badpath_cat\":\"" (badcat[ip] == "" ? "" : badcat[ip]) "\""
         ev = ev ",\"badpath_hits\":" (badhits[ip]+0)
+        ev = ev ",\"hibad_fail\":" (hibad_fail[ip]+0)
         ev = ev ",\"decisive_rule\":\"" frule "\""
         ev = ev ",\"top_vhost\":\"" jesc(topvh[ip]) "\""
         ev = ev ",\"sample_ua\":\"" jesc(sample_ua[ip]) "\""

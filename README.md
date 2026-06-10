@@ -45,6 +45,13 @@ risk an outage.
 Not behind Cloudflare? Set `CF_MODE="off"` and Swatter is a straightforward CSF
 auto-blocker. Zero Cloudflare config required.
 
+The closest tool in spirit is [CrowdSec](https://crowdsec.net) with its
+Cloudflare bouncer, and it's good — if you want a daemon, a central reputation
+network, and a component per concern. Swatter is the other end of the spectrum:
+bash + gawk + cron, no resident process, cPanel/CSF-native, and the
+direct-vs-proxied classification built into every decision rather than bolted on
+as a bouncer.
+
 ---
 
 ## How it scores
@@ -120,9 +127,13 @@ swatter report 7d              # ad-hoc 7-day digest
 - **Circuit breakers.** Hard caps on blocks per run, with a separate, lower cap on
   the catastrophic CSF channel. A log-parsing bug can't nuke thousands of IPs.
 - **Never-block allowlist**, checked last: Cloudflare ranges, your `csf.allow`,
-  the server's own IPs, RFC1918, your operator IPs, monitoring services, and
-  **forward-confirmed** good crawlers (Googlebot/Bingbot verified by reverse +
-  forward DNS, because PTR alone is forgeable).
+  the server's own IPs, RFC1918, your operator IPs (`swatter allow <ip>`),
+  monitoring services, and **forward-confirmed** good crawlers (Googlebot/Bingbot
+  verified by reverse + forward DNS, because PTR alone is forgeable).
+- **Sensitive paths need failure evidence.** Hitting `wp-login.php` is not a
+  crime — your clients do it every day. The brute-force floor only trips on
+  repeated *failed* attempts (errors or POST floods), so a site owner logging in
+  and working in wp-admin can never be blocked for it.
 - **Full audit + appeal.** `swatter why <ip>` shows exactly what triggered a block;
   `swatter unblock <ip> [--perm-allow]` reverses it on both planes.
 
@@ -153,6 +164,21 @@ swatter test-config        # sanity-check deps, paths, CF token
 swatter scan --dry-run     # see what it WOULD do
 swatter top                # review the worst offenders
 ```
+
+**Before you enforce: teach it who you are.** Run in report mode for a week and
+review what it *would* have blocked (`swatter top`, `swatter why <ip>`, the
+nightly digest). Any IP on that list that's actually you, your staff, or a
+client belongs in the never-block set **before** the first enforce run:
+
+```bash
+swatter allow 203.0.113.7 "office"
+swatter allow 198.51.100.0/24 "client X static range"
+```
+
+The most embarrassing failure mode of any auto-blocker is banning the customer —
+a site owner fumbling a password and then working in wp-admin can look a lot
+like an attack. Swatter's scoring is built to tell those apart, but your
+operator IPs deserve a guarantee, not a probability.
 
 When you trust it, set `SWATTER_MODE="enforce"` in `/etc/swatter/swatter.conf`.
 The installer adds a cron entry that scans every 5 minutes and refreshes feeds
@@ -196,6 +222,30 @@ LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\" cfray=%{
 
 (Optional — heuristics work without it.)
 
+### Division of labor with your edge WAF
+
+If you already run serious protection at the Cloudflare edge — say, a
+geo-restricted managed challenge on `wp-login.php` and `wp-admin` — think about
+what that does to the traffic Swatter sees at the origin: **the hostile noise on
+those paths never arrives.** What's left hitting your login pages is
+overwhelmingly legitimate (site owners and whoever passes your challenge), so
+path-based suspicion at the origin inverts — it starts selecting *for* your
+customers instead of against attackers.
+
+Two ways to run in that setup:
+
+- **`CF_MODE="off"`** — the cleanest split. Your edge rules own the proxied
+  realm; Swatter owns what the edge can never see: direct-to-origin traffic from
+  scanners that found your server's real IP. On that plane the bad-path table is
+  at full strength, because no legitimate user logs into WordPress via your raw
+  server IP.
+- **Keep the CF plane but demote the auth paths** in `config/badpaths.conf`
+  (e.g. `wp-login.php` HIGH → MEDIUM) if your edge protection is partial — for
+  instance a geo challenge that still admits same-country bots.
+
+Either way, the brute-force floor requires failure evidence (failed POSTs /
+error responses), so even the default tuning won't ban an owner for logging in.
+
 ---
 
 ## Commands
@@ -206,6 +256,7 @@ LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\" cfray=%{
 | `swatter status` | state, mode, allowlist health, counts |
 | `swatter top [-n N]` | worst tracked offenders |
 | `swatter why <ip>` | the evidence and history behind a block |
+| `swatter allow <ip\|cidr> [note]` | add to the never-block set (both planes) |
 | `swatter unblock <ip> [--perm-allow]` | reverse a block on both planes |
 | `swatter list [temp\|perm\|cf\|allow]` | current blocks / allowlist |
 | `swatter report [WINDOW] [--test]` | email a digest grouped by offense + action |

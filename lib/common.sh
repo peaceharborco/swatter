@@ -58,6 +58,7 @@ MAX_CSF_DENIES_PER_RUN=10
 ALLOWLIST_MAX_AGE_DAYS=7
 
 OPERATOR_IPS=""
+OPERATOR_ALLOW_FILE="/etc/swatter/allow.cidr"
 MONITORING_RANGES_FILE="/etc/swatter/monitoring.cidr"
 VERIFY_GOOD_CRAWLERS="true"
 CLOUDFLARE_IPS_FILE="/etc/swatter/cloudflare.cidr"

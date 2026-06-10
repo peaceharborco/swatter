@@ -14,7 +14,7 @@
 #                      (account defaults to the value of --default-account;
 #                      rows whose profile is "skip" are omitted from the map).
 #   --host    <ssh>    ssh destination (e.g. root@server or an ssh alias).
-#   --default-account <name>   account name for rows with no 3rd column (def: peaceharbor)
+#   --default-account <name>   account name for rows with no 3rd column (def: main)
 #
 # Deploys:
 #   /etc/swatter/cloudflare.creds   (0600 root:root)  account<TAB>token
@@ -25,7 +25,7 @@
 
 set -euo pipefail
 
-CREDS="" DOMAINS="" HOST="" DEFACCT="peaceharbor"
+CREDS="" DOMAINS="" HOST="" DEFACCT="main"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --creds)           CREDS="$2"; shift 2 ;;
@@ -36,7 +36,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 [[ -n "$CREDS" && -n "$DOMAINS" && -n "$HOST" ]] || {
-    echo "usage: $0 --creds <file> --domains <cf-domains.conf> --host <ssh> [--default-account peaceharbor]" >&2
+    echo "usage: $0 --creds <file> --domains <cf-domains.conf> --host <ssh> [--default-account main]" >&2
     exit 2
 }
 [[ -r "$CREDS" ]]   || { echo "creds file not readable: $CREDS" >&2; exit 1; }
