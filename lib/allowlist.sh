@@ -112,8 +112,10 @@ _swatter_is_good_crawler() {
     else
         ptr="$(dig +short -x "$ip" 2>/dev/null | head -1 | sed 's/\.$//')"
     fi
-    if [[ "$ptr" =~ \.(googlebot|google|bing|msn|search\.msn|applebot|apple|duckduckgo|yandex)\.com$ ]] \
-       || [[ "$ptr" =~ \.googleusercontent\.com$ ]] || [[ "$ptr" =~ \.crawl\.yahoo\.net$ ]]; then
+    # ONLY crawler-specific hostnames — NOT generic cloud PTRs. googleusercontent.com
+    # (GCP customer VMs), amazonaws.com, etc. are attacker-rentable and must never
+    # match. Real crawlers live under dedicated crawl domains.
+    if [[ "$ptr" =~ \.(googlebot\.com|google\.com|search\.msn\.com|applebot\.apple\.com|duckduckgo\.com|crawl\.yahoo\.net|yandex\.(com|ru|net))$ ]]; then
         # Forward-confirm.
         local fwd
         if have host; then fwd="$(host "$ptr" 2>/dev/null | awk '/has address|has IPv6/{print $NF}')"

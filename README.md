@@ -161,6 +161,7 @@ LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\" cfray=%{
 | `swatter why <ip>` | the evidence and history behind a block |
 | `swatter unblock <ip> [--perm-allow]` | reverse a block on both planes |
 | `swatter list [temp\|perm\|cf\|allow]` | current blocks / allowlist |
+| `swatter report [WINDOW] [--test]` | email a digest grouped by offense + action |
 | `swatter refresh-feeds` | update Cloudflare ranges + intel feeds |
 | `swatter test-config` | validate config and dependencies |
 

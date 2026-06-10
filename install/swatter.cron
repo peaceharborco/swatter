@@ -8,3 +8,7 @@ MAILTO=""
 
 # Refresh Cloudflare ranges + threat-intel feeds once daily (03:20).
 20 3 * * *  root /usr/local/bin/swatter refresh-feeds
+
+# Nightly email digest of the last 24h, grouped by offense + action (02:10).
+# No-op unless REPORT_EMAIL is set; silent on a quiet window.
+10 2 * * *  root /usr/local/bin/swatter report
