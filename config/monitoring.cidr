@@ -1,0 +1,14 @@
+# monitoring.cidr — uptime/monitoring source ranges that must never be blocked.
+# One IP or CIDR per line. Blank lines and #comments ignored. These are checked
+# as part of the never-block allowlist. Add your own monitors here.
+#
+# The lists below are convenience defaults — verify against each vendor's
+# published ranges, which change over time.
+
+# UptimeRobot (https://uptimerobot.com/ — published IP list)
+# (intentionally left for the operator to populate; ranges change)
+
+# Pingdom probe servers
+# StatusCake
+# BetterStack / Better Uptime
+# Cloudflare Health Checks are covered by the Cloudflare range allowlist.

@@ -1,0 +1,10 @@
+# Swatter decision log — installed to /etc/logrotate.d/swatter.
+/var/log/swatter/decisions.jsonl {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root root
+}

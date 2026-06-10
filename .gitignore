@@ -1,0 +1,18 @@
+# Local runtime state — never committed
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+cursors.tsv
+decisions.jsonl
+*.log
+
+# Live config holds API keys; only the example is tracked
+swatter.conf
+/etc-swatter/
+
+# Scratch / editor
+*.swp
+*.tmp
+.DS_Store
+test/fixtures/*.local

@@ -1,0 +1,10 @@
+# Swatter — scan the web logs and act every 5 minutes.
+# Installed to /etc/cron.d/swatter (mode 0644, owner root:root).
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+
+# minute hour dom month dow user  command
+*/5 * * * * root /usr/local/bin/swatter scan
+
+# Refresh Cloudflare ranges + threat-intel feeds once daily (03:20).
+20 3 * * *  root /usr/local/bin/swatter refresh-feeds

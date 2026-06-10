@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# swatter — Cloudflare-aware abuse detection & blocking for cPanel/CSF.
+#
+# A server-side watchdog: it reads your web logs, scores each IP on weighted
+# behavioral signals plus optional threat-intel, and blocks the malicious ones —
+# routing direct-to-origin offenders to CSF and Cloudflare-proxied offenders to
+# the Cloudflare WAF, so it can never firewall a Cloudflare edge and take your
+# sites down.
+#
+# Report-only by default. Set SWATTER_MODE="enforce" to act.  MIT licensed.
+#
+# Usage:
+#   swatter scan [--dry-run|--enforce]   ingest, score, decide, act
+#   swatter status                       summary of state and last run
+#   swatter top [-n N]                   worst tracked offenders
+#   swatter why IP                       evidence/decision history for an IP
+#   swatter unblock IP [--perm-allow]    remove blocks; optionally allowlist
+#   swatter list [temp|perm|cf|allow]    list current blocks/allowlist
+#   swatter refresh-feeds                update Cloudflare ranges + intel feeds
+#   swatter test-config                  validate config + dependencies
+#   swatter version
+
+set -uo pipefail
+
+SWATTER_ENTRYPOINT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
+SWATTER_ARGV=("$@")
+SWATTER_VERSION="1.0.0"
+
+# Locate libs: installed layout (/usr/local/lib/swatter) or repo layout (../lib).
+_self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${_self_dir}/../lib/common.sh" ]]; then
+    LIBDIR="$(cd -- "${_self_dir}/../lib" && pwd)"
+elif [[ -f /usr/local/lib/swatter/common.sh ]]; then
+    LIBDIR=/usr/local/lib/swatter
+else
+    echo "swatter: cannot locate lib/ (looked in ../lib and /usr/local/lib/swatter)" >&2
+    exit 1
+fi
+
+# shellcheck source=../lib/common.sh
+source "${LIBDIR}/common.sh"
+swatter_load_config
+swatter_check_deps
+
+# Capture the run clock once.
+SWATTER_NOW_EPOCH="$(date -u +%s)"; export SWATTER_NOW_EPOCH
+
+# Source the rest.
+for m in allowlist classify ingest store_sqlite block_csf block_cf intel score; do
+    # shellcheck disable=SC1090
+    source "${LIBDIR}/${m}.sh"
+done
+
+cmd_scan() {
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            --dry-run) SWATTER_MODE="report" ;;
+            --enforce) SWATTER_MODE="enforce" ;;
+            *) die "scan: unknown flag $arg" ;;
+        esac
+    done
+    swatter_acquire_lock
+    swatter_init_dirs
+    swatter_store_init
+    swatter_intel_init
+    log_info "swatter scan start (mode=${SWATTER_MODE})"
+    swatter_scan
+}
+
+cmd_status() {
+    swatter_init_dirs; swatter_store_init
+    echo "Swatter ${SWATTER_VERSION}"
+    echo "  mode:        ${SWATTER_MODE}"
+    echo "  config:      ${SWATTER_CONF}"
+    echo "  store:       ${STORE}  (${STATE_DIR})"
+    echo "  CF in use:   $(swatter_cf_in_use && echo yes || echo no)  (mode=${CF_MODE})"
+    if swatter_allowlist_healthy; then echo "  allowlist:   healthy"; else echo "  allowlist:   UNHEALTHY (fail-closed)"; fi
+    local intel="none"; [[ -n "${INTEL_PROVIDERS// }" ]] && intel="${INTEL_PROVIDERS}"
+    echo "  intel:       ${intel}"
+    if [[ "${STORE}" == "sqlite" && "${SWATTER_HAVE_SQLITE}" -eq 1 ]]; then
+        local db; db="${STATE_DIR}/swatter.db"
+        echo "  offenders:   $(sqlite3 "$db" 'SELECT COUNT(*) FROM offenders;' 2>/dev/null || echo 0) tracked"
+        echo "  perm-blocks: $(sqlite3 "$db" 'SELECT COUNT(*) FROM offenders WHERE perm=1;' 2>/dev/null || echo 0)"
+        echo "  actions:     $(sqlite3 "$db" 'SELECT COUNT(*) FROM actions;' 2>/dev/null || echo 0) logged"
+    fi
+    local dl="${LOG_DIR}/decisions.jsonl"
+    [[ -f "$dl" ]] && echo "  decisions:   $(wc -l < "$dl" 2>/dev/null) lines ($dl)"
+}
+
+cmd_top() {
+    local n=20
+    [[ "${1:-}" == "-n" && -n "${2:-}" ]] && n="$2"
+    swatter_store_init
+    printf '%-18s %5s %5s %5s %4s %-11s %s\n' "IP" "SCORE" "OFFN" "TEMP" "PERM" "CHANNEL" "LAST"
+    swatter_store_top_offenders "$n" | while IFS=$'\t' read -r ip sc off tmp perm ch label; do
+        printf '%-18s %5s %5s %5s %4s %-11s %s\n' "$ip" "$sc" "$off" "$tmp" "$perm" "$ch" "$label"
+    done
+}
+
+cmd_why() {
+    local ip="${1:-}"; [[ -n "$ip" ]] || die "usage: swatter why IP"
+    swatter_store_init
+    echo "== ledger history: ${ip} =="
+    swatter_store_history "$ip"
+    echo
+    echo "== decision-log evidence: ${ip} =="
+    local dl="${LOG_DIR}/decisions.jsonl"
+    if [[ -f "$dl" ]]; then
+        if [[ "${SWATTER_HAVE_JQ}" -eq 1 ]]; then
+            jq -c "select(.ip==\"${ip}\")" "$dl" 2>/dev/null | tail -n 10
+        else
+            grep -F "\"ip\":\"${ip}\"" "$dl" 2>/dev/null | tail -n 10
+        fi
+    fi
+}
+
+cmd_unblock() {
+    local ip="${1:-}" perm_allow=0
+    [[ -n "$ip" ]] || die "usage: swatter unblock IP [--perm-allow]"
+    [[ "${2:-}" == "--perm-allow" ]] && perm_allow=1
+    swatter_store_init
+    swatter_csf_unblock "$ip"
+    swatter_cf_unblock "$ip"
+    swatter_store_unblock "$ip"
+    if (( perm_allow )); then
+        if [[ "${SWATTER_HAVE_CSF}" -eq 1 && "${SWATTER_MODE}" == "enforce" ]]; then
+            csf -a "$ip" "swatter allowlist" >/dev/null 2>&1 || true
+        fi
+        log_info "added ${ip} to allowlist (perm-allow)"
+    fi
+    echo "unblocked ${ip}"
+}
+
+cmd_list() {
+    local what="${1:-temp}"
+    case "$what" in
+        temp) have csf && csf -t 2>/dev/null | grep -i swatter || echo "(none / csf unavailable)";;
+        perm) have csf && grep -i swatter /etc/csf/csf.deny 2>/dev/null || echo "(none)";;
+        allow) [[ -f /etc/csf/csf.allow ]] && grep -v '^#' /etc/csf/csf.allow || echo "(none)";;
+        cf) swatter_cf_list_rules ;;
+        *) die "usage: swatter list [temp|perm|cf|allow]";;
+    esac
+}
+
+# Optional helper: list Swatter-owned CF rules.
+swatter_cf_list_rules() {
+    [[ "${CF_MODE}" == "direct" && "${SWATTER_HAVE_JQ}" -eq 1 && -n "${CF_API_TOKEN}" ]] || { echo "(CF direct mode not configured)"; return 0; }
+    local pair zid dom
+    for pair in ${CF_ZONES}; do
+        dom="${pair%%:*}"; zid="${pair#*:}"
+        echo "== ${dom} =="
+        _cf_api GET "/zones/${zid}/rulesets/phases/http_request_firewall_custom/entrypoint" \
+            | jq -r --arg px "${CF_RULE_PREFIX}" '.result.rules[]? | select(.description|startswith($px)) | "\(.action)\t\(.expression)\t\(.description)"' 2>/dev/null
+    done
+}
+
+cmd_refresh_feeds() {
+    swatter_init_dirs
+    # Cloudflare ranges (always — they gate the never-block set).
+    if [[ "${SWATTER_HAVE_CURL}" -eq 1 ]]; then
+        local cf4 cf6 tmp; tmp="$(mktemp)"
+        cf4="$(curl --max-time 20 -fsS https://www.cloudflare.com/ips-v4 2>/dev/null)"
+        cf6="$(curl --max-time 20 -fsS https://www.cloudflare.com/ips-v6 2>/dev/null)"
+        if [[ -n "$cf4" ]]; then
+            { printf '%s\n' "$cf4"; printf '%s\n' "$cf6"; } > "$tmp"
+            install -m 0644 "$tmp" "${CLOUDFLARE_IPS_FILE}" 2>/dev/null || cp "$tmp" "${CLOUDFLARE_IPS_FILE}"
+            log_info "cloudflare ranges refreshed -> ${CLOUDFLARE_IPS_FILE}"
+        else
+            log_warn "cloudflare range download failed"
+        fi
+        rm -f "$tmp"
+    fi
+    # Intel feeds.
+    swatter_intel_init
+    declare -F provider_ipsum_refresh    >/dev/null && provider_ipsum_refresh || true
+    declare -F provider_spamhaus_refresh >/dev/null && provider_spamhaus_refresh || true
+}
+
+cmd_test_config() {
+    echo "Swatter ${SWATTER_VERSION} — config check"
+    echo "  config file:    ${SWATTER_CONF} $( [[ -f ${SWATTER_CONF} ]] && echo '(found)' || echo '(MISSING — using defaults)')"
+    echo "  gawk:           $(have gawk && echo ok || echo MISSING)"
+    echo "  flock:          $(have flock && echo ok || echo MISSING)"
+    echo "  jq:             $( [[ ${SWATTER_HAVE_JQ} -eq 1 ]] && echo ok || echo 'missing (intel/CF-direct disabled)')"
+    echo "  curl:           $( [[ ${SWATTER_HAVE_CURL} -eq 1 ]] && echo ok || echo 'missing (intel/feeds disabled)')"
+    echo "  sqlite3:        $( [[ ${SWATTER_HAVE_SQLITE} -eq 1 ]] && echo ok || echo 'missing (using flatfile)')"
+    echo "  csf:            $( [[ ${SWATTER_HAVE_CSF} -eq 1 ]] && echo ok || echo 'missing (CSF plane disabled)')"
+    echo "  badpaths:       ${BADPATHS_CONF} $( [[ -f ${BADPATHS_CONF} ]] && echo '(found)' || echo '(MISSING)')"
+    echo "  CF ranges:      ${CLOUDFLARE_IPS_FILE} $( swatter_allowlist_healthy && echo '(healthy)' || echo '(missing/stale — run: swatter refresh-feeds)')"
+    echo "  mode:           ${SWATTER_MODE}"
+    local n=0 f
+    for f in ${DOMLOGS_GLOB}; do [[ -f "$f" ]] && n=$(( n + 1 )); done
+    echo "  domlogs:        ${n} files match ${DOMLOGS_GLOB}"
+    if [[ "${CF_MODE}" == "direct" ]]; then
+        echo "  CF token:       $( [[ -n ${CF_API_TOKEN} ]] && echo set || echo 'UNSET' )"
+        echo "  CF zones:       $( [[ -n ${CF_ZONES} ]] && echo "${CF_ZONES}" || echo 'UNSET' )"
+    fi
+}
+
+usage() { sed -n '2,30p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
+
+main() {
+    local sub="${1:-}"; shift || true
+    case "$sub" in
+        scan)          cmd_scan "$@" ;;
+        status)        cmd_status ;;
+        top)           cmd_top "$@" ;;
+        why)           cmd_why "$@" ;;
+        unblock)       cmd_unblock "$@" ;;
+        list)          cmd_list "$@" ;;
+        refresh-feeds) cmd_refresh_feeds ;;
+        test-config)   cmd_test_config ;;
+        version|--version|-v) echo "swatter ${SWATTER_VERSION}" ;;
+        ""|help|-h|--help) usage ;;
+        *) echo "swatter: unknown command '${sub}' (try: swatter help)" >&2; exit 2 ;;
+    esac
+}
+main "$@"
