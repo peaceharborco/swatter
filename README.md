@@ -1,5 +1,8 @@
 # 🪰 Swatter
 
+[![CI](https://github.com/peaceharborco/swatter/actions/workflows/ci.yml/badge.svg)](https://github.com/peaceharborco/swatter/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **A Cloudflare-aware abuse swatter for cPanel + CSF servers.**
 
 Swatter reads your web-server logs, scores every IP on weighted behavioral

@@ -27,7 +27,12 @@ WIN_START=$(( NOW_EPOCH - 600 ))
 PASS=0; FAIL=0
 
 # tstamp <epoch> -> "dd/Mon/yyyy:HH:MM:SS +0000" (combined-log time field)
-tstamp() { date -u -r "$1" '+%d/%b/%Y:%H:%M:%S +0000'; }
+# GNU date (-d @epoch) first, BSD date (-r epoch) fallback — on Linux, -r means
+# file-mtime, so the order matters.
+tstamp() {
+    date -u -d "@$1" '+%d/%b/%Y:%H:%M:%S +0000' 2>/dev/null \
+        || date -u -r "$1" '+%d/%b/%Y:%H:%M:%S +0000'
+}
 
 # emit_spread <outfile> <ip> <request> <status> <ua> <count>
 # Spreads <count> requests evenly across the last 300s of the window.
