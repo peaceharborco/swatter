@@ -37,15 +37,18 @@ SQL
 _sql() { sqlite3 "$(_swatter_db)" "$@" 2>/dev/null; }
 _sqlq() { sqlite3 "$(_swatter_db)" "$1" 2>/dev/null; }
 
-# Count temp blocks for an IP within the repeat window (used for escalation).
+# Count REAL temp blocks for an IP within the repeat window (used for
+# escalation). Only enforced blocks (dry_run=0) count — a report-mode detection
+# means "we watched and did nothing," so it must not drive a real permanent ban
+# the moment enforce is switched on.
 swatter_store_recent_temp_count() {
     local ip="$1" since
     since=$(( $(swatter_now) - REPEAT_WINDOW_DAYS*86400 ))
     if [[ "${STORE}" == "sqlite" ]]; then
-        _sqlq "SELECT COUNT(*) FROM actions WHERE ip='${ip//\'/}' AND action='temp' AND ts>${since};"
+        _sqlq "SELECT COUNT(*) FROM actions WHERE ip='${ip//\'/}' AND action='temp' AND dry_run=0 AND ts>${since};"
     else
         awk -F'"' -v ip="$ip" -v since="$since" '
-            /"action":"temp"/ {
+            /"action":"temp"/ && /"dry_run":0/ {
                 a=$0; if (a ~ ("\"ip\":\""ip"\"")) {
                     match(a,/"ts":[0-9]+/); ts=substr(a,RSTART+5,RLENGTH-5)+0
                     if (ts>since) c++

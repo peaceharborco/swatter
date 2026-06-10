@@ -148,13 +148,56 @@ _report_emit_abuse() {
     }
 }
 
-# Deliver the digest. $1 subject $2 body $3 html(optional)
+# Minimal HTML escape for embedding the plain-text detail in <pre>.
+_report_html_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
+# Render a styled HTML digest from the globals (summary pills) + the plain-text
+# body (detail, in a monospace block). $1 = plain-text body. Emits HTML on stdout.
+# Inline styles + table layout for email-client compatibility.
+_report_render_html() {
+    local body="$1"
+    local host; host="$(hostname -f 2>/dev/null || hostname)"
+    local escaped; escaped="$(printf '%s' "$body" | _report_html_escape)"
+
+    local pill='display:inline-block;margin:0 8px 8px 0;padding:6px 12px;border-radius:6px;font-size:13px;font-weight:600;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif'
+    local pre='background:#0d1117;color:#c9d1d9;border-radius:8px;padding:16px;overflow-x:auto;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word'
+
+    _pill() { # value label bg fg
+        (( $1 > 0 )) || [[ "$4" == "always" ]] || { return; }
+        printf '<span style="%s;background:%s;color:%s">%s&nbsp;%s</span>' "$pill" "$2" "$3" "$1" "$5"
+    }
+
+    {
+        printf '<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:760px;margin:0 auto;color:#24292e">'
+        printf '<h2 style="margin:0 0 2px;font-size:20px">🪰 Swatter nightly digest</h2>'
+        printf '<p style="margin:0 0 14px;color:#586069;font-size:13px">%s &middot; last %s &middot; mode: <b>%s</b></p>' \
+            "$(printf '%s' "$host" | _report_html_escape)" "${REPORT_WINDOW}" "${SWATTER_MODE}"
+
+        printf '<div style="margin-bottom:6px">'
+        _pill "${RPT_PERM:-0}"  "#ffeef0" "#b31d28" 0 "permanent"
+        _pill "${RPT_TEMP:-0}"  "#fff5b1" "#735c0f" 0 "temporary"
+        _pill "${RPT_CSF:-0}"   "#dbedff" "#0349b4" 0 "via&nbsp;CSF"
+        _pill "${RPT_CF:-0}"    "#ffead7" "#9a4d00" 0 "via&nbsp;Cloudflare"
+        _pill "${RPT_WATCH:-0}" "#eaecef" "#444d56" 0 "watched"
+        if [[ "${ERROR_DIGEST_ENABLE}" == "true" ]]; then
+            _pill "${ERR_FATAL:-0}"   "#ffeef0" "#b31d28" 0 "FATAL"
+            _pill "${ERR_GENUINE:-0}" "#fff5b1" "#735c0f" 0 "server&nbsp;errors"
+        fi
+        printf '</div>'
+
+        printf '<pre style="%s">%s</pre>' "$pre" "$escaped"
+        printf '<p style="margin:14px 0 0;color:#959da5;font-size:12px">Swatter &middot; <code>swatter why &lt;ip&gt;</code> for evidence &middot; <code>swatter unblock &lt;ip&gt;</code> to reverse</p>'
+        printf '</div>'
+    }
+}
+
+# Deliver the digest. $1 subject $2 text-body $3 html-body
 _report_send() {
-    local subject="$1" body="$2"
+    local subject="$1" body="$2" html="$3"
     case "${REPORT_METHOD}" in
-        sendgrid) _report_send_sendgrid "$subject" "$body" ;;
-        brevo)    _report_send_brevo    "$subject" "$body" ;;
-        *)        _report_send_sendmail "$subject" "$body" ;;
+        sendgrid) _report_send_sendgrid "$subject" "$body" "$html" ;;
+        brevo)    _report_send_brevo    "$subject" "$body" "$html" ;;
+        *)        _report_send_sendmail "$subject" "$body" "$html" ;;
     esac
 }
 
@@ -162,7 +205,7 @@ _report_send() {
 # (preferred) or BREVO_API_KEY. The common choice for hosts whose sending IP
 # isn't an authorized sender for the From domain and who already use Brevo.
 _report_send_brevo() {
-    local subject="$1" body="$2"
+    local subject="$1" body="$2" html="${3:-}"
     [[ "${SWATTER_HAVE_CURL}" -eq 1 && "${SWATTER_HAVE_JQ}" -eq 1 ]] || { log_error "brevo needs curl+jq"; return 1; }
     local key=""
     if [[ -n "${BREVO_KEY_FILE}" && -r "${BREVO_KEY_FILE}" ]]; then key="$(cat "${BREVO_KEY_FILE}")"
@@ -170,12 +213,13 @@ _report_send_brevo() {
     [[ -n "$key" ]] || { log_error "brevo: no BREVO_KEY_FILE/BREVO_API_KEY"; return 1; }
     local payload code
     payload="$(jq -nc --arg to "${REPORT_EMAIL}" --arg from "${REPORT_FROM}" \
-        --arg fromname "${REPORT_FROM_NAME}" --arg subj "${subject}" --arg body "${body}" '{
+        --arg fromname "${REPORT_FROM_NAME}" --arg subj "${subject}" --arg body "${body}" --arg html "${html}" '{
         sender:{email:$from,name:$fromname},
         to:[{email:$to}],
         subject:$subj,
+        htmlContent:(if $html=="" then null else $html end),
         textContent:$body
-    }')"
+    } | with_entries(select(.value != null))')"
     code="$(curl -sS --max-time 15 -X POST "https://api.brevo.com/v3/smtp/email" \
         -H "api-key: ${key}" -H "Content-Type: application/json" -H "Accept: application/json" \
         --data "$payload" -o /dev/null -w '%{http_code}')"
@@ -184,13 +228,24 @@ _report_send_brevo() {
 }
 
 _report_send_sendmail() {
-    local subject="$1" body="$2"
+    local subject="$1" body="$2" html="${3:-}"
     if have sendmail || [[ -x /usr/sbin/sendmail ]]; then
         local sm; sm="$(command -v sendmail || echo /usr/sbin/sendmail)"
-        { printf 'To: %s\nFrom: %s <%s>\nSubject: %s\nContent-Type: text/plain; charset=UTF-8\n\n' \
-            "${REPORT_EMAIL}" "${REPORT_FROM_NAME}" "${REPORT_FROM}" "${subject}"
-          printf '%s\n' "$body"; } | "$sm" -t 2>/dev/null \
-          && { log_info "report sent to ${REPORT_EMAIL} via sendmail"; return 0; }
+        if [[ -n "$html" ]]; then
+            # multipart/alternative: text + html.
+            local b; b="swatter-$(swatter_now)-bnd"
+            { printf 'To: %s\nFrom: %s <%s>\nSubject: %s\nMIME-Version: 1.0\nContent-Type: multipart/alternative; boundary="%s"\n\n' \
+                "${REPORT_EMAIL}" "${REPORT_FROM_NAME}" "${REPORT_FROM}" "${subject}" "$b"
+              printf -- '--%s\nContent-Type: text/plain; charset=UTF-8\n\n%s\n\n' "$b" "$body"
+              printf -- '--%s\nContent-Type: text/html; charset=UTF-8\n\n%s\n\n' "$b" "$html"
+              printf -- '--%s--\n' "$b"; } | "$sm" -t 2>/dev/null \
+              && { log_info "report sent to ${REPORT_EMAIL} via sendmail (html)"; return 0; }
+        else
+            { printf 'To: %s\nFrom: %s <%s>\nSubject: %s\nContent-Type: text/plain; charset=UTF-8\n\n' \
+                "${REPORT_EMAIL}" "${REPORT_FROM_NAME}" "${REPORT_FROM}" "${subject}"
+              printf '%s\n' "$body"; } | "$sm" -t 2>/dev/null \
+              && { log_info "report sent to ${REPORT_EMAIL} via sendmail"; return 0; }
+        fi
     elif have mail; then
         printf '%s\n' "$body" | mail -s "$subject" "${REPORT_EMAIL}" 2>/dev/null \
           && { log_info "report sent to ${REPORT_EMAIL} via mail"; return 0; }
@@ -199,17 +254,18 @@ _report_send_sendmail() {
 }
 
 _report_send_sendgrid() {
-    local subject="$1" body="$2"
+    local subject="$1" body="$2" html="${3:-}"
     [[ "${SWATTER_HAVE_CURL}" -eq 1 && "${SWATTER_HAVE_JQ}" -eq 1 ]] || { log_error "sendgrid needs curl+jq"; return 1; }
     [[ -r "${SENDGRID_KEY_FILE}" ]] || { log_error "SendGrid key not readable: ${SENDGRID_KEY_FILE}"; return 1; }
     local key payload code
     key="$(cat "${SENDGRID_KEY_FILE}")"
+    # SendGrid requires text/plain before text/html in the content array.
     payload="$(jq -nc --arg to "${REPORT_EMAIL}" --arg from "${REPORT_FROM}" \
-        --arg fromname "${REPORT_FROM_NAME}" --arg subj "${subject}" --arg body "${body}" '{
+        --arg fromname "${REPORT_FROM_NAME}" --arg subj "${subject}" --arg body "${body}" --arg html "${html}" '{
         personalizations:[{to:[{email:$to}]}],
         from:{email:$from,name:$fromname},
         subject:$subj,
-        content:[{type:"text/plain",value:$body}]
+        content:( [{type:"text/plain",value:$body}] + (if $html=="" then [] else [{type:"text/html",value:$html}] end) )
     }')"
     code="$(curl -sS --max-time 15 -X POST "https://api.sendgrid.com/v3/mail/send" \
         -H "Authorization: Bearer ${key}" -H "Content-Type: application/json" \
@@ -261,5 +317,6 @@ swatter_report() {
     subject="[Swatter] ${parts} in ${window} — ${host}"
     (( test_mode )) && subject="[TEST] ${subject}"
 
-    _report_send "$subject" "$body"
+    local html; html="$(_report_render_html "$body")"
+    _report_send "$subject" "$body" "$html"
 }
