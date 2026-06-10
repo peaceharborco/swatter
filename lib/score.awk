@@ -72,6 +72,9 @@ BEGIN {
     ip = $1; ep = $2 + 0; method = $3; path = $4; status = $5 + 0; ua = $7
     if (ep < win_start) next            # outside the window
     if (ip == "" || ip == "-") next
+    # Must be a literal IPv4 or IPv6 address — never a hostname or a token that
+    # could be read as a flag by csf/the CF API downstream.
+    if (ip !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && ip !~ /^[0-9A-Fa-f:]+$/) next
 
     reqs[ip]++
     if (first_ep[ip] == 0 || ep < first_ep[ip]) first_ep[ip] = ep

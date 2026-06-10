@@ -35,9 +35,46 @@ swatter_report_build() {
     local log="${LOG_DIR}/decisions.jsonl"
 
     RPT_ACTED=0 RPT_PERM=0 RPT_TEMP=0 RPT_CF=0 RPT_CSF=0 RPT_EXEMPT=0 RPT_WATCH=0
+    ERR_TOTAL=0 ERR_FATAL=0 ERR_GENUINE=0 ERR_NOISE=0
+
+    # The error-triage section runs first so its counters are set for the subject
+    # even when the abuse log is empty. Captured to a temp, emitted after the
+    # abuse digest below.
+    local errsection="" errfile=""
+    if [[ "${ERROR_DIGEST_ENABLE}" == "true" ]] && declare -F swatter_errors_section >/dev/null; then
+        # Redirection (not $(...)) so the ERR_* counters persist in this shell.
+        errfile="$(mktemp "${TMPDIR:-/tmp}/swatter-errsec.XXXXXX")"
+        swatter_errors_section "$window" > "$errfile"
+        errsection="$(cat "$errfile")"
+        rm -f "$errfile"
+    fi
+
+    echo "Swatter nightly digest — $(hostname -f 2>/dev/null || hostname)"
+    echo "Window: last ${window}  (mode: ${SWATTER_MODE})"
+    echo
+    echo "========================  BAD ACTORS  ==========================="
+    echo
+    _report_emit_abuse "$window" "$cutoff" "$log"
+
+    if [[ "${ERROR_DIGEST_ENABLE}" == "true" ]]; then
+        echo
+        echo "========================  SERVER ERRORS  ========================"
+        echo
+        printf '%s\n' "$errsection"
+    fi
+
+    echo
+    echo "------------------------------------------------------------------"
+    echo "Full evidence:  swatter why <ip>      Abuse log: ${log}"
+    [[ "${ERROR_DIGEST_ENABLE}" == "true" ]] && echo "Error triage:   swatter report --test   (or /server-logs equivalent)"
+}
+
+# The abuse (bad-actor) digest body.
+_report_emit_abuse() {
+    local window="$1" cutoff="$2" log="$3"
 
     if [[ ! -r "$log" ]]; then
-        echo "No decision log at ${log}."
+        echo "No abuse decision log at ${log}."
         return 0
     fi
     if [[ "${SWATTER_HAVE_JQ}" -ne 1 ]]; then
@@ -60,12 +97,7 @@ swatter_report_build() {
     RPT_CSF=$(printf '%s\n'    "$recs" | jq -rc 'select(.channel=="csf" and (.action=="temp" or .action=="perm"))' | grep -c . || true)
     RPT_ACTED=$(( RPT_PERM + RPT_TEMP ))
 
-    local mode; mode="$(printf '%s\n' "$recs" | jq -r '.mode' | tail -1)"
-
     {
-        echo "Swatter nightly digest — $(hostname -f 2>/dev/null || hostname)"
-        echo "Window: last ${window}  (mode: ${mode})"
-        echo
         echo "Actions taken"
         echo "-------------"
         printf '  %-22s %s\n' "permanent blocks:" "${RPT_PERM}"
@@ -113,9 +145,6 @@ swatter_report_build() {
                 | awk -F'\t' '{printf "  %-16s score=%-4s %s\n",$1,$2,$3}'
             echo
         fi
-
-        echo "------------------------------------------------------------------"
-        echo "Full evidence:  swatter why <ip>      Live log: ${log}"
     }
 }
 
@@ -124,8 +153,34 @@ _report_send() {
     local subject="$1" body="$2"
     case "${REPORT_METHOD}" in
         sendgrid) _report_send_sendgrid "$subject" "$body" ;;
+        brevo)    _report_send_brevo    "$subject" "$body" ;;
         *)        _report_send_sendmail "$subject" "$body" ;;
     esac
+}
+
+# Brevo (formerly Sendinblue) transactional email API v3. Key from BREVO_KEY_FILE
+# (preferred) or BREVO_API_KEY. The common choice for hosts whose sending IP
+# isn't an authorized sender for the From domain and who already use Brevo.
+_report_send_brevo() {
+    local subject="$1" body="$2"
+    [[ "${SWATTER_HAVE_CURL}" -eq 1 && "${SWATTER_HAVE_JQ}" -eq 1 ]] || { log_error "brevo needs curl+jq"; return 1; }
+    local key=""
+    if [[ -n "${BREVO_KEY_FILE}" && -r "${BREVO_KEY_FILE}" ]]; then key="$(cat "${BREVO_KEY_FILE}")"
+    elif [[ -n "${BREVO_API_KEY}" ]]; then key="${BREVO_API_KEY}"; fi
+    [[ -n "$key" ]] || { log_error "brevo: no BREVO_KEY_FILE/BREVO_API_KEY"; return 1; }
+    local payload code
+    payload="$(jq -nc --arg to "${REPORT_EMAIL}" --arg from "${REPORT_FROM}" \
+        --arg fromname "${REPORT_FROM_NAME}" --arg subj "${subject}" --arg body "${body}" '{
+        sender:{email:$from,name:$fromname},
+        to:[{email:$to}],
+        subject:$subj,
+        textContent:$body
+    }')"
+    code="$(curl -sS --max-time 15 -X POST "https://api.brevo.com/v3/smtp/email" \
+        -H "api-key: ${key}" -H "Content-Type: application/json" -H "Accept: application/json" \
+        --data "$payload" -o /dev/null -w '%{http_code}')"
+    if [[ "$code" == "201" || "$code" == "202" ]]; then log_info "report sent to ${REPORT_EMAIL} via Brevo (${code})"; return 0; fi
+    log_error "Brevo send failed (HTTP ${code})"; return 1
 }
 
 _report_send_sendmail() {
@@ -174,23 +229,36 @@ swatter_report() {
     done
     [[ -n "${REPORT_EMAIL}" ]] || { log_warn "REPORT_EMAIL unset; nothing to send"; return 0; }
 
-    local body; body="$(swatter_report_build "$window")"
+    # Build into a temp file via redirection (NOT $(...)), so the RPT_* counters
+    # the builder sets persist in this shell — a command substitution would run
+    # the builder in a subshell and lose them.
+    local bodyfile; bodyfile="$(mktemp "${TMPDIR:-/tmp}/swatter-report.XXXXXX")"
+    # shellcheck disable=SC2064
+    trap "rm -f '$bodyfile'" RETURN
+    swatter_report_build "$window" > "$bodyfile"
+    local body; body="$(cat "$bodyfile")"
 
-    # Stay silent on a quiet window unless --test.
-    if (( ! test_mode )) && (( RPT_ACTED == 0 && RPT_EXEMPT == 0 )); then
+    # Stay silent only when BOTH planes are quiet (no actions, no exemptions, no
+    # genuine server errors) — unless --test.
+    local err_genuine="${ERR_GENUINE:-0}" err_fatal="${ERR_FATAL:-0}"
+    if (( ! test_mode )) && (( RPT_ACTED == 0 && RPT_EXEMPT == 0 && err_genuine == 0 )); then
         log_info "report: quiet window (${window}); not sending"
         return 0
     fi
 
-    local host subject
+    # Subject summarizes both planes.
+    local host subject parts=""
     host="$(hostname -s 2>/dev/null || hostname)"
-    if (( RPT_PERM > 0 )); then
-        subject="[Swatter] ${RPT_PERM} perm + ${RPT_TEMP} temp block(s) in ${window} — ${host}"
-    elif (( RPT_ACTED > 0 )); then
-        subject="[Swatter] ${RPT_ACTED} block(s) in ${window} — ${host}"
-    else
-        subject="[Swatter] ${RPT_EXEMPT} allowlist exemption(s) in ${window} — ${host}"
+    if (( RPT_PERM > 0 )); then parts="${RPT_PERM} perm + ${RPT_TEMP} temp block(s)"
+    elif (( RPT_ACTED > 0 )); then parts="${RPT_ACTED} block(s)"
+    elif (( RPT_EXEMPT > 0 )); then parts="${RPT_EXEMPT} exemption(s)"; fi
+    if (( err_genuine > 0 )); then
+        local errpart="${err_genuine} server error(s)"
+        (( err_fatal > 0 )) && errpart="${err_fatal} FATAL + ${err_genuine} error(s)"
+        parts="${parts:+${parts} + }${errpart}"
     fi
+    [[ -n "$parts" ]] || parts="all quiet"
+    subject="[Swatter] ${parts} in ${window} — ${host}"
     (( test_mode )) && subject="[TEST] ${subject}"
 
     _report_send "$subject" "$body"

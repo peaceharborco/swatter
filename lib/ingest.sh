@@ -30,14 +30,21 @@ _swatter_parse() {
             rb = index($0, "]")
             if (lb == 0 || rb == 0 || rb < lb) next
             tsraw = substr($0, lb+1, rb-lb-1)        # dd/Mon/yyyy:HH:MM:SS +zzzz
-            # Split off the day/mon/year:H:M:S, ignore the tz offset for epoch
-            # purposes (Apache logs are emitted in server TZ; we treat the whole
-            # pipeline as UTC, consistent with the rest of the toolchain).
+            # Apache stamps log time in the SERVER timezone with the offset in
+            # the +zzzz token. We run mktime under TZ=UTC, so subtract the offset
+            # to get a correct UTC epoch. Without this, on a non-UTC server the
+            # requests all land outside the window and nothing is ever scored.
             n = split(tsraw, a, /[\/: ]/)
             if (n < 6) next
             m = mon[a[2]]; if (m == "") next
             epoch = mktime(a[3]" "m" "a[1]" "a[4]" "a[5]" "a[6]" 0")
             if (epoch < 0) next
+            # a[7] = the +zzzz / -zzzz offset (if present).
+            if (n >= 7 && a[7] ~ /^[+-][0-9][0-9][0-9][0-9]$/) {
+                sign = (substr(a[7],1,1) == "-") ? -1 : 1
+                offh = substr(a[7],2,2) + 0; offm = substr(a[7],4,2) + 0
+                epoch = epoch - sign*(offh*3600 + offm*60)
+            }
 
             # Request line: first double-quoted field after the timestamp.
             q1 = index($0, "\"")

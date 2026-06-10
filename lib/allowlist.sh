@@ -9,8 +9,14 @@
 #   - forward-confirmed good crawlers (Googlebot/Bingbot/etc.)
 #
 # CIDR membership is computed in awk over 32-bit integers (IPv4). IPv6 is matched
-# by hardcoded Cloudflare v6 prefixes and exact string fallback; v6 attacker
-# blocking is conservative by design (prefer Cloudflare-plane handling).
+# by prefix string (conservative; prefer Cloudflare-plane handling for v6).
+#
+# A compiled-in Cloudflare range fallback guarantees the never-block set is never
+# empty even if `refresh-feeds` has not yet run — the README's safety promise must
+# not depend on a network fetch having succeeded. The live file (refreshed daily)
+# takes precedence; this is only the floor.
+SWATTER_CF_FALLBACK_V4="173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22"
+SWATTER_CF_FALLBACK_V6="2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32"
 
 # Convert dotted-quad to uint32. Echoes nothing on parse failure.
 _ip2int() {
@@ -60,6 +66,18 @@ _ip_in_cidr_file() {
         }
         END { exit (found ? 0 : 1) }
     ' "$file"
+}
+
+# _ip_in_cidr_list <ip> <space-separated CIDRs> : membership against an inline list.
+_ip_in_cidr_list() {
+    local ip="$1"; shift
+    local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/swatter-cidrs.XXXXXX")"
+    # shellcheck disable=SC2048,SC2086
+    printf '%s\n' $* > "$tmp"
+    local rc=1
+    _ip_in_cidr_file "$ip" "$tmp" && rc=0
+    rm -f "$tmp"
+    return $rc
 }
 
 # Build the list of server-local IPs once per run (cached in a global).
@@ -138,9 +156,10 @@ swatter_is_never_block() {
         172.1[6-9].*|172.2[0-9].*|172.3[0-1].*)    echo "rfc1918";       return 0 ;;
     esac
 
-    # Cloudflare ranges — the catastrophic case. Hardcoded list refreshed by
-    # refresh-feeds; if the file is missing/stale the caller fails closed.
+    # Cloudflare ranges — the catastrophic case. Check the live file first, then
+    # the compiled-in fallback so a never-refreshed install is still protected.
     if _ip_in_cidr_file "$ip" "${CLOUDFLARE_IPS_FILE}"; then echo "cloudflare-range"; return 0; fi
+    if _ip_in_cidr_list "$ip" "${SWATTER_CF_FALLBACK_V4} ${SWATTER_CF_FALLBACK_V6}"; then echo "cloudflare-range(builtin)"; return 0; fi
 
     # Operator IPs (inline list -> temp file membership for CIDR support).
     if [[ -n "${OPERATOR_IPS}" ]]; then

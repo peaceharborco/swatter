@@ -79,6 +79,25 @@ STATE_DIR="/var/lib/swatter"
 LOG_DIR="/var/log/swatter"
 NOTIFY_EMAIL=""
 
+# Nightly report + delivery. Defaulted here so referencing them under `set -u`
+# never aborts on a trimmed/older config.
+REPORT_EMAIL=""
+REPORT_WINDOW="24h"
+REPORT_FROM="swatter@localhost"
+REPORT_FROM_NAME="Swatter"
+REPORT_METHOD="sendmail"          # sendmail | sendgrid | brevo
+SENDGRID_KEY_FILE=""
+BREVO_API_KEY=""
+BREVO_KEY_FILE=""
+
+# Server error-log triage section (bundled /server-logs digest).
+ERROR_DIGEST_ENABLE="false"
+ERROR_DIGEST_LOG=""               # pre-consolidated log; empty = aggregate live
+ERROR_FPM_GLOB="/opt/cpanel/ea-php8*/root/usr/var/log/php-fpm/error.log"
+ERROR_MYSQL_GLOB="/var/lib/mysql/*.err"
+ERROR_PHP_HOME_GLOB="/home"
+ERROR_NOISE="prefetch request body failed|error reading status line from remote server|invalid URI path|Invalid method in request|no compatible SSL setup for policy|client denied by server configuration|Error dispatching request to"
+
 # The bad-path table ships with the repo by default; installs relocate it.
 BADPATHS_CONF="${BADPATHS_CONF:-${SWATTER_ROOT_DIR}/config/badpaths.conf}"
 

@@ -89,6 +89,27 @@ a failed or offline lookup is simply ignored. Works fully with **zero** API keys
 
 ---
 
+## Nightly digest — swat errors *and* bad actors
+
+`swatter report` emails one nightly digest covering both planes of server health:
+
+- **Bad actors** — blocks taken (perm/temp), grouped by offense type, bad-path
+  category, and channel (CSF vs Cloudflare), plus allowlist exemptions to review.
+- **Server errors** *(optional, `ERROR_DIGEST_ENABLE`)* — FATAL/ERROR from Apache,
+  PHP-FPM, per-site PHP, and MySQL over the same window, with known high-volume
+  noise filtered and the rest grouped by signature. Point it at logs directly, or
+  reuse an existing consolidated error log.
+
+It stays silent on a genuinely quiet window. Delivery is pluggable —
+`sendmail` (default), **SendGrid**, or **Brevo** — so hosts whose IP isn't an
+authorized sender for the From domain can still deliver. The installer schedules
+it nightly; set the cron hour to your timezone.
+
+```bash
+swatter report --test          # force-send now, to verify delivery
+swatter report 7d              # ad-hoc 7-day digest
+```
+
 ## Safety first
 
 - **Report-only by default.** Out of the box Swatter scores and logs decisions but
@@ -191,7 +212,7 @@ per line.
 
 ## License
 
-MIT © Peace Harbor Studios. See [LICENSE](LICENSE).
+MIT © [Peace Harbor Studios](https://studios.peaceharbor.com). See [LICENSE](LICENSE).
 
 Contributions welcome — new firewall backends (ipset/nftables), an nginx log
 parser, and additional intel providers all slot into the existing adapter
