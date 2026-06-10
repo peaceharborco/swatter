@@ -145,10 +145,10 @@ swatter_cf_unblock() {
             fi
         done
     done < "$refs"
-    # Drop this IP's refs.
-    if grep -qv "^${ip}	" "$refs" 2>/dev/null || true; then
-        grep -v "^${ip}$(printf '\t')" "$refs" > "${refs}.tmp" 2>/dev/null && mv "${refs}.tmp" "$refs"
-    fi
+    # Drop this IP's refs. grep -v exits 1 when no lines survive (unblocking the
+    # last IP in the file), so the mv must not be gated on its status.
+    grep -v "^${ip}$(printf '\t')" "$refs" > "${refs}.tmp" 2>/dev/null || true
+    mv "${refs}.tmp" "$refs"
 }
 
 # Sweep expired Swatter access rules (TTL emulation) using recorded refs.
@@ -164,19 +164,18 @@ swatter_cf_sweep_expired() {
     while IFS=$'\t' read -r rip zid rid exp; do
         [[ -z "$rip" ]] && continue
         if [[ "${exp:-0}" =~ ^[0-9]+$ ]] && (( exp < now )); then
-            if [[ "${SWATTER_MODE}" == "enforce" ]]; then
-                removed=0
-                for acct in "${!_CF_TOKEN[@]}"; do
-                    tok="${_CF_TOKEN[$acct]}"
-                    if _cf_api "$tok" DELETE "/zones/${zid}/firewall/access_rules/rules/${rid}" | jq -e '.success==true' >/dev/null 2>&1; then
-                        log_info "cloudflare sweep: expired rule ${rid} (zone ${zid}) removed"; removed=1; break
-                    fi
-                done
-                (( removed )) || printf '%s\t%s\t%s\t%s\n' "$rip" "$zid" "$rid" "$exp" >> "$keep"
-            else
-                log_info "[dry-run] cloudflare sweep would remove expired rule ${rid} (zone ${zid})"
-                printf '%s\t%s\t%s\t%s\n' "$rip" "$zid" "$rid" "$exp" >> "$keep"
-            fi
+            # Sweep regardless of mode: removing an expired rule is cleanup, not
+            # enforcement — the TTL was promised when the rule was created.
+            # Gating this on enforce stranded every live rule (permanently
+            # blocked) whenever the operator rolled back to report mode.
+            removed=0
+            for acct in "${!_CF_TOKEN[@]}"; do
+                tok="${_CF_TOKEN[$acct]}"
+                if _cf_api "$tok" DELETE "/zones/${zid}/firewall/access_rules/rules/${rid}" | jq -e '.success==true' >/dev/null 2>&1; then
+                    log_info "cloudflare sweep: expired rule ${rid} (zone ${zid}) removed"; removed=1; break
+                fi
+            done
+            (( removed )) || printf '%s\t%s\t%s\t%s\n' "$rip" "$zid" "$rid" "$exp" >> "$keep"
         else
             printf '%s\t%s\t%s\t%s\n' "$rip" "$zid" "$rid" "$exp" >> "$keep"
         fi
