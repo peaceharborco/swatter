@@ -14,6 +14,18 @@
 #
 # Requires jq for the grouped digest; without it, falls back to a flat count.
 
+# Plain-English labels for decisive-rule identifiers, for the digest only —
+# decisions.jsonl and `swatter why` keep the raw identifier for the audit trail.
+# Unknown/future rules fall through and display as-is.
+_RPT_RULE_LABELS='{
+  "critical_badpath":    "probed secret/exploit files",
+  "high_badpath_repeat": "brute-forced a sensitive page",
+  "scanner_profile":     "vulnerability scanning",
+  "error_burst":         "error-response burst (fuzzing)",
+  "request_flood":       "request flood",
+  "unspecified":         "combined suspicious signals"
+}'
+
 # Convert "24h"/"7d"/"90m" to seconds.
 _report_window_secs() {
     local w="$1" n unit
@@ -111,9 +123,11 @@ _report_emit_abuse() {
         echo "By offense type (acted only)"
         echo "----------------------------"
         printf '%s\n' "$recs" \
-            | jq -rc 'select(.action=="temp" or .action=="perm") | (.evidence.decisive_rule // "unspecified")' \
+            | jq -rc --argjson L "$_RPT_RULE_LABELS" \
+                'select(.action=="temp" or .action=="perm")
+                 | (.evidence.decisive_rule // "unspecified") as $r | ($L[$r] // $r)' \
             | sort | uniq -c | sort -rn \
-            | awk '{printf "  %-26s %s\n", $2, $1}'
+            | awk '{c=$1; sub(/^ *[0-9]+ /,""); printf "  %-30s %s\n", $0, c}'
         echo
 
         echo "By bad-path category (acted only)"
@@ -127,12 +141,14 @@ _report_emit_abuse() {
         if (( RPT_ACTED > 0 )); then
             echo "Blocks (newest first)"
             echo "---------------------"
-            printf '%-16s %5s %-12s %-20s %-10s %s\n' "IP" "SCORE" "ACTION" "RULE" "CHANNEL" "TTL"
+            printf '%-16s %5s %-12s %-30s %-10s %s\n' "IP" "SCORE" "ACTION" "WHY" "CHANNEL" "TTL"
             printf '%s\n' "$recs" \
-                | jq -rc 'select(.action=="temp" or .action=="perm")
-                          | [.ip,(.score|tostring),.action,(.evidence.decisive_rule // "-"),.channel,(.ttl|tostring)] | @tsv' \
+                | jq -rc --argjson L "$_RPT_RULE_LABELS" \
+                         'select(.action=="temp" or .action=="perm")
+                          | (.evidence.decisive_rule // "unspecified") as $r
+                          | [.ip,(.score|tostring),.action,($L[$r] // $r),.channel,(.ttl|tostring)] | @tsv' \
                 | tail -100 \
-                | awk -F'\t' '{printf "%-16s %5s %-12s %-20s %-10s %s\n",$1,$2,$3,$4,$5,$6}'
+                | awk -F'\t' '{printf "%-16s %5s %-12s %-30s %-10s %s\n",$1,$2,$3,$4,$5,$6}'
             echo
         fi
 
