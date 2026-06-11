@@ -92,7 +92,8 @@ reputation feeds before acting:
 - **IPsum** — aggregated blocklist, no key needed.
 - **Spamhaus DROP/EDROP** — hijacked/criminal netblocks, no key needed.
 - **AbuseIPDB** — confidence score, free tier (1,000 checks/day), cached and
-  quota-limited.
+  quota-limited. Enable it by setting `ABUSEIPDB_KEY` in
+  `/etc/swatter/swatter.conf`.
 
 Reputation only ever *raises* a borderline score — it never blocks on its own, and
 a failed or offline lookup is simply ignored. Works fully with **zero** API keys.
@@ -120,6 +121,25 @@ swatter report --test          # force-send now, to verify delivery
 swatter report 7d              # ad-hoc 7-day digest
 swatter report --print         # print the digest to stdout, send nothing
 ```
+
+### Email delivery setup
+
+All the knobs live in `/etc/swatter/swatter.conf`:
+
+1. Set `REPORT_EMAIL` (empty disables the digest) and `REPORT_FROM`.
+2. Pick `REPORT_METHOD`. `sendmail` needs nothing else. `sendgrid` and `brevo`
+   need `curl` + `jq` plus an API key — keep it in a root-only file and point
+   the config at it:
+
+   ```bash
+   install -m 600 /dev/null /etc/swatter/sendgrid.key
+   vi /etc/swatter/sendgrid.key        # paste the API key, nothing else
+   ```
+
+   Then in `swatter.conf`: `REPORT_METHOD="sendgrid"` +
+   `SENDGRID_KEY_FILE="/etc/swatter/sendgrid.key"`, or
+   `REPORT_METHOD="brevo"` + `BREVO_KEY_FILE="/etc/swatter/brevo.key"`.
+3. Verify delivery with `swatter report --test`.
 
 ## Safety first
 
