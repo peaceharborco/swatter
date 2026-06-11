@@ -17,7 +17,7 @@
 #   swatter allow IP|CIDR [note]         add to the never-block set (both planes)
 #   swatter unblock IP [--perm-allow]    remove blocks; optionally allowlist
 #   swatter list [temp|perm|cf|allow]    list current blocks/allowlist
-#   swatter report [WINDOW] [--test]     email a digest grouped by offense+action
+#   swatter report [WINDOW] [--test|--print]  email a digest grouped by offense+action (--print: stdout only)
 #   swatter refresh-feeds                update Cloudflare ranges + intel feeds
 #   swatter test-config                  validate config + dependencies
 #   swatter version

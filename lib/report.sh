@@ -274,15 +274,22 @@ _report_send_sendgrid() {
     log_error "SendGrid send failed (HTTP ${code})"; return 1
 }
 
-# Entry point: swatter report [WINDOW] [--test]
+# Entry point: swatter report [WINDOW] [--test|--print]
+# --print writes the digest body to stdout and sends nothing — for operators
+# (and agents, e.g. /server-logs) who want the email's content on demand.
 swatter_report() {
-    local window="${REPORT_WINDOW:-24h}" test_mode=0 arg
+    local window="${REPORT_WINDOW:-24h}" test_mode=0 print_mode=0 arg
     for arg in "$@"; do
         case "$arg" in
             --test) test_mode=1 ;;
+            --print) print_mode=1 ;;
             [0-9]*h|[0-9]*d|[0-9]*m) window="$arg" ;;
         esac
     done
+    if (( print_mode )); then
+        swatter_report_build "$window"
+        return 0
+    fi
     [[ -n "${REPORT_EMAIL}" ]] || { log_warn "REPORT_EMAIL unset; nothing to send"; return 0; }
 
     # Build into a temp file via redirection (NOT $(...)), so the RPT_* counters

@@ -118,6 +118,7 @@ it nightly; set the cron hour to your timezone.
 ```bash
 swatter report --test          # force-send now, to verify delivery
 swatter report 7d              # ad-hoc 7-day digest
+swatter report --print         # print the digest to stdout, send nothing
 ```
 
 ## Safety first
@@ -262,7 +263,7 @@ error responses), so even the default tuning won't ban an owner for logging in.
 | `swatter allow <ip\|cidr> [note]` | add to the never-block set (both planes) |
 | `swatter unblock <ip> [--perm-allow]` | reverse a block on both planes |
 | `swatter list [temp\|perm\|cf\|allow]` | current blocks / allowlist |
-| `swatter report [WINDOW] [--test]` | email a digest grouped by offense + action |
+| `swatter report [WINDOW] [--test\|--print]` | email a digest grouped by offense + action (`--print`: stdout only) |
 | `swatter refresh-feeds` | update Cloudflare ranges + intel feeds |
 | `swatter test-config` | validate config and dependencies |
 
