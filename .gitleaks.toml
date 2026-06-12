@@ -1,0 +1,10 @@
+# Gitleaks config — extends the default ruleset. The allowlists below are
+# audited false positives (reviewed 2026-06-12), not real secrets; anything
+# new still fails CI.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Audited false positives (apps/swatter)"
+regexTarget = "line"
+regexes = ['''ABUSEIPDB_KEY=""''']  # empty placeholder; a pasted key still trips
