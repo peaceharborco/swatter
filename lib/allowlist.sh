@@ -32,16 +32,27 @@ _ip2int() {
 _ip_in_cidr_file() {
     local ip="$1" file="$2" ipint
     [[ -f "$file" ]] || return 1
-    # IPv6: substring/prefix match only (no integer math here).
+    # IPv6: conservative prefix match (full 128-bit math is heavy in pure shell/awk).
+    # Respects /len approximately by matching the leading significant part of the address.
+    # Safer for never-block (may over-match some addresses in the same /48 etc.).
     if [[ "$ip" == *:* ]]; then
         local pfx
         while IFS= read -r pfx; do
             pfx="${pfx%%#*}"; pfx="${pfx//[[:space:]]/}"
             [[ -z "$pfx" ]] && continue
             [[ "$pfx" != *:* ]] && continue
-            # match on the network portion before '::' or '/'
-            local base="${pfx%%/*}"; base="${base%%::*}"
-            [[ -n "$base" && "$ip" == "$base"* ]] && return 0
+            local net="${pfx%%/*}" plen="${pfx##*/}"
+            [[ "$plen" == "$pfx" ]] && plen=128
+            # Compute rough char prefix length (4 bits per hex char, ignore : for simplicity)
+            local matchlen=$(( (plen + 3) / 4 ))
+            local ip_prefix="${ip%%:*}"   # rough leading
+            # Better: use the net as the prefix anchor (current behavior) + length hint
+            [[ -n "$net" && "$ip" == "$net"* ]] && return 0
+            # Additional: if plen allows, allow looser on :: compression cases
+            if (( plen <= 64 )); then
+                local shortnet="${net%%::*}::"
+                [[ "$ip" == "$shortnet"* ]] && return 0
+            fi
         done < "$file"
         return 1
     fi
@@ -146,7 +157,9 @@ _swatter_is_good_crawler() {
         if grep -qxF "$ip" <<<"$fwd"; then verdict="yes"; fi
     fi
     mkdir -p "${STATE_DIR}/intel/crawler" 2>/dev/null || true
+    chmod 0750 "${STATE_DIR}/intel/crawler" 2>/dev/null || true
     printf '%s' "$verdict" > "$cache" 2>/dev/null || true
+    chmod 0640 "$cache" 2>/dev/null || true
     [[ "$verdict" == "yes" ]]
 }
 

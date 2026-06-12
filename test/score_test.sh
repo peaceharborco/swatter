@@ -159,6 +159,39 @@ emit_spread "$tmp/slowbrute.log" "45.146.165.11" "POST /wp-login.php HTTP/1.1" 2
 assert_band "slow-wp-login-brute" "$(score_of example.com "$tmp/slowbrute.log")" 80 100
 
 echo
+echo "=== validator + allowlist logic tests ==="
+# Test swatter_validate_ip_or_cidr (from common)
+VALIDATOR_PASS=0 VALIDATOR_FAIL=0
+for good in 1.2.3.4 192.168.0.1/24 2001:db8::1 2001:db8:1:2::/64 ::1; do
+    if swatter_validate_ip_or_cidr "$good" 2>/dev/null; then
+        VALIDATOR_PASS=$((VALIDATOR_PASS+1))
+    else
+        echo "FAIL validator good: $good"; VALIDATOR_FAIL=$((VALIDATOR_FAIL+1))
+    fi
+done
+for bad in "not-ip" "1.2.3" "1.2.3.4.5" "example.com" "1.2.3.4/99" ""; do
+    if (swatter_validate_ip_or_cidr "$bad") 2>/dev/null; then
+        echo "FAIL validator should-reject: $bad"; VALIDATOR_FAIL=$((VALIDATOR_FAIL+1))
+    else
+        VALIDATOR_PASS=$((VALIDATOR_PASS+1))
+    fi
+done
+printf '  validator: %d passed, %d failed\n' "$VALIDATOR_PASS" "$VALIDATOR_FAIL"
+(( VALIDATOR_FAIL == 0 )) || FAIL=$((FAIL+1))
+
+# Test "already allowed" logic (awk $1 == ip) with temp file
+# Note: the check matches the *stored token* exactly (so "198.51.100.0/24" matches only when querying the cidr itself; per-ip membership is handled later by _ip_in_cidr_file).
+ALLOW_PASS=0 ALLOW_FAIL=0
+allowtmp="$(mktemp "${TMPDIR:-/tmp}/swatter-allowtest.XXXXXX")"
+printf '203.0.113.5 # office\n198.51.100.0/24 # client\n2001:db8::/32 # v6\n' > "$allowtmp"
+if awk -v ip="203.0.113.5" '$1 == ip { found=1; exit } END { exit !found }' "$allowtmp"; then ALLOW_PASS=$((ALLOW_PASS+1)); else echo "FAIL already-allow exact ip"; ALLOW_FAIL=$((ALLOW_FAIL+1)); fi
+if awk -v ip="198.51.100.0/24" '$1 == ip { found=1; exit } END { exit !found }' "$allowtmp"; then ALLOW_PASS=$((ALLOW_PASS+1)); else echo "FAIL already-allow exact cidr token"; ALLOW_FAIL=$((ALLOW_FAIL+1)); fi
+if awk -v ip="10.0.0.1" '$1 == ip { found=1; exit } END { exit !found }' "$allowtmp"; then echo "FAIL already-allow should miss"; ALLOW_FAIL=$((ALLOW_FAIL+1)); else ALLOW_PASS=$((ALLOW_PASS+1)); fi
+rm -f "$allowtmp"
+printf '  allow-already: %d passed, %d failed\n' "$ALLOW_PASS" "$ALLOW_FAIL"
+(( ALLOW_FAIL == 0 )) || FAIL=$((FAIL+1))
+
+echo
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

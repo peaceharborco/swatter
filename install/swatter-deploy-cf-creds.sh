@@ -59,11 +59,23 @@ ncreds="$(grep -cvE '^[[:space:]]*(#|$)' "$CREDS" | tr -d ' ')"
 echo "Deploying ${ncreds} account token(s) and ${ndoms} domain mapping(s) to ${HOST} ..."
 
 ssh "$HOST" 'mkdir -p /etc/swatter'
-scp -q "$CREDS" "${HOST}:/etc/swatter/cloudflare.creds"
-scp -q "$map"   "${HOST}:/etc/swatter/cf-domains.map"
-ssh "$HOST" 'chown root:root /etc/swatter/cloudflare.creds /etc/swatter/cf-domains.map
-             chmod 0600 /etc/swatter/cloudflare.creds
-             chmod 0644 /etc/swatter/cf-domains.map'
+
+# Deploy creds (the only secret) using stdin + restrictive umask so the file
+# is created 0600 from the start. Use .tmp + mv so the final name never
+# appears with loose permissions even for a moment.
+echo "  uploading Cloudflare creds (0600) ..."
+ssh "$HOST" 'umask 077; cat > /etc/swatter/cloudflare.creds.tmp' < "$CREDS"
+
+# Domain map is not secret.
+echo "  uploading domain map (0644) ..."
+ssh "$HOST" 'umask 022; cat > /etc/swatter/cf-domains.map.tmp' < "$map"
+
+# Atomically finalize with correct ownership and names.
+ssh "$HOST" 'chown root:root /etc/swatter/cloudflare.creds.tmp /etc/swatter/cf-domains.map.tmp
+             chmod 0600 /etc/swatter/cloudflare.creds.tmp
+             chmod 0644 /etc/swatter/cf-domains.map.tmp
+             mv /etc/swatter/cloudflare.creds.tmp /etc/swatter/cloudflare.creds
+             mv /etc/swatter/cf-domains.map.tmp /etc/swatter/cf-domains.map'
 
 echo "Deployed. Verifying on ${HOST}:"
 ssh "$HOST" '/usr/local/bin/swatter test-config | grep -iE "CF creds|CF domain|CF action|mode:"'

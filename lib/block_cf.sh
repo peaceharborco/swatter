@@ -78,6 +78,7 @@ _cf_zone_id() {
     [[ -n "$zid" ]] || return 1
     mkdir -p "${STATE_DIR}/cf-zones" 2>/dev/null || true
     printf '%s' "$zid" > "$cache" 2>/dev/null || true
+    chmod 0640 "$cache" 2>/dev/null || true
     printf '%s' "$zid"
 }
 
@@ -117,6 +118,7 @@ swatter_cf_block() {
         rid="$(printf '%s' "$resp" | jq -r '.result.id')"
         # Record the (zone,rule) ref so unblock/sweep are O(1).
         printf '%s\t%s\t%s\t%s\n' "$ip" "$zid" "$rid" "$expiry" >> "${STATE_DIR}/cf-rules.tsv" 2>/dev/null || true
+        chmod 0640 "${STATE_DIR}/cf-rules.tsv" 2>/dev/null || true
         log_info "cloudflare ${CF_ACTION} ${ip} in ${vhost} (zone ${zid}, acct ${acct})"
         return 0
     fi
@@ -125,7 +127,9 @@ swatter_cf_block() {
         log_info "cloudflare ${ip} already blocked in ${vhost}"
         return 0
     fi
-    log_warn "CF block ${ip} in ${vhost} failed: $(printf '%s' "$resp" | jq -rc '.errors // empty' 2>/dev/null)"
+    local err_summary
+    err_summary="$(printf '%s' "$resp" | jq -rc '[.errors[]?.message // .errors // "unknown error"] | join("; ")' 2>/dev/null | cut -c1-200)"
+    log_warn "CF block ${ip} in ${vhost} failed: ${err_summary}"
     return 1
 }
 

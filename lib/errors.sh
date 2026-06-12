@@ -176,6 +176,8 @@ swatter_errors_section() {
                 s#/[a-f0-9]{40}\.sock:[0-9]+#/<sock>#g;
                 s/\([a-z0-9.-]+\.[a-z]{2,}\)//g;
                 s/, referer: \S+//g;
+                s/[?&](password|passwd|key|token|secret|auth)=[^& ]+//gI;
+                s/=[A-Za-z0-9/+=]{24,}//g;
                 s/[[:space:]]+/ /g;
               ' | sort | uniq -c | sort -rn | head -25 \
               | awk '{n=$1; $1=""; sub(/^ /,""); printf "  %4d x  %s\n", n, $0}'

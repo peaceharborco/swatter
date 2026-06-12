@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # lib/store_sqlite.sh — offense/decision ledger.
 #
+# NOTE: This file assumes lib/common.sh has already been sourced (provides
+# swatter_validate_ip_or_cidr, die, swatter_now, swatter_store_init callers
+# expect the globals and functions). Normal entrypoint (bin/swatter) ensures
+# the correct load order.
+#
 # Tracks per-IP offense history (for repeat-offender escalation) and an append
 # log of every action taken. Primary backend is SQLite; a flatfile JSONL
 # fallback is used automatically when sqlite3 is absent (see common.sh dep check
@@ -37,15 +42,24 @@ SQL
 _sql() { sqlite3 "$(_swatter_db)" "$@" 2>/dev/null; }
 _sqlq() { sqlite3 "$(_swatter_db)" "$1" 2>/dev/null; }
 
+# Proper escaping for a value that will be placed inside a single-quoted
+# SQLite string literal ( '  -->  '' ). Defense in depth; called with IPs
+# that have already been validated by the CLI or scoring path.
+_sql_escape() {
+    printf '%s' "${1//\'/\'\'}"
+}
+
 # Count REAL temp blocks for an IP within the repeat window (used for
 # escalation). Only enforced blocks (dry_run=0) count — a report-mode detection
 # means "we watched and did nothing," so it must not drive a real permanent ban
 # the moment enforce is switched on.
 swatter_store_recent_temp_count() {
     local ip="$1" since
+    swatter_validate_ip_or_cidr "$ip"
     since=$(( $(swatter_now) - REPEAT_WINDOW_DAYS*86400 ))
+    local sip; sip="$(_sql_escape "$ip")"
     if [[ "${STORE}" == "sqlite" ]]; then
-        _sqlq "SELECT COUNT(*) FROM actions WHERE ip='${ip//\'/}' AND action='temp' AND dry_run=0 AND ts>${since};"
+        _sqlq "SELECT COUNT(*) FROM actions WHERE ip='${sip}' AND action='temp' AND dry_run=0 AND ts>${since};"
     else
         awk -F'"' -v ip="$ip" -v since="$since" '
             /"action":"temp"/ && /"dry_run":0/ {
@@ -60,8 +74,10 @@ swatter_store_recent_temp_count() {
 # Is the IP already permanently blocked?
 swatter_store_is_perm() {
     local ip="$1"
+    swatter_validate_ip_or_cidr "$ip"
+    local sip; sip="$(_sql_escape "$ip")"
     if [[ "${STORE}" == "sqlite" ]]; then
-        [[ "$(_sqlq "SELECT perm FROM offenders WHERE ip='${ip//\'/}';")" == "1" ]]
+        [[ "$(_sqlq "SELECT perm FROM offenders WHERE ip='${sip}';")" == "1" ]]
     else
         grep -qF "\"ip\":\"${ip}\",\"action\":\"perm\"" "$(_swatter_jsonl)" 2>/dev/null
     fi
@@ -72,7 +88,8 @@ swatter_store_is_perm() {
 swatter_store_record() {
     local ip="$1" action="$2" channel="$3" ttl="$4" score="$5" reason="$6" dry="$7"
     local now; now="$(swatter_now)"
-    local sip="${ip//\'/}" sreason="${reason//\'/}"
+    local sip; sip="$(_sql_escape "$ip")"
+    local sreason; sreason="$(_sql_escape "$reason")"
 
     if [[ "${STORE}" == "sqlite" ]]; then
         _sql "INSERT INTO actions(ip,ts,action,channel,ttl,score,reason,dry_run)
@@ -111,9 +128,11 @@ swatter_store_top_offenders() {
 
 swatter_store_history() {
     local ip="$1"
+    swatter_validate_ip_or_cidr "$ip"
+    local sip; sip="$(_sql_escape "$ip")"
     if [[ "${STORE}" == "sqlite" ]]; then
         _sqlq "SELECT datetime(ts,'unixepoch'),action,channel,ttl,score,reason
-               FROM actions WHERE ip='${ip//\'/}' ORDER BY ts DESC LIMIT 50;" | sed 's/|/\t/g'
+               FROM actions WHERE ip='${sip}' ORDER BY ts DESC LIMIT 50;" | sed 's/|/\t/g'
     else
         grep -F "\"ip\":\"${ip}\"" "$(_swatter_jsonl)" 2>/dev/null | tail -n 50
     fi
@@ -122,6 +141,8 @@ swatter_store_history() {
 # Mark an IP unblocked / allowlisted in the ledger.
 swatter_store_unblock() {
     local ip="$1"
+    swatter_validate_ip_or_cidr "$ip"
     swatter_store_record "$ip" "unblock" "none" 0 0 "manual unblock" 0
-    [[ "${STORE}" == "sqlite" ]] && _sql "UPDATE offenders SET perm=0 WHERE ip='${ip//\'/}';"
+    local sip; sip="$(_sql_escape "$ip")"
+    [[ "${STORE}" == "sqlite" ]] && _sql "UPDATE offenders SET perm=0 WHERE ip='${sip}';"
 }

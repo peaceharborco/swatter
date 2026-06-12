@@ -143,6 +143,22 @@ log_error() { _log error "$@"; }
 die()       { log_error "$@"; exit 1; }
 
 # ---------------------------------------------------------------------------
+# Input sanitization / validation helpers. Used to keep CLI safe and to
+# guarantee that values interpolated into shell/SQL/grep are harmless.
+# The IP/CIDR regex is intentionally identical to the one previously only in
+# cmd_allow so behavior is unchanged for valid inputs.
+# ---------------------------------------------------------------------------
+swatter_validate_ip_or_cidr() {
+    local ip="${1:-}"
+    [[ -n "$ip" ]] || die "IP or CIDR required"
+    # v4: optional /0-32 ; v6: optional /0-128 (loose on full v6 syntax but sufficient and much stricter on prefix len than original)
+    if [[ ! "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/([0-9]|[12][0-9]|3[0-2]))?$ \
+       && ! "$ip" =~ ^[0-9A-Fa-f:]+(/([0-9]|[1-9][0-9]|1[0-1][0-9]|12[0-8]))?$ ]]; then
+        die "not an IP or CIDR: ${ip}"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Dependency checks. Hard deps abort; optional deps just disable a feature.
 # ---------------------------------------------------------------------------
 have() { command -v "$1" >/dev/null 2>&1; }

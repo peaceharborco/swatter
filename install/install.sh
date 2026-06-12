@@ -62,6 +62,18 @@ _install_remote() {
     ssh "$dest" 'rm -rf /tmp/swatter-src && mkdir -p /tmp/swatter-src'
     # Copy the tree (bin, lib, config, install).
     scp -q -r "${SRC}/bin" "${SRC}/lib" "${SRC}/config" "${SRC}/install" "${dest}:/tmp/swatter-src/"
+    # Integrity check: compute tree hash locally and remotely; abort on mismatch (detects corruption/tampering during transfer).
+    local local_hash
+    local_hash="$(cd "${SRC}" && find bin lib config install -type f -exec sha256sum {} + | sort | sha256sum | cut -d' ' -f1)"
+    echo "  local tree hash: ${local_hash}"
+    local remote_hash
+    remote_hash="$(ssh "$dest" 'cd /tmp/swatter-src && find bin lib config install -type f -exec sha256sum {} + 2>/dev/null | sort | sha256sum | cut -d" " -f1')" || remote_hash="error"
+    echo "  remote tree hash: ${remote_hash}"
+    if [[ "${local_hash}" != "${remote_hash}" ]]; then
+        echo "ERROR: tree hash mismatch after scp — aborting remote install for safety" >&2
+        ssh "$dest" 'rm -rf /tmp/swatter-src' || true
+        exit 1
+    fi
     echo "running local install on ${dest} ..."
     ssh "$dest" 'bash /tmp/swatter-src/install/install.sh local'
     ssh "$dest" 'rm -rf /tmp/swatter-src'
