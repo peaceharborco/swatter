@@ -124,11 +124,16 @@ _swatter_is_good_crawler() {
         fi
     fi
 
+    # Hard-bound every resolver call: abusive networks blackhole PTR queries,
+    # and a single unanswered lookup otherwise hangs the whole scan under the
+    # flock — Swatter stays down until someone kills the stuck pipeline.
+    local tmo=()
+    have timeout && tmo=(timeout 5)
     local ptr verdict="no"
     if have host; then
-        ptr="$(host "$ip" 2>/dev/null | awk '/pointer|domain name pointer/{print $NF; exit}' | sed 's/\.$//')"
+        ptr="$("${tmo[@]}" host -W 2 "$ip" 2>/dev/null | awk '/pointer|domain name pointer/{print $NF; exit}' | sed 's/\.$//')"
     else
-        ptr="$(dig +short -x "$ip" 2>/dev/null | head -1 | sed 's/\.$//')"
+        ptr="$("${tmo[@]}" dig +time=2 +tries=1 +short -x "$ip" 2>/dev/null | head -1 | sed 's/\.$//')"
     fi
     # ONLY crawler-specific hostnames — NOT generic cloud PTRs. googleusercontent.com
     # (GCP customer VMs), amazonaws.com, etc. are attacker-rentable and must never
@@ -136,8 +141,8 @@ _swatter_is_good_crawler() {
     if [[ "$ptr" =~ \.(googlebot\.com|google\.com|search\.msn\.com|applebot\.apple\.com|duckduckgo\.com|crawl\.yahoo\.net|yandex\.(com|ru|net))$ ]]; then
         # Forward-confirm.
         local fwd
-        if have host; then fwd="$(host "$ptr" 2>/dev/null | awk '/has address|has IPv6/{print $NF}')"
-        else fwd="$(dig +short "$ptr" 2>/dev/null)"; fi
+        if have host; then fwd="$("${tmo[@]}" host -W 2 "$ptr" 2>/dev/null | awk '/has address|has IPv6/{print $NF}')"
+        else fwd="$("${tmo[@]}" dig +time=2 +tries=1 +short "$ptr" 2>/dev/null)"; fi
         if grep -qxF "$ip" <<<"$fwd"; then verdict="yes"; fi
     fi
     mkdir -p "${STATE_DIR}/intel/crawler" 2>/dev/null || true
