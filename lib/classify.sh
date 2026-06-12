@@ -27,6 +27,10 @@ swatter_cf_in_use() {
 # connections logged against cPanel service ports (2082/2083/2086/2087/2095/2096
 # /2077/2078) or raw web ports by IP are not proxied by Cloudflare. Cached in a
 # temp file path stored in SWATTER_DIRECT_SET.
+#
+# Only lines inside the scoring window count. Stale lfd history must not grant
+# "direct" evidence: a customer who once touched a cPanel port would otherwise
+# be CSF-denied (mail/cPanel lockout) for an offense that arrived via the proxy.
 swatter_build_direct_set() {
     local out; out="$(mktemp "${TMPDIR:-/tmp}/swatter-direct.XXXXXX")"
     SWATTER_DIRECT_SET="$out"
@@ -36,7 +40,20 @@ swatter_build_direct_set() {
     # tracking / port-scan lines. Pull any IPv4 that appears with a cPanel port.
     local now cutoff
     now="$(swatter_now)"; cutoff=$(( now - WINDOW_SECONDS ))
-    grep -aE '(2082|2083|2086|2087|2095|2096|2077|2078)' "${LFD_LOG}" 2>/dev/null \
+    gawk -v cutoff="$cutoff" -v now="$now" '
+        BEGIN {
+            split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", mn, " ")
+            for (i = 1; i <= 12; i++) mon[mn[i]] = i
+            year = strftime("%Y", now) + 0
+        }
+        /2082|2083|2086|2087|2095|2096|2077|2078/ {
+            # syslog stamp: "Mon dd HH:MM:SS" in local time, no year.
+            if (!($1 in mon) || split($3, t, ":") != 3) next
+            ts = mktime(year " " mon[$1] " " $2 " " t[1] " " t[2] " " t[3])
+            if (ts > now + 86400)   # "future" stamp = line from last year
+                ts = mktime((year - 1) " " mon[$1] " " $2 " " t[1] " " t[2] " " t[3])
+            if (ts >= cutoff) print
+        }' "${LFD_LOG}" 2>/dev/null \
         | grep -aoE '([0-9]{1,3}\.){3}[0-9]{1,3}' \
         | sort -u > "$out" 2>/dev/null || true
 }
