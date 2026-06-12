@@ -8,8 +8,9 @@
 #   - operator IPs (config) and monitoring ranges (file)
 #   - forward-confirmed good crawlers (Googlebot/Bingbot/etc.)
 #
-# CIDR membership is computed in awk over 32-bit integers (IPv4). IPv6 is matched
-# by prefix string (conservative; prefer Cloudflare-plane handling for v6).
+# CIDR membership is computed in awk over 32-bit integers (IPv4) and in bash
+# over expanded 128-bit nibble strings (IPv6) — exact prefix-length matching
+# on both families.
 #
 # A compiled-in Cloudflare range fallback guarantees the never-block set is never
 # empty even if `refresh-feeds` has not yet run — the README's safety promise must
@@ -27,32 +28,74 @@ _ip2int() {
     printf '%u' "$(( (a<<24) + (b<<16) + (c<<8) + d ))"
 }
 
+# Expand an IPv6 address to its full 128-bit value as 32 lowercase hex
+# nibbles (no colons): handles :: compression and a trailing embedded IPv4
+# dotted quad (::ffff:1.2.3.4). Echoes nothing / returns 1 on malformed input.
+_ipv6_expand() {
+    local a="${1,,}"
+    # Embedded IPv4 tail -> two hextets.
+    if [[ "$a" == *.* ]]; then
+        local v4int
+        v4int="$(_ip2int "${a##*:}")" || return 1
+        a="$(printf '%s:%x:%x' "${a%:*}" $(( v4int >> 16 )) $(( v4int & 65535 )))"
+    fi
+    local -a L=() R=()
+    local compressed=0
+    if [[ "$a" == *::* ]]; then
+        [[ "$a" == *::*::* ]] && return 1          # at most one ::
+        compressed=1
+        IFS=: read -ra L <<<"${a%%::*}"
+        IFS=: read -ra R <<<"${a#*::}"
+    else
+        IFS=: read -ra L <<<"$a"
+    fi
+    local n=$(( ${#L[@]} + ${#R[@]} ))
+    if (( compressed )); then (( n <= 8 )) || return 1
+    else (( n == 8 )) || return 1; fi
+    local out="" g i
+    for g in ${L[@]+"${L[@]}"}; do
+        [[ "$g" =~ ^[0-9a-f]{1,4}$ ]] || return 1
+        out+="$(printf '%04x' "0x$g")"
+    done
+    for (( i = n; i < 8; i++ )); do out+="0000"; done
+    for g in ${R[@]+"${R[@]}"}; do
+        [[ "$g" =~ ^[0-9a-f]{1,4}$ ]] || return 1
+        out+="$(printf '%04x' "0x$g")"
+    done
+    printf '%s' "$out"
+}
+
+# _ipv6_in_prefix <ip-nibbles> <net-nibbles> <plen> : exact membership over
+# the expanded forms — whole nibbles string-compared, the partial nibble
+# masked to its significant bits.
+_ipv6_in_prefix() {
+    local ipx="$1" netx="$2" plen="$3"
+    [[ "$plen" =~ ^[0-9]+$ ]] || return 1
+    plen=$(( 10#$plen ))   # "09" must parse as 9, not octal
+    (( plen <= 128 )) || return 1
+    (( plen == 0 )) && return 0
+    local nib=$(( plen / 4 )) rem=$(( plen % 4 ))
+    [[ "${ipx:0:nib}" == "${netx:0:nib}" ]] || return 1
+    (( rem == 0 )) && return 0
+    local mask=$(( (15 << (4 - rem)) & 15 ))
+    (( ( 0x${ipx:nib:1} & mask ) == ( 0x${netx:nib:1} & mask ) ))
+}
+
 # _ip_in_cidr_file <ip> <file> : 0 if ip falls in any CIDR/IP line of file.
 # Comments (#) and blanks ignored. Handles bare IPs and a.b.c.d/len.
 _ip_in_cidr_file() {
     local ip="$1" file="$2" ipint
     [[ -f "$file" ]] || return 1
-    # IPv6: conservative prefix match (full 128-bit math is heavy in pure shell/awk).
-    # Respects /len approximately by matching the leading significant part of the address.
-    # Safer for never-block (may over-match some addresses in the same /48 etc.).
     if [[ "$ip" == *:* ]]; then
-        local pfx
+        local ipx pfx net plen netx
+        ipx="$(_ipv6_expand "$ip")" || return 1
         while IFS= read -r pfx; do
             pfx="${pfx%%#*}"; pfx="${pfx//[[:space:]]/}"
-            [[ -z "$pfx" ]] && continue
-            [[ "$pfx" != *:* ]] && continue
-            local net="${pfx%%/*}" plen="${pfx##*/}"
+            [[ -z "$pfx" || "$pfx" != *:* ]] && continue
+            net="${pfx%%/*}" plen="${pfx##*/}"
             [[ "$plen" == "$pfx" ]] && plen=128
-            # Compute rough char prefix length (4 bits per hex char, ignore : for simplicity)
-            local matchlen=$(( (plen + 3) / 4 ))
-            local ip_prefix="${ip%%:*}"   # rough leading
-            # Better: use the net as the prefix anchor (current behavior) + length hint
-            [[ -n "$net" && "$ip" == "$net"* ]] && return 0
-            # Additional: if plen allows, allow looser on :: compression cases
-            if (( plen <= 64 )); then
-                local shortnet="${net%%::*}::"
-                [[ "$ip" == "$shortnet"* ]] && return 0
-            fi
+            netx="$(_ipv6_expand "$net")" || continue
+            _ipv6_in_prefix "$ipx" "$netx" "$plen" && return 0
         done < "$file"
         return 1
     fi
@@ -157,9 +200,7 @@ _swatter_is_good_crawler() {
         if grep -qxF "$ip" <<<"$fwd"; then verdict="yes"; fi
     fi
     mkdir -p "${STATE_DIR}/intel/crawler" 2>/dev/null || true
-    chmod 0750 "${STATE_DIR}/intel/crawler" 2>/dev/null || true
     printf '%s' "$verdict" > "$cache" 2>/dev/null || true
-    chmod 0640 "$cache" 2>/dev/null || true
     [[ "$verdict" == "yes" ]]
 }
 

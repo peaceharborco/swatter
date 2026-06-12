@@ -148,14 +148,24 @@ die()       { log_error "$@"; exit 1; }
 # The IP/CIDR regex is intentionally identical to the one previously only in
 # cmd_allow so behavior is unchanged for valid inputs.
 # ---------------------------------------------------------------------------
+# Non-fatal predicate: 0 if the value looks like an IP or CIDR. Internal
+# paths (store layer, sweeps) use this and degrade gracefully — a malformed
+# token parsed out of a log line must never kill a run.
+swatter_is_valid_ip_or_cidr() {
+    local ip="${1:-}"
+    [[ -n "$ip" ]] || return 1
+    # v4: optional /0-32 ; v6: optional /0-128 (loose on full v6 syntax but sufficient and much stricter on prefix len than original)
+    [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/([0-9]|[12][0-9]|3[0-2]))?$ ]] && return 0
+    [[ "$ip" =~ ^[0-9A-Fa-f:]+(/([0-9]|[1-9][0-9]|1[0-1][0-9]|12[0-8]))?$ ]] && return 0
+    return 1
+}
+
+# Fatal wrapper for CLI entry points (why/unblock/allow), where the value came
+# from the operator and a bad one should abort with a usage error.
 swatter_validate_ip_or_cidr() {
     local ip="${1:-}"
     [[ -n "$ip" ]] || die "IP or CIDR required"
-    # v4: optional /0-32 ; v6: optional /0-128 (loose on full v6 syntax but sufficient and much stricter on prefix len than original)
-    if [[ ! "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/([0-9]|[12][0-9]|3[0-2]))?$ \
-       && ! "$ip" =~ ^[0-9A-Fa-f:]+(/([0-9]|[1-9][0-9]|1[0-1][0-9]|12[0-8]))?$ ]]; then
-        die "not an IP or CIDR: ${ip}"
-    fi
+    swatter_is_valid_ip_or_cidr "$ip" || die "not an IP or CIDR: ${ip}"
 }
 
 # ---------------------------------------------------------------------------

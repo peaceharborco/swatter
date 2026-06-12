@@ -64,7 +64,9 @@ _install_remote() {
     scp -q -r "${SRC}/bin" "${SRC}/lib" "${SRC}/config" "${SRC}/install" "${dest}:/tmp/swatter-src/"
     # Integrity check: compute tree hash locally and remotely; abort on mismatch (detects corruption/tampering during transfer).
     local local_hash
-    local_hash="$(cd "${SRC}" && find bin lib config install -type f -exec sha256sum {} + | sort | sha256sum | cut -d' ' -f1)"
+    # -L: scp materializes symlinks as regular files remotely, so the local
+    # walk must hash targets too or the hashes can never agree.
+    local_hash="$(cd "${SRC}" && find -L bin lib config install -type f -exec sha256sum {} + | sort | sha256sum | cut -d' ' -f1)"
     echo "  local tree hash: ${local_hash}"
     local remote_hash
     remote_hash="$(ssh "$dest" 'cd /tmp/swatter-src && find bin lib config install -type f -exec sha256sum {} + 2>/dev/null | sort | sha256sum | cut -d" " -f1')" || remote_hash="error"

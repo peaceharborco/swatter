@@ -51,9 +51,7 @@ _intel_cache_put() {
     local prov="$1" ip="$2" score="$3" label="$4"
     local d="${STATE_DIR}/intel/${prov}"
     mkdir -p "$d" 2>/dev/null || return 0
-    chmod 0750 "$d" 2>/dev/null || true
     printf '%s\t%s\n' "$score" "$label" > "${d}/${ip}" 2>/dev/null || true
-    chmod 0640 "${d}/${ip}" 2>/dev/null || true
 }
 
 # swatter_intel_score <ip> : echoes "score\tlabel" (max across providers).

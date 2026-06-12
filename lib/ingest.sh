@@ -24,6 +24,14 @@ _swatter_parse() {
         {
             ip = $1
             if (ip == "" || ip == "-") next
+            # Canonicalize here so every downstream consumer (allowlist math,
+            # CSF denies, CF rules, the ledger) sees the real address:
+            # zone-id suffixes (fe80::1%eth0) are local noise, and a v4-mapped
+            # IPv6 form (::ffff:1.2.3.4) is just IPv4 logged off a v6 socket —
+            # blocking the mapped form would never match the client.
+            sub(/%.*$/, "", ip)
+            if (ip ~ /^::[fF][fF][fF][fF]:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/)
+                sub(/^::[fF][fF][fF][fF]:/, "", ip)
 
             # Timestamp: [dd/Mon/yyyy:HH:MM:SS +zzzz]
             lb = index($0, "[")

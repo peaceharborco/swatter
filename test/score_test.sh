@@ -163,7 +163,9 @@ echo "=== validator + allowlist logic tests ==="
 # Test swatter_validate_ip_or_cidr (from common)
 VALIDATOR_PASS=0 VALIDATOR_FAIL=0
 for good in 1.2.3.4 192.168.0.1/24 2001:db8::1 2001:db8:1:2::/64 ::1; do
-    if swatter_validate_ip_or_cidr "$good" 2>/dev/null; then
+    # Subshell: a wrongly-rejecting validator die()s, which must fail this case,
+    # not abort the whole suite.
+    if (swatter_validate_ip_or_cidr "$good") 2>/dev/null; then
         VALIDATOR_PASS=$((VALIDATOR_PASS+1))
     else
         echo "FAIL validator good: $good"; VALIDATOR_FAIL=$((VALIDATOR_FAIL+1))
@@ -190,6 +192,155 @@ if awk -v ip="10.0.0.1" '$1 == ip { found=1; exit } END { exit !found }' "$allow
 rm -f "$allowtmp"
 printf '  allow-already: %d passed, %d failed\n' "$ALLOW_PASS" "$ALLOW_FAIL"
 (( ALLOW_FAIL == 0 )) || FAIL=$((FAIL+1))
+
+echo
+echo "=== IPv6 allowlist prefix matching ==="
+# shellcheck source=../lib/allowlist.sh
+source "${ROOT}/lib/allowlist.sh"
+V6_PASS=0 V6_FAIL=0
+
+# v6_check <file> <ip> <yes|no> <name>
+v6_check() {
+    local file="$1" ip="$2" want="$3" name="$4" got=no
+    _ip_in_cidr_file "$ip" "$file" && got=yes
+    if [[ "$got" == "$want" ]]; then
+        V6_PASS=$((V6_PASS+1))
+    else
+        echo "FAIL v6-match ${name}: ${ip} want=${want} got=${got}"
+        V6_FAIL=$((V6_FAIL+1))
+    fi
+}
+
+# A /32 must cover every address in it, not just those that share the
+# compressed-string prefix of the network address.
+printf '2001:db8::/32 # docs range\n' > "$tmp/v6-range.txt"
+v6_check "$tmp/v6-range.txt" 2001:db8::1            yes compressed-in-range
+v6_check "$tmp/v6-range.txt" 2001:db8:1::1          yes subnet-in-range
+v6_check "$tmp/v6-range.txt" 2001:db8:ffff:abcd::9  yes deep-in-range
+v6_check "$tmp/v6-range.txt" 2001:db8a::1           no  char-prefix-near-miss
+v6_check "$tmp/v6-range.txt" 2001:db9::1            no  adjacent-range
+
+# A /128 is a single host — string-prefix matching must not bleed onto ::50.
+printf '2607:db8::5/128 # single host\n' > "$tmp/v6-host.txt"
+v6_check "$tmp/v6-host.txt" 2607:db8::5   yes host-rule-exact
+v6_check "$tmp/v6-host.txt" 2607:db8::50  no  host-rule-over-match
+
+# Uncompressed entries must match compressed candidates and vice versa.
+printf '2607:f8b0:4005:80a:0:0:0:200e/64 # uncompressed\n' > "$tmp/v6-uncomp.txt"
+v6_check "$tmp/v6-uncomp.txt" 2607:f8b0:4005:80a::1    yes uncompressed-entry-match
+v6_check "$tmp/v6-uncomp.txt" 2607:f8b0:4005:80b::1    no  uncompressed-entry-miss
+
+# Bare entry (no /len) is /128.
+printf '2001:db8::7\n' > "$tmp/v6-bare.txt"
+v6_check "$tmp/v6-bare.txt" 2001:db8::7  yes bare-entry-exact
+v6_check "$tmp/v6-bare.txt" 2001:db8::70 no  bare-entry-over-match
+
+printf '  v6-match: %d passed, %d failed\n' "$V6_PASS" "$V6_FAIL"
+(( V6_FAIL == 0 )) || FAIL=$((FAIL+1))
+
+echo
+echo "=== ingest IP normalization ==="
+ING_PASS=0 ING_FAIL=0
+
+# ing_check <raw-ip> <want-ip> <name>
+ing_check() {
+    local raw="$1" want="$2" name="$3" got
+    got="$(printf '%s - - [10/Jun/2026:12:05:00 +0000] "GET / HTTP/1.1" 200 123 "-" "Mozilla/5.0"\n' "$raw" \
+        | _swatter_parse example.com | awk -F'\t' '{print $1; exit}')"
+    if [[ "$got" == "$want" ]]; then
+        ING_PASS=$((ING_PASS+1))
+    else
+        echo "FAIL ingest ${name}: want=${want} got=${got}"
+        ING_FAIL=$((ING_FAIL+1))
+    fi
+}
+
+ing_check "::ffff:198.51.100.7" "198.51.100.7" v4-mapped-lower
+ing_check "::FFFF:198.51.100.7" "198.51.100.7" v4-mapped-upper
+ing_check "fe80::1%eth0"        "fe80::1"      zone-id-stripped
+ing_check "203.0.113.9"         "203.0.113.9"  plain-v4-untouched
+ing_check "2001:db8::1"         "2001:db8::1"  plain-v6-untouched
+
+printf '  ingest-normalize: %d passed, %d failed\n' "$ING_PASS" "$ING_FAIL"
+(( ING_FAIL == 0 )) || FAIL=$((FAIL+1))
+
+echo
+echo "=== store guards: malformed ip must never be fatal ==="
+# shellcheck source=../lib/store_sqlite.sh
+source "${ROOT}/lib/store_sqlite.sh"
+STORE=flatfile
+STATE_DIR="$tmp/state"; mkdir -p "$STATE_DIR"
+REPEAT_WINDOW_DAYS=7
+LOG_LEVEL="${LOG_LEVEL:-info}"
+swatter_store_init
+ST_PASS=0 ST_FAIL=0
+
+# st_check <name> <expected-tail> <cmd...> — run cmd in a subshell, echo a
+# sentinel after it; if the function die()s the sentinel never prints.
+st_check() {
+    local name="$1"; shift
+    local out
+    out="$( ( "$@" ; echo "__alive__" ) 2>/dev/null )"
+    if [[ "$out" == *__alive__* ]]; then
+        ST_PASS=$((ST_PASS+1))
+    else
+        echo "FAIL store-guard ${name}: function exited the shell"
+        ST_FAIL=$((ST_FAIL+1))
+    fi
+}
+
+st_check is-perm-survives          swatter_store_is_perm "::ffff:1.2.3.4"
+st_check temp-count-survives       swatter_store_recent_temp_count "%%bogus%%"
+st_check record-survives           swatter_store_record "bogus;ip" temp csf 60 90 "r" 0
+st_check history-survives          swatter_store_history "not-an-ip"
+st_check unblock-survives          swatter_store_unblock "not-an-ip"
+
+# temp-count on a malformed ip must still yield a numeric 0 for callers.
+got_cnt="$( (swatter_store_recent_temp_count "%%bogus%%") 2>/dev/null )"
+if [[ "$got_cnt" == "0" ]]; then
+    ST_PASS=$((ST_PASS+1))
+else
+    echo "FAIL store-guard temp-count-zero: want 0 got '${got_cnt}'"
+    ST_FAIL=$((ST_FAIL+1))
+fi
+
+# a refused record must not land in the ledger.
+if grep -qF 'bogus;ip' "$STATE_DIR/ledger.jsonl" 2>/dev/null; then
+    echo "FAIL store-guard record-refused: malformed ip was recorded"
+    ST_FAIL=$((ST_FAIL+1))
+else
+    ST_PASS=$((ST_PASS+1))
+fi
+
+printf '  store-guards: %d passed, %d failed\n' "$ST_PASS" "$ST_FAIL"
+(( ST_FAIL == 0 )) || FAIL=$((FAIL+1))
+
+echo
+echo "=== CF error summary ==="
+# shellcheck source=../lib/block_cf.sh
+source "${ROOT}/lib/block_cf.sh"
+CF_PASS=0 CF_FAIL=0
+
+# cfe_check <json> <want> <name>
+cfe_check() {
+    local json="$1" want="$2" name="$3" got
+    got="$(printf '%s' "$json" | _cf_err_summary 2>/dev/null)"
+    if [[ "$got" == "$want" ]]; then
+        CF_PASS=$((CF_PASS+1))
+    else
+        echo "FAIL cf-err ${name}: want='${want}' got='${got}'"
+        CF_FAIL=$((CF_FAIL+1))
+    fi
+}
+
+cfe_check '{"success":false,"errors":[{"message":"auth error"},{"message":"second"}]}' "auth error; second" messages-joined
+cfe_check '{"success":false,"errors":[]}'              "unknown error" empty-errors
+cfe_check '{"success":false,"errors":[{"code":10000}]}' "unknown error" message-less
+cfe_check '{"success":false}'                           "unknown error" no-errors-field
+cfe_check 'not json at all'                             "unknown error" non-json
+
+printf '  cf-err-summary: %d passed, %d failed\n' "$CF_PASS" "$CF_FAIL"
+(( CF_FAIL == 0 )) || FAIL=$((FAIL+1))
 
 echo
 echo "----------------------------------------"
