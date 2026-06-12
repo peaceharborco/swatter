@@ -158,6 +158,15 @@ swatter_scan() {
                 else swatter_csf_temp "$ip" "$ttl" "$reason" && did=1; fi
             else
                 channel="cloudflare"
+                # CF_MODE=skip: the operator runs their own Cloudflare WAF/rules
+                # stack and owns the proxied realm. Record the decision so the
+                # digest shows what the edge is expected to handle, but act on
+                # nothing — and never fall through to CSF, where a proxied
+                # client's IP would cost them mail/cPanel.
+                if [[ "${CF_MODE}" != "direct" ]]; then
+                    _swatter_audit "$ip" "$folded" "skipped-cf-plane" "$channel" 0 "${reason} cf_mode=${CF_MODE}" "$ev" "$rep"
+                    continue
+                fi
                 # Cloudflare plane has no "permanent" vs temp distinction here; a
                 # perm decision just uses the longest TTL.
                 [[ "$action" == "perm" ]] && ttl="$(_swatter_pick_ttl 99)"

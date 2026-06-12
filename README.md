@@ -36,8 +36,10 @@ Swatter is built around this. For every offender it decides:
 
 - **Direct-to-origin** (hit your raw IP or cPanel service ports, bypassing
   Cloudflare) → block at **CSF**. Safe: the socket really is the attacker.
-- **Via Cloudflare** (came through the proxy) → block at the **Cloudflare WAF**
-  via API. The CSF plane is never touched.
+- **Via Cloudflare** (came through the proxy) → a zone-scoped **Cloudflare IP
+  Access Rule** via API, a **managed challenge** by default — so a false
+  positive means a human solves a challenge, not a lockout. The CSF plane is
+  never touched.
 - **Ambiguous** → defaults to the Cloudflare plane (the safe one).
 
 Cloudflare's own ranges are a hardcoded **never-block** set, re-checked
@@ -45,8 +47,21 @@ immediately before every single block. If the range list ever goes missing or
 stale, Swatter **fails closed** — it stops issuing CSF denies entirely rather than
 risk an outage.
 
-Not behind Cloudflare? Set `CF_MODE="off"` and Swatter is a straightforward CSF
-auto-blocker. Zero Cloudflare config required.
+Three Cloudflare postures (`CF_MODE`):
+
+| Mode | Your setup | Via-CF offenders | Direct offenders |
+|---|---|---|---|
+| `direct` | Behind CF, Swatter is the defense | challenged/blocked via API | CSF |
+| `skip` | Behind CF, **you** run your own WAF rules stack | logged, left to your edge rules | CSF |
+| `off` | Not behind Cloudflare at all | n/a — everything is direct | CSF |
+
+If you maintain your own Cloudflare WAF rules, rate limits, and login-page
+protections, run `skip`: Swatter stays out of the realm you already manage but
+still swats raw-IP scanners at CSF and logs what it would have challenged. Do
+**not** use `off` on a proxied server to mean "hands off Cloudflare" — `off`
+disables the plane classification itself, so proxied visitors (your own
+customers included) can be misrouted to a CSF deny that also takes out their
+mail and cPanel access.
 
 The closest tool in spirit is [CrowdSec](https://crowdsec.net) with its
 Cloudflare bouncer, and it's good — if you want a daemon, a central reputation

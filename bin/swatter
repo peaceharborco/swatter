@@ -219,6 +219,12 @@ cmd_test_config() {
     local n=0 f
     for f in ${DOMLOGS_GLOB}; do [[ -f "$f" ]] && n=$(( n + 1 )); done
     echo "  domlogs:        ${n} files match ${DOMLOGS_GLOB}"
+    case "${CF_MODE}" in
+        direct) echo "  CF mode:        direct (Swatter manages the Cloudflare plane)" ;;
+        skip)   echo "  CF mode:        skip (your own edge rules own the CF plane; via-CF offenders logged only)" ;;
+        off)    echo "  CF mode:        off (not behind Cloudflare; everything is CSF-direct)" ;;
+        *)      echo "  CF mode:        ${CF_MODE} (UNKNOWN — expected direct|skip|off; via-CF offenders will be logged, not acted on)" ;;
+    esac
     if [[ "${CF_MODE}" == "direct" ]]; then
         local ncreds=0 ndoms=0
         [[ -r "${CF_CREDS_FILE}" ]] && ncreds="$(grep -cvE '^[[:space:]]*(#|$)' "${CF_CREDS_FILE}" 2>/dev/null || echo 0)"

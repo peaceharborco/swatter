@@ -17,6 +17,12 @@
 
 # Is Cloudflare actually fronting this server? If not, all traffic is direct and
 # CSF is always the right (and only) plane.
+#
+# "off" means NOT BEHIND CLOUDFLARE — it disables classification entirely and
+# every offender becomes DIRECT/CSF. Never set "off" on a CF-fronted box to mean
+# "leave Cloudflare alone": proxied offenders (including real customers behind
+# the proxy) would be misrouted to CSF. That posture is CF_MODE="skip", which
+# keeps classification on and simply doesn't act on the VIA_CF plane.
 swatter_cf_in_use() {
     [[ "${CF_MODE}" == "off" ]] && return 1
     [[ -s "${CLOUDFLARE_IPS_FILE}" ]] && return 0

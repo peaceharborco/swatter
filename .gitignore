@@ -19,3 +19,13 @@ test/fixtures/*.local
 
 # draft marketing — keep out of the public repo
 docs/launch-post.md
+
+# Private deployment data — client lists, tokens, allowlists. These live in the
+# operator's own private repo / on the server and are pushed by the deploy
+# scripts; they must never be tracked here even if copied in for staging.
+*.creds
+*.key
+cf-domains.map
+cf-domains.conf
+allow.cidr
+*.local.conf

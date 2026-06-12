@@ -14,8 +14,10 @@
 # cached. Cloudflare IP Access Rules have no native TTL, so Swatter stamps the
 # expiry into the rule notes and sweeps expired rules each run.
 #
-# CF_MODE: direct = use the IP Access Rules API (this file). off = skip the CF
-# plane entirely (CSF-direct offenders still handled).
+# CF_MODE: direct = use the IP Access Rules API (this file). skip = the operator
+# owns the Cloudflare plane (their own WAF/rate-limit stack); score.sh records
+# VIA_CF offenders without acting and never calls in here. off = not behind
+# Cloudflare at all.
 
 CF_API="https://api.cloudflare.com/client/v4"
 
@@ -82,7 +84,9 @@ _cf_zone_id() {
 # swatter_cf_block <ip> <ttl> <reason> <vhost>
 swatter_cf_block() {
     local ip="$1" ttl="$2" reason="$3" vhost="${4:-}"
-    [[ "${CF_MODE}" == "off" ]] && { log_debug "CF_MODE=off; not CF-blocking ${ip}"; return 0; }
+    # Belt over score.sh's routing: only "direct" may create rules. Return 1 so a
+    # caller bug can't record a block that never happened.
+    [[ "${CF_MODE}" == "direct" ]] || { log_debug "CF_MODE=${CF_MODE}; not CF-blocking ${ip}"; return 1; }
     _cf_load
 
     if [[ -z "$vhost" ]]; then
