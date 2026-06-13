@@ -63,11 +63,14 @@ MONITORING_RANGES_FILE="/etc/swatter/monitoring.cidr"
 VERIFY_GOOD_CRAWLERS="true"
 CLOUDFLARE_IPS_FILE="/etc/swatter/cloudflare.cidr"
 
-CF_MODE="direct"
+CF_MODE="auto"
 CF_ACTION="block"
 CF_RULE_PREFIX="swatter"
 CF_CREDS_FILE="/etc/swatter/cloudflare.creds"
 CF_DOMAINS_MAP="/etc/swatter/cf-domains.map"
+# Web-server config files CF auto-detection greps for a mod_remoteip /
+# CF-Connecting-IP block (a "behind Cloudflare" signal). cPanel/EA-Apache paths.
+SWATTER_HTTPD_CF_GLOB="/etc/apache2/conf.d/*.conf /etc/apache2/conf.modules.d/*.conf /usr/local/apache/conf/includes/*.conf"
 
 INTEL_PROVIDERS="ipsum spamhaus abuseipdb"
 ABUSEIPDB_KEY=""

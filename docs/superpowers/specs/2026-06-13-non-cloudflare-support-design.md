@@ -70,6 +70,13 @@ entirely** — an operator who has set a mode is never second-guessed.
   plane (logs, does not act) — i.e. it never errors for lack of credentials,
   and it never CSF-denies a proxied socket.
 
+This "does Swatter actively run the CF plane?" decision is its own predicate,
+`swatter_cf_manages_plane` (true for explicit `direct`, or `auto` + fronted +
+creds&map present). The VIA_CF routing in `lib/score.sh` and the rule
+create/sweep/unblock gates in `lib/block_cf.sh` — all previously hardcoded to
+`CF_MODE == "direct"` — switch to this predicate so `auto` participates without
+regressing `skip`/`off`.
+
 ### 3. Detection — `swatter_detect_cf` (new, in `lib/classify.sh`)
 
 Writes a verdict file `${STATE_DIR}/cf-detect` containing
@@ -146,10 +153,16 @@ box behaves exactly like today's safe path.
 - `swatter_detect_cf` (new) — pure detector: gathers signals, returns a verdict;
   side effect limited to writing the cache file. Testable by pointing it at
   fixture `cloudflare.cidr` / `LFD_LOG` / vhost list and stubbing the resolver.
-- `swatter_cf_in_use` (changed) — verdict consumer; no detection logic itself.
-- `swatter_scan` (changed) — one-line gate change; no detection logic.
-- Verdict cache file — the only shared state between detection (write) and
-  scan/status (read).
+- `swatter_cf_fronted` (new) — posture predicate, range-independent; the base
+  the other predicates build on.
+- `swatter_cf_in_use` (changed) — fronted AND ranges present (classifier
+  shortcut). `swatter_failclosed_active` (new) — fronted AND ranges unhealthy.
+  `swatter_cf_manages_plane` (new) — fronted AND creds/map present (or explicit
+  `direct`). All thin consumers of `swatter_cf_fronted` + the verdict cache.
+- `swatter_scan` / `block_cf` (changed) — swap hardcoded `CF_MODE == "direct"`
+  gates for the predicates above; no detection logic of their own.
+- Verdict cache file (`$STATE_DIR/cf-detect`) — the only shared state between
+  detection (write) and scan/status (read).
 
 ## Testing
 

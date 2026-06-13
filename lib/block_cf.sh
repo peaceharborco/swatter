@@ -84,9 +84,10 @@ _cf_zone_id() {
 # swatter_cf_block <ip> <ttl> <reason> <vhost>
 swatter_cf_block() {
     local ip="$1" ttl="$2" reason="$3" vhost="${4:-}"
-    # Belt over score.sh's routing: only "direct" may create rules. Return 1 so a
+    # Belt over score.sh's routing: only a plane-managing posture may create
+    # rules (explicit direct, or auto that detected CF + has creds). Return 1 so a
     # caller bug can't record a block that never happened.
-    [[ "${CF_MODE}" == "direct" ]] || { log_debug "CF_MODE=${CF_MODE}; not CF-blocking ${ip}"; return 1; }
+    swatter_cf_manages_plane || { log_debug "CF_MODE=${CF_MODE}; not CF-blocking ${ip}"; return 1; }
     _cf_load
 
     if [[ -z "$vhost" ]]; then
@@ -142,7 +143,7 @@ _cf_err_summary() {
 # using the (zone,rule) refs we recorded.
 swatter_cf_unblock() {
     local ip="$1" refs="${STATE_DIR}/cf-rules.tsv"
-    [[ "${CF_MODE}" == "direct" ]] || return 0
+    swatter_cf_manages_plane || return 0
     [[ -f "$refs" ]] || return 0
     _cf_load
     local rip zid rid exp
@@ -166,7 +167,7 @@ swatter_cf_unblock() {
 
 # Sweep expired Swatter access rules (TTL emulation) using recorded refs.
 swatter_cf_sweep_expired() {
-    [[ "${CF_MODE}" == "direct" ]] || return 0
+    swatter_cf_manages_plane || return 0
     local refs="${STATE_DIR}/cf-rules.tsv"
     [[ -f "$refs" ]] || return 0
     [[ "${SWATTER_HAVE_JQ}" -eq 1 && "${SWATTER_HAVE_CURL}" -eq 1 ]] || return 0

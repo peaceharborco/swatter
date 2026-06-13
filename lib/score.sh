@@ -55,8 +55,12 @@ _swatter_audit() {
 
 # Main scan.
 swatter_scan() {
+    # Fail closed only when a Cloudflare plane exists but its range list is
+    # untrustworthy (can't tell a CF edge from a direct socket). On a box that
+    # isn't behind Cloudflare there is nothing to misroute, so CSF denies run
+    # normally even with no range list — see swatter_failclosed_active.
     local healthy=1
-    swatter_allowlist_healthy || healthy=0
+    swatter_failclosed_active && healthy=0
     if (( ! healthy )) && [[ "${SWATTER_MODE}" == "enforce" ]]; then
         log_warn "allowlist unhealthy -> CSF denies disabled this run (fail closed)"
     fi
@@ -158,12 +162,13 @@ swatter_scan() {
                 else swatter_csf_temp "$ip" "$ttl" "$reason" && did=1; fi
             else
                 channel="cloudflare"
-                # CF_MODE=skip: the operator runs their own Cloudflare WAF/rules
-                # stack and owns the proxied realm. Record the decision so the
+                # When Swatter does NOT manage the CF plane — CF_MODE=skip (the
+                # operator runs their own Cloudflare WAF/rules stack), or auto
+                # that hasn't got creds to act — record the decision so the
                 # digest shows what the edge is expected to handle, but act on
-                # nothing — and never fall through to CSF, where a proxied
-                # client's IP would cost them mail/cPanel.
-                if [[ "${CF_MODE}" != "direct" ]]; then
+                # nothing. Never fall through to CSF, where a proxied client's IP
+                # would cost them mail/cPanel.
+                if ! swatter_cf_manages_plane; then
                     _swatter_audit "$ip" "$folded" "skipped-cf-plane" "$channel" 0 "${reason} cf_mode=${CF_MODE}" "$ev" "$rep"
                     continue
                 fi
