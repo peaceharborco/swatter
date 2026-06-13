@@ -14,5 +14,7 @@ MAILTO=""
 
 # Nightly combined digest (bad actors + server errors) of the last 24h, grouped
 # by offense + action. No-op unless REPORT_EMAIL is set; silent on a quiet window.
-# Runs at 03:00 in CRON_TZ (or server time if CRON_TZ is unset). Adjust to taste.
-0 3 * * *   root /usr/local/bin/swatter report
+# 11:00 UTC = 04:00 Pacific (PDT, summer) / 03:00 Pacific (PST, winter) — i.e.
+# early-morning Pacific year-round on a UTC server. Set CRON_TZ above instead if
+# you want an exact Pacific wall-clock hour that never drifts with DST.
+0 11 * * *  root /usr/local/bin/swatter report
