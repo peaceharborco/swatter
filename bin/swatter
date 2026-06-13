@@ -31,7 +31,7 @@ umask 0027
 
 SWATTER_ENTRYPOINT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
 SWATTER_ARGV=("$@")
-SWATTER_VERSION="1.1.0"
+SWATTER_VERSION="1.2.0"
 
 # Locate libs: installed layout (/usr/local/lib/swatter) or repo layout (../lib).
 _self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -81,8 +81,14 @@ cmd_status() {
     echo "  mode:        ${SWATTER_MODE}"
     echo "  config:      ${SWATTER_CONF}"
     echo "  store:       ${STORE}  (${STATE_DIR})"
-    echo "  CF in use:   $(swatter_cf_in_use && echo yes || echo no)  (mode=${CF_MODE})"
-    if swatter_allowlist_healthy; then echo "  allowlist:   healthy"; else echo "  allowlist:   UNHEALTHY (fail-closed)"; fi
+    local cfsuffix=""
+    [[ "${CF_MODE}" == "auto" ]] && cfsuffix=" -> $(swatter_cached_cf_verdict || true)"
+    echo "  CF in use:   $(swatter_cf_in_use && echo yes || echo no)  (mode=${CF_MODE}${cfsuffix})"
+    # An unhealthy range list only fails closed on a CF-fronted box; a bare box
+    # doesn't need the list, so say so rather than implying blocks are disabled.
+    if swatter_allowlist_healthy; then echo "  allowlist:   healthy"
+    elif swatter_cf_fronted;     then echo "  allowlist:   UNHEALTHY (fail-closed — CSF denies disabled)"
+    else                              echo "  allowlist:   n/a (not behind Cloudflare; CSF denies active)"; fi
     local intel="none"; [[ -n "${INTEL_PROVIDERS// }" ]] && intel="${INTEL_PROVIDERS}"
     echo "  intel:       ${intel}"
     if [[ "${STORE}" == "sqlite" && "${SWATTER_HAVE_SQLITE}" -eq 1 ]]; then
@@ -205,6 +211,11 @@ cmd_refresh_feeds() {
     swatter_intel_init
     declare -F provider_ipsum_refresh    >/dev/null && provider_ipsum_refresh || true
     declare -F provider_spamhaus_refresh >/dev/null && provider_spamhaus_refresh || true
+
+    # Re-run Cloudflare posture detection now that ranges are fresh. Only matters
+    # for CF_MODE=auto, but caching it always keeps `status`/`test-config`
+    # informative regardless of mode.
+    swatter_detect_cf >/dev/null
 }
 
 cmd_test_config() {
@@ -234,12 +245,30 @@ cmd_test_config() {
         echo "  error logs:     fpm=${ef} mysql=${em} php=${ep}${err_status}"
     fi
     case "${CF_MODE}" in
+        auto)
+            # Refresh the verdict so the report reflects current DNS/config, not
+            # a stale cache.
+            local verdict; verdict="$(swatter_detect_cf 2>/dev/null)"
+            local reason; reason="$(cut -f3 "${STATE_DIR}/cf-detect" 2>/dev/null | head -n1)"
+            if [[ "$verdict" == "not-behind" ]]; then
+                echo "  CF mode:        auto -> not-behind (${reason}); every offender is CSF-direct"
+            elif [[ "$verdict" == "behind" ]]; then
+                echo "  CF mode:        auto -> behind (${reason}); classification ON, Cloudflare plane in use"
+            else
+                echo "  CF mode:        auto -> uncertain (${reason:-no signal}); classification ON (safe)"
+                echo "                  could not prove the box is bare — likely no domain-named logs to"
+                echo "                  sample. If this server is NOT behind Cloudflare, set CF_MODE=\"off\""
+                echo "                  explicitly so direct offenders aren't routed to the Cloudflare plane."
+            fi
+            ;;
         direct) echo "  CF mode:        direct (Swatter manages the Cloudflare plane)" ;;
         skip)   echo "  CF mode:        skip (your own edge rules own the CF plane; via-CF offenders logged only)" ;;
         off)    echo "  CF mode:        off (not behind Cloudflare; everything is CSF-direct)" ;;
-        *)      echo "  CF mode:        ${CF_MODE} (UNKNOWN — expected direct|skip|off; via-CF offenders will be logged, not acted on)" ;;
+        *)      echo "  CF mode:        ${CF_MODE} (UNKNOWN — expected auto|direct|skip|off; via-CF offenders will be logged, not acted on)" ;;
     esac
-    if [[ "${CF_MODE}" == "direct" ]]; then
+    # Surface CF credential/map status whenever the CF plane could be actively
+    # managed: explicit direct, or auto that resolved to behind-Cloudflare.
+    if [[ "${CF_MODE}" == "direct" ]] || { [[ "${CF_MODE}" == "auto" ]] && swatter_cf_fronted; }; then
         local ncreds=0 ndoms=0
         [[ -r "${CF_CREDS_FILE}" ]] && ncreds="$(grep -cvE '^[[:space:]]*(#|$)' "${CF_CREDS_FILE}" 2>/dev/null || echo 0)"
         [[ -r "${CF_DOMAINS_MAP}" ]] && ndoms="$(grep -cvE '^[[:space:]]*(#|$)' "${CF_DOMAINS_MAP}" 2>/dev/null || echo 0)"

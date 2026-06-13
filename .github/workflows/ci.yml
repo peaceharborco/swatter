@@ -16,3 +16,5 @@ jobs:
         run: shellcheck --severity=error bin/swatter lib/*.sh install/*.sh test/*.sh
       - name: Score pipeline tests
         run: bash test/score_test.sh
+      - name: Cloudflare detection + fail-closed tests
+        run: bash test/detect_test.sh

@@ -47,21 +47,43 @@ immediately before every single block. If the range list ever goes missing or
 stale, Swatter **fails closed** — it stops issuing CSF denies entirely rather than
 risk an outage.
 
-Three Cloudflare postures (`CF_MODE`):
+Four Cloudflare postures (`CF_MODE`):
 
 | Mode | Your setup | Via-CF offenders | Direct offenders |
 |---|---|---|---|
+| `auto` | **Default** — detect and adapt | safe plane unless proven bare | CSF |
 | `direct` | Behind CF, Swatter is the defense | challenged/blocked via API | CSF |
 | `skip` | Behind CF, **you** run your own WAF rules stack | logged, left to your edge rules | CSF |
 | `off` | Not behind Cloudflare at all | n/a — everything is direct | CSF |
 
+**Either/or, out of the box.** `auto` (the default) detects whether the server
+sits behind Cloudflare — it resolves your own vhosts and checks them, your
+inbound sockets, and your web-server config against the Cloudflare ranges — and
+picks the posture for you. Detection runs at install, on `refresh-feeds`, and on
+`test-config`, never per-scan, so the cron path stays cheap. It is **safety-
+biased**: only a confident "this box is not behind Cloudflare" reading turns the
+CF plane off; anything uncertain keeps classification on (the safe plane), so
+`auto` can never misroute a proxied socket to CSF. A box with **no Cloudflare
+domains at all** therefore works as a plain CSF auto-blocker with zero Cloudflare
+config — and it actually issues blocks: the fail-closed rail (which disables CSF
+denies when the CF range list is missing) only engages on a CF-fronted box,
+where the list is needed to tell an edge socket from a direct one.
+
+Detection re-runs daily (the `refresh-feeds` cron), so `auto` adapts if a box
+moves on or off Cloudflare. It identifies the box's domains from the
+domlog filenames, so on a **plain (non-cPanel) Apache/nginx** server with only a
+single shared access log it can't prove the box is bare and stays on the safe,
+classification-on posture. On such a server that isn't behind Cloudflare, set
+`CF_MODE="off"` explicitly (`test-config` will tell you when it couldn't decide).
+
 If you maintain your own Cloudflare WAF rules, rate limits, and login-page
-protections, run `skip`: Swatter stays out of the realm you already manage but
-still swats raw-IP scanners at CSF and logs what it would have challenged. Do
-**not** use `off` on a proxied server to mean "hands off Cloudflare" — `off`
-disables the plane classification itself, so proxied visitors (your own
-customers included) can be misrouted to a CSF deny that also takes out their
-mail and cPanel access.
+protections, set `skip` explicitly: Swatter stays out of the realm you already
+manage but still swats raw-IP scanners at CSF and logs what it would have
+challenged. Do **not** use `off` on a proxied server to mean "hands off
+Cloudflare" — `off` disables the plane classification itself, so proxied
+visitors (your own customers included) can be misrouted to a CSF deny that also
+takes out their mail and cPanel access. (Setting any explicit mode skips
+detection.)
 
 The closest tool in spirit is [CrowdSec](https://crowdsec.net) with its
 Cloudflare bouncer, and it's good — if you want a daemon, a central reputation
@@ -247,7 +269,9 @@ they hit, using your domain→account map.
    This writes `/etc/swatter/cloudflare.creds` (0600) and
    `/etc/swatter/cf-domains.map` (0644), then runs `test-config`. A dry-run will
    then show `cloudflare block <ip> in <domain>` for proxied offenders. (Hosts
-   not behind Cloudflare can skip all of this and set `CF_MODE="off"`.)
+   not behind Cloudflare can skip all of this entirely — the default
+   `CF_MODE="auto"` detects a bare box and runs as a plain CSF auto-blocker; set
+   `CF_MODE="off"` to make that explicit and skip detection.)
 
 ### Recommended: make Cloudflare classification exact
 
@@ -273,11 +297,13 @@ customers instead of against attackers.
 
 Two ways to run in that setup:
 
-- **`CF_MODE="off"`** — the cleanest split. Your edge rules own the proxied
+- **`CF_MODE="skip"`** — the cleanest split. Your edge rules own the proxied
   realm; Swatter owns what the edge can never see: direct-to-origin traffic from
   scanners that found your server's real IP. On that plane the bad-path table is
   at full strength, because no legitimate user logs into WordPress via your raw
-  server IP.
+  server IP. (Use `skip`, **not** `off`, here: the box *is* behind Cloudflare, so
+  classification must stay on or a proxied socket could be CSF-denied. `skip`
+  keeps classification and simply leaves the via-CF plane to your edge rules.)
 - **Keep the CF plane but demote the auth paths** in `config/badpaths.conf`
   (e.g. `wp-login.php` HIGH → MEDIUM) if your edge protection is partial — for
   instance a geo challenge that still admits same-country bots.
