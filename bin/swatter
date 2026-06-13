@@ -31,7 +31,7 @@ umask 0027
 
 SWATTER_ENTRYPOINT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
 SWATTER_ARGV=("$@")
-SWATTER_VERSION="1.1.0"
+SWATTER_VERSION="1.2.0"
 
 # Locate libs: installed layout (/usr/local/lib/swatter) or repo layout (../lib).
 _self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -252,8 +252,13 @@ cmd_test_config() {
             local reason; reason="$(cut -f3 "${STATE_DIR}/cf-detect" 2>/dev/null | head -n1)"
             if [[ "$verdict" == "not-behind" ]]; then
                 echo "  CF mode:        auto -> not-behind (${reason}); every offender is CSF-direct"
+            elif [[ "$verdict" == "behind" ]]; then
+                echo "  CF mode:        auto -> behind (${reason}); classification ON, Cloudflare plane in use"
             else
-                echo "  CF mode:        auto -> ${verdict:-uncertain} (${reason:-no signal}); classification ON (safe — via-CF offenders use the Cloudflare plane)"
+                echo "  CF mode:        auto -> uncertain (${reason:-no signal}); classification ON (safe)"
+                echo "                  could not prove the box is bare — likely no domain-named logs to"
+                echo "                  sample. If this server is NOT behind Cloudflare, set CF_MODE=\"off\""
+                echo "                  explicitly so direct offenders aren't routed to the Cloudflare plane."
             fi
             ;;
         direct) echo "  CF mode:        direct (Swatter manages the Cloudflare plane)" ;;

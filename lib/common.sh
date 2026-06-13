@@ -64,7 +64,9 @@ VERIFY_GOOD_CRAWLERS="true"
 CLOUDFLARE_IPS_FILE="/etc/swatter/cloudflare.cidr"
 
 CF_MODE="auto"
-CF_ACTION="block"
+# Safe default: a false positive solves a challenge instead of being locked out.
+# Must match the documented default in swatter.example.conf.
+CF_ACTION="managed_challenge"
 CF_RULE_PREFIX="swatter"
 CF_CREDS_FILE="/etc/swatter/cloudflare.creds"
 CF_DOMAINS_MAP="/etc/swatter/cf-domains.map"

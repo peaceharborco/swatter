@@ -69,6 +69,13 @@ config — and it actually issues blocks: the fail-closed rail (which disables C
 denies when the CF range list is missing) only engages on a CF-fronted box,
 where the list is needed to tell an edge socket from a direct one.
 
+Detection re-runs daily (the `refresh-feeds` cron), so `auto` adapts if a box
+moves on or off Cloudflare. It identifies the box's domains from the
+domlog filenames, so on a **plain (non-cPanel) Apache/nginx** server with only a
+single shared access log it can't prove the box is bare and stays on the safe,
+classification-on posture. On such a server that isn't behind Cloudflare, set
+`CF_MODE="off"` explicitly (`test-config` will tell you when it couldn't decide).
+
 If you maintain your own Cloudflare WAF rules, rate limits, and login-page
 protections, set `skip` explicitly: Swatter stays out of the realm you already
 manage but still swats raw-IP scanners at CSF and logs what it would have
