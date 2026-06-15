@@ -33,6 +33,12 @@ LFD_LOG="/var/log/lfd.log"
 SEED_BYTES=5242880
 MAX_BYTES_PER_FILE=209715200
 
+# Local web ports whose live, non-Cloudflare sockets count as direct-to-origin
+# evidence: a confirmed offender connecting here is bypassing Cloudflare, so it
+# belongs on the CSF plane, not the (useless) CF challenge plane. Empty string
+# disables the signal; an absent key in the config inherits this default.
+DIRECT_WEB_PORTS="80 443"
+
 SCORE_WATCH=50
 SCORE_TEMP=70
 SCORE_PERM=85
