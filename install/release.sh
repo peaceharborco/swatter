@@ -173,6 +173,7 @@ main() {
 }
 
 # Only run when executed, not when sourced (so tests can call _next_version).
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+# ${BASH_SOURCE[0]:-} keeps this set -u-safe when sourced at top level.
+if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
     main "$@"
 fi
