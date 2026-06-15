@@ -34,8 +34,10 @@ that socket at your server firewall and you've just firewalled Cloudflare —
 
 Swatter is built around this. For every offender it decides:
 
-- **Direct-to-origin** (hit your raw IP or cPanel service ports, bypassing
-  Cloudflare) → block at **CSF**. Safe: the socket really is the attacker.
+- **Direct-to-origin** (hit your raw IP or cPanel service ports, *or* held a
+  live TCP socket to your web ports from a non-Cloudflare peer — even behind a
+  valid `Host` header, since a proxied request always arrives from a CF edge)
+  → block at **CSF**. Safe: the socket really is the attacker.
 - **Via Cloudflare** (came through the proxy) → a zone-scoped **Cloudflare IP
   Access Rule** via API, a **managed challenge** by default — so a false
   positive means a human solves a challenge, not a lockout. The CSF plane is
@@ -275,9 +277,12 @@ they hit, using your domain→account map.
 
 ### Recommended: make Cloudflare classification exact
 
-By default Swatter infers direct-vs-proxied from your logs. For ground truth, add
-Cloudflare's ray ID to your Apache log format — present means the request came
-through Cloudflare, absent means direct:
+By default Swatter infers direct-vs-proxied from your logs *and* from live origin
+sockets — a TCP peer on your web ports (`DIRECT_WEB_PORTS`, default `80 443`)
+that isn't a Cloudflare edge is provably direct, which catches an in-progress
+flood that bypasses Cloudflare with a valid `Host` header. For log-based ground
+truth too, add Cloudflare's ray ID to your Apache log format — present means the
+request came through Cloudflare, absent means direct:
 
 ```apache
 LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\" cfray=%{CF-Ray}i" swatter
