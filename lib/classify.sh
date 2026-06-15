@@ -188,39 +188,80 @@ swatter_detect_cf() {
     printf '%s' "$verdict"
 }
 
-# Build the set of IPs seen hitting the origin DIRECTLY this run, from lfd.log:
-# connections logged against cPanel service ports (2082/2083/2086/2087/2095/2096
-# /2077/2078) or raw web ports by IP are not proxied by Cloudflare. Cached in a
-# temp file path stored in SWATTER_DIRECT_SET.
-#
-# Only lines inside the scoring window count. Stale lfd history must not grant
-# "direct" evidence: a customer who once touched a cPanel port would otherwise
-# be CSF-denied (mail/cPanel lockout) for an offense that arrived via the proxy.
+# Live remote IPv4 peers of TCP connections to this box's web ports
+# (DIRECT_WEB_PORTS). A Cloudflare-proxied request arrives from a CF EDGE socket;
+# mod_remoteip restores the visitor IP only at L7, so a socket peer that is not a
+# CF edge is hitting the origin directly. Dependency-injected in tests. Empty
+# DIRECT_WEB_PORTS or a missing `ss` yields nothing (graceful no-op). IPv4 only,
+# matching the lfd direct set; IPv6 direct sockets are a follow-up.
+_swatter_websocket_peers() {
+    [[ -n "${DIRECT_WEB_PORTS:-}" ]] || return 0
+    have ss || return 0
+    local p filter=""
+    for p in ${DIRECT_WEB_PORTS}; do
+        [[ "$p" =~ ^[0-9]+$ ]] || continue
+        [[ -n "$filter" ]] && filter+=" or "
+        filter+="sport = :$p"
+    done
+    [[ -n "$filter" ]] || return 0
+    # Established + half-open (a flood mid-handshake still counts). Take the peer
+    # field (last column) and keep only its IPv4 address.
+    ss -Htn state established state syn-recv "( $filter )" 2>/dev/null \
+        | awk '{print $NF}' \
+        | grep -aoE '([0-9]{1,3}\.){3}[0-9]{1,3}' \
+        | sort -u
+}
+
+# Build the set of IPs seen hitting the origin DIRECTLY this run. Two sources:
+#   1. lfd.log connections against cPanel service ports (2082/2083/2086/2087/
+#      2095/2096/2077/2078) — not proxied by Cloudflare. Window-scoped: stale lfd
+#      history must not grant "direct" evidence, or a customer who once touched a
+#      cPanel port would be CSF-denied for an offense that arrived via the proxy.
+#   2. Live web-port sockets from non-Cloudflare peers — a confirmed offender
+#      POSTing straight to the origin IP with a valid Host (CF bypass). Folded in
+#      ONLY when the CF range list is trustworthy (swatter_allowlist_healthy):
+#      without it we cannot tell a CF edge socket from a direct one, and folding
+#      an edge in could CSF the proxy. (CSF denies are already fail-closed-
+#      suppressed when ranges are bad; this keeps the set itself clean too.)
+# Cached in a temp file path stored in SWATTER_DIRECT_SET.
 swatter_build_direct_set() {
     local out; out="$(mktemp "${TMPDIR:-/tmp}/swatter-direct.XXXXXX")"
     SWATTER_DIRECT_SET="$out"
     export SWATTER_DIRECT_SET
-    [[ -n "${LFD_LOG}" && -r "${LFD_LOG}" ]] || return 0
-    # lfd lines vary, but the offending IP and dport are present on connection
-    # tracking / port-scan lines. Pull any IPv4 that appears with a cPanel port.
-    local now cutoff
-    now="$(swatter_now)"; cutoff=$(( now - WINDOW_SECONDS ))
-    gawk -v cutoff="$cutoff" -v now="$now" '
-        BEGIN {
-            split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", mn, " ")
-            for (i = 1; i <= 12; i++) mon[mn[i]] = i
-            year = strftime("%Y", now) + 0
-        }
-        /2082|2083|2086|2087|2095|2096|2077|2078/ {
-            # syslog stamp: "Mon dd HH:MM:SS" in local time, no year.
-            if (!($1 in mon) || split($3, t, ":") != 3) next
-            ts = mktime(year " " mon[$1] " " $2 " " t[1] " " t[2] " " t[3])
-            if (ts > now + 86400)   # "future" stamp = line from last year
-                ts = mktime((year - 1) " " mon[$1] " " $2 " " t[1] " " t[2] " " t[3])
-            if (ts >= cutoff) print
-        }' "${LFD_LOG}" 2>/dev/null \
-        | grep -aoE '([0-9]{1,3}\.){3}[0-9]{1,3}' \
-        | sort -u > "$out" 2>/dev/null || true
+
+    # Source 1: lfd cPanel-service-port hits within the window.
+    if [[ -n "${LFD_LOG}" && -r "${LFD_LOG}" ]]; then
+        local now cutoff
+        now="$(swatter_now)"; cutoff=$(( now - WINDOW_SECONDS ))
+        gawk -v cutoff="$cutoff" -v now="$now" '
+            BEGIN {
+                split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", mn, " ")
+                for (i = 1; i <= 12; i++) mon[mn[i]] = i
+                year = strftime("%Y", now) + 0
+            }
+            /2082|2083|2086|2087|2095|2096|2077|2078/ {
+                # syslog stamp: "Mon dd HH:MM:SS" in local time, no year.
+                if (!($1 in mon) || split($3, t, ":") != 3) next
+                ts = mktime(year " " mon[$1] " " $2 " " t[1] " " t[2] " " t[3])
+                if (ts > now + 86400)   # "future" stamp = line from last year
+                    ts = mktime((year - 1) " " mon[$1] " " $2 " " t[1] " " t[2] " " t[3])
+                if (ts >= cutoff) print
+            }' "${LFD_LOG}" 2>/dev/null \
+            | grep -aoE '([0-9]{1,3}\.){3}[0-9]{1,3}' \
+            >> "$out" 2>/dev/null || true
+    fi
+
+    # Source 2: live web-port sockets from non-Cloudflare peers (CF bypass).
+    if [[ -n "${DIRECT_WEB_PORTS:-}" ]] && swatter_allowlist_healthy; then
+        local peer
+        while IFS= read -r peer; do
+            [[ -n "$peer" ]] || continue
+            _ip_in_cidr_file "$peer" "${CLOUDFLARE_IPS_FILE}" && continue
+            printf '%s\n' "$peer"
+        done < <(_swatter_websocket_peers) >> "$out" 2>/dev/null || true
+    fi
+
+    sort -u -o "$out" "$out" 2>/dev/null || true
 }
 
 # Does the offender have direct-socket evidence?
