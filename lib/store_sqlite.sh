@@ -30,6 +30,11 @@ CREATE TABLE IF NOT EXISTS actions(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT, ts INTEGER,
   action TEXT, channel TEXT, ttl INTEGER, score INTEGER, reason TEXT, dry_run INTEGER);
 CREATE INDEX IF NOT EXISTS ix_actions_ip_ts ON actions(ip, ts);
+CREATE TABLE IF NOT EXISTS sightings(
+  ip TEXT, bucket INTEGER, hits INTEGER DEFAULT 0,
+  worst_score INTEGER DEFAULT 0, last_ts INTEGER,
+  PRIMARY KEY (ip, bucket));
+CREATE INDEX IF NOT EXISTS ix_sightings_ip ON sightings(ip);
 SQL
         chmod 0640 "$(_swatter_db)" 2>/dev/null || true
     else
@@ -154,4 +159,50 @@ swatter_store_unblock() {
     swatter_store_record "$ip" "unblock" "none" 0 0 "manual unblock" 0
     local sip; sip="$(_sql_escape "$ip")"
     [[ "${STORE}" == "sqlite" ]] && _sql "UPDATE offenders SET perm=0 WHERE ip='${sip}';"
+}
+
+# --- low-and-slow persistence (sqlite only; flatfile no-ops) ----------------
+swatter_store_sighting_add() {
+    local ip="$1" score="$2" bsec="${3:-3600}"
+    _store_ip_ok "$ip" || return 0
+    [[ "${STORE}" == "sqlite" ]] || return 0
+    local now bucket sip; now="$(swatter_now)"; bucket=$(( now / bsec ))
+    sip="$(_sql_escape "$ip")"
+    _sql "INSERT INTO sightings(ip,bucket,hits,worst_score,last_ts)
+          VALUES('${sip}',${bucket},1,${score:-0},${now})
+          ON CONFLICT(ip,bucket) DO UPDATE SET
+            hits=hits+1, worst_score=MAX(worst_score,${score:-0}), last_ts=${now};"
+}
+
+swatter_store_sighting_buckets() {
+    local ip="$1" wdays="${2:-3}"
+    _store_ip_ok "$ip" || { echo 0; return 0; }
+    if [[ "${STORE}" != "sqlite" ]]; then echo 0; return 0; fi
+    local cutoff sip; cutoff=$(( $(swatter_now) - wdays*86400 )); sip="$(_sql_escape "$ip")"
+    local c; c="$(_sqlq "SELECT COUNT(*) FROM sightings WHERE ip='${sip}' AND last_ts>${cutoff};")"
+    [[ "$c" =~ ^[0-9]+$ ]] && echo "$c" || echo 0
+}
+
+swatter_store_sighting_clear() {
+    local ip="$1"; _store_ip_ok "$ip" || return 0
+    [[ "${STORE}" == "sqlite" ]] || return 0
+    local sip; sip="$(_sql_escape "$ip")"
+    _sql "DELETE FROM sightings WHERE ip='${sip}';"
+}
+
+swatter_store_sighting_sweep() {
+    local wdays="${1:-3}"
+    [[ "${STORE}" == "sqlite" ]] || return 0
+    local cutoff; cutoff=$(( $(swatter_now) - wdays*86400 ))
+    _sql "DELETE FROM sightings WHERE last_ts<${cutoff};"
+}
+
+# Echo "temp_offenders <TAB> perm_offenders" (for metrics).
+swatter_store_counts() {
+    if [[ "${STORE}" != "sqlite" ]]; then printf '0\t0\n'; return 0; fi
+    local t p
+    t="$(_sqlq "SELECT COUNT(*) FROM offenders WHERE temp_count>0 AND perm=0;")"
+    p="$(_sqlq "SELECT COUNT(*) FROM offenders WHERE perm=1;")"
+    [[ "$t" =~ ^[0-9]+$ ]] || t=0; [[ "$p" =~ ^[0-9]+$ ]] || p=0
+    printf '%s\t%s\n' "$t" "$p"
 }
