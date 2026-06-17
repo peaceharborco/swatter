@@ -26,6 +26,10 @@ CYMRU_TXT='16276 | 51.222.0.0/16 | FR | ripencc | 2015-01-01'
 check resolve-ovh "$(swatter_asn_resolve 51.222.1.1)" "16276"
 if swatter_asn_is_hosting 51.222.1.1 >/dev/null; then PASS=$((PASS+1)); else echo "FAIL ovh-is-hosting"; FAIL=$((FAIL+1)); fi
 
+CYMRU_TXT='13335 15169 | 1.1.1.0/24 | US | arin | 2010-01-01'
+rm -f "$STATE_DIR/asn/1.1.1.1"
+check resolve-multiorigin "$(swatter_asn_resolve 1.1.1.1)" "13335"
+
 CYMRU_TXT='15169 | 8.8.8.0/24 | US | arin | 2000-01-01'
 rm -f "$STATE_DIR/asn/8.8.8.8"
 if swatter_asn_is_hosting 8.8.8.8 >/dev/null; then echo "FAIL google-not-hosting"; FAIL=$((FAIL+1)); else PASS=$((PASS+1)); fi

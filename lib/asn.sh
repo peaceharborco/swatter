@@ -28,9 +28,9 @@ swatter_asn_resolve() {
     fi
     txt="$(_swatter_dns_txt "$query")" || return 1
     [[ -n "$txt" ]] || return 1
-    # "13335 | 1.1.1.0/24 | US | arin | ..." ; first field, first token (multi-origin).
-    asn="$(printf '%s' "$txt" | cut -d'|' -f1 | tr -d ' ' )"
-    asn="${asn%% *}"
+    # first field before '|', then its first token (multi-origin prefixes list
+    # several space-separated ASNs; we take the first).
+    asn="$(printf '%s' "$txt" | awk -F'|' '{print $1; exit}' | awk '{print $1; exit}')"
     [[ "$asn" =~ ^[0-9]+$ ]] || return 1
     mkdir -p "${STATE_DIR}/asn" 2>/dev/null && printf '%s' "$asn" > "$cache" 2>/dev/null
     printf '%s' "$asn"
