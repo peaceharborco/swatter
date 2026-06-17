@@ -61,6 +61,17 @@ BEGIN {
         close(BADPATHS)
     }
 
+    # Load honeypot trap patterns (operator-defined; a hit = instant perm).
+    nhp = 0
+    if (HONEYPOTS != "") {
+        while ((getline hpl < HONEYPOTS) > 0) {
+            if (hpl ~ /^[ \t]*#/) continue
+            if (hpl ~ /^[ \t]*$/) continue
+            hp_rx[nhp] = hpl; nhp++
+        }
+        close(HONEYPOTS)
+    }
+
     # Suspicious user-agent substrings (lowercased).
     nua = split("sqlmap nikto nmap masscan zgrab zmeu nuclei wpscan acunetix " \
                 "dirbuster gobuster feroxbuster python-requests go-http-client " \
@@ -119,6 +130,11 @@ BEGIN {
         }
     }
 
+    # Honeypot trap: any hit flags the IP for an instant-perm decision.
+    for (h = 0; h < nhp; h++) {
+        if (path ~ hp_rx[h]) { honeypot[ip] = 1; break }
+    }
+
     # User-agent signal.
     if (ua == "" || ua == "-") { ua_empty[ip]++ }
     else {
@@ -156,7 +172,8 @@ END {
         ndist = distinct[ip] + 0; npost = post[ip] + 0
         nnov = novhost[ip] + 0; nuae = ua_empty[ip] + 0; nuas = ua_susp[ip] + 0
 
-        if (n < MIN_REQS && bm < 100) continue   # below floor, unless CRITICAL
+        hp = honeypot[ip] + 0
+        if (n < MIN_REQS && bm < 100 && hp == 0) continue   # below floor (CRITICAL/honeypot bypass)
 
         span = last_ep[ip] - first_ep[ip]
         if (span < 1) span = 1
@@ -199,6 +216,7 @@ END {
         # "this single behavior is unambiguous" so a focused attacker is not
         # averaged down to safety. The reason is recorded for the audit trail.
         floor = 0; frule = ""
+        if (hp)                                              { floor = 100; frule = "honeypot" }
         # CRITICAL secret/RCE path — block on sight, any volume.
         if (bm >= 100)                                       { floor = 90; frule = "critical_badpath" }
         # Repeated FAILED targeting of a sensitive HIGH endpoint (brute force /
@@ -242,6 +260,7 @@ END {
         ev = ev ",\"badpath_hits\":" (badhits[ip]+0)
         ev = ev ",\"hibad_fail\":" hf
         ev = ev ",\"decisive_rule\":\"" frule "\""
+        ev = ev ",\"honeypot\":" hp
         ev = ev ",\"top_vhost\":\"" jesc(topvh[ip]) "\""
         ev = ev ",\"sample_ua\":\"" jesc(sample_ua[ip]) "\""
         ev = ev ",\"sample_paths\":[" paths_json "]"

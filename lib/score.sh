@@ -16,6 +16,7 @@ _swatter_run_scorer() {
          -v W_FANOUT="${W_FANOUT}" -v W_BADPATH="${W_BADPATH}" -v W_UA="${W_UA}" \
          -v W_POST_FLOOD="${W_POST_FLOOD}" -v W_NOVHOST="${W_NOVHOST}" \
          -v BADPATHS="${BADPATHS_CONF}" \
+         -v HONEYPOTS="${HONEYPOT_PATHS_FILE:-}" \
          -f "${SWATTER_LIB_DIR}/score.awk"
 }
 
