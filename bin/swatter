@@ -20,6 +20,8 @@
 #   swatter report [WINDOW] [--test|--print]  email a digest grouped by offense+action (--print: stdout only)
 #   swatter refresh-feeds                update Cloudflare ranges + intel feeds
 #   swatter test-config                  validate config + dependencies
+#   swatter honeypot               print robots.txt + invisible-anchor snippet for the trap path
+#   swatter metrics [--print]      write the Prometheus textfile (or print it)
 #   swatter version
 
 set -uo pipefail
@@ -278,7 +280,34 @@ cmd_test_config() {
     fi
 }
 
-usage() { sed -n '2,30p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
+cmd_honeypot() {
+    local path
+    path="$(awk 'NF && $1 !~ /^#/ {print; exit}' "${HONEYPOT_PATHS_FILE:-/nonexistent}" 2>/dev/null)"
+    if [[ -z "$path" ]]; then
+        path="/__trap_$(head -c4 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n' || echo a7f3c1d9)/"
+        echo "# No HONEYPOT_PATHS_FILE entry found — suggested trap path: ${path}"
+        echo "# Add it (anchored) to ${HONEYPOT_PATHS_FILE:-/etc/swatter/honeypot.paths}:"
+        printf '#   %s(/|$)\n\n' "${path%/}"
+    fi
+    local clean="${path%(/\|$)}"; clean="${clean%/}"
+    cat <<EOF
+# --- robots.txt (advertise the trap so only path-scanning bots find it) ---
+User-agent: *
+Disallow: ${clean}/
+
+# --- invisible anchor (drop into a shared template; humans never see it) ---
+<a href="${clean}/" style="display:none" aria-hidden="true" rel="nofollow">do-not-follow</a>
+
+# Any IP that requests ${clean}/ is scored 100 and permanently banned on its
+# next Swatter scan (plane-classified + allowlist-checked as always).
+EOF
+}
+
+cmd_metrics() {
+    if [[ "${1:-}" == "--print" ]]; then swatter_metrics_emit; else swatter_metrics_write; fi
+}
+
+usage() { sed -n '2,25p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
 
 main() {
     local sub="${1:-}"; shift || true
@@ -293,6 +322,8 @@ main() {
         report)        cmd_report "$@" ;;
         refresh-feeds) cmd_refresh_feeds ;;
         test-config)   cmd_test_config ;;
+        honeypot)      cmd_honeypot ;;
+        metrics)       cmd_metrics "$@" ;;
         version|--version|-v) echo "swatter ${SWATTER_VERSION}" ;;
         ""|help|-h|--help) usage ;;
         *) echo "swatter: unknown command '${sub}' (try: swatter help)" >&2; exit 2 ;;
