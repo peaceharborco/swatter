@@ -80,10 +80,22 @@ CF_DOMAINS_MAP="/etc/swatter/cf-domains.map"
 # CF-Connecting-IP block (a "behind Cloudflare" signal). cPanel/EA-Apache paths.
 SWATTER_HTTPD_CF_GLOB="/etc/apache2/conf.d/*.conf /etc/apache2/conf.modules.d/*.conf /usr/local/apache/conf/includes/*.conf"
 
-INTEL_PROVIDERS="ipsum spamhaus abuseipdb"
+: "${INTEL_PROVIDERS:=ipsum spamhaus abuseipdb greynoise projecthoneypot}"
 ABUSEIPDB_KEY=""
 ABUSEIPDB_DAILY_QUOTA=1000
-GREYNOISE_KEY=""
+: "${GREYNOISE_KEY:=}"
+: "${GREYNOISE_DAILY_QUOTA:=100}"
+: "${HTTPBL_KEY:=}"
+: "${ASN_SIGNAL_ENABLE:=false}"
+: "${HOSTING_ASNS_FILE:=/etc/swatter/hosting-asns.txt}"
+: "${W_ASN:=12}"
+: "${HONEYPOT_PATHS_FILE:=/etc/swatter/honeypot.paths}"
+: "${HONEYPOT_OVERRIDES_SUPPRESS:=false}"
+: "${PERSIST_ENABLE:=true}"
+: "${PERSIST_N:=6}"
+: "${PERSIST_WINDOW_DAYS:=3}"
+: "${PERSIST_BUCKET_SECONDS:=3600}"
+: "${METRICS_FILE:=/var/lib/node_exporter/textfile_collector/swatter.prom}"
 INTEL_CACHE_TTL=86400
 
 STORE="sqlite"

@@ -1,0 +1,12 @@
+# honeypot.paths — operator-defined trap paths (one extended-regex per line).
+# A request matching ANY line scores 100 and earns an instant permanent ban on
+# the next scan (plane-classified + allowlist-checked as always). Bypasses
+# MIN_REQS: one hit is enough.
+#
+# Pick a SECRET path nobody legitimately requests, advertise it only where bots
+# look (run `swatter honeypot` for a robots.txt + invisible-anchor snippet), and
+# copy this file to /etc/swatter/honeypot.paths. Keep patterns anchored-loose
+# (no ^/$), matched case-insensitively like badpaths.
+#
+# Example (CHANGE THE TOKEN to something unique to your site):
+# /__trap_a7f3c1d9(/|$)
