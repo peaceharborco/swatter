@@ -24,6 +24,8 @@ case "$out" in *'# TYPE swatter_build_info gauge'*) PASS=$((PASS+1));; *) echo "
 case "$out" in *'swatter_build_info{version="1.3.0"} 1'*) PASS=$((PASS+1));; *) echo "FAIL build-info"; FAIL=$((FAIL+1));; esac
 case "$out" in *'swatter_scan_watched 3'*) PASS=$((PASS+1));; *) echo "FAIL watched"; FAIL=$((FAIL+1));; esac
 case "$out" in *'swatter_mode{mode="enforce"} 1'*) PASS=$((PASS+1));; *) echo "FAIL mode"; FAIL=$((FAIL+1));; esac
+case "$out" in *'# HELP swatter_intel_quota_used'*) PASS=$((PASS+1));; *) echo "FAIL quota-help"; FAIL=$((FAIL+1));; esac
+check quota-type-once "$(printf '%s\n' "$out" | grep -c '^# TYPE swatter_intel_quota_used')" "1"
 
 # Atomic write produces a readable file.
 swatter_metrics_write "$STATE_DIR/swatter.prom"

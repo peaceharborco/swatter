@@ -40,11 +40,12 @@ swatter_metrics_emit() {
     printf 'swatter_feed_age_seconds{feed="cloudflare"} %s\n' "$(_metric_feed_age "${CLOUDFLARE_IPS_FILE:-/etc/swatter/cloudflare.cidr}")"
     printf 'swatter_feed_age_seconds{feed="ipsum"} %s\n'      "$(_metric_feed_age "${STATE_DIR}/feeds/ipsum.txt")"
     printf 'swatter_feed_age_seconds{feed="spamhaus"} %s\n'   "$(_metric_feed_age "${STATE_DIR}/feeds/spamhaus.cidr")"
-    local qf used
+    printf '# HELP swatter_intel_quota_used Intel-provider API calls used today.\n# TYPE swatter_intel_quota_used gauge\n'
+    local qf used prov
     for prov in abuseipdb greynoise; do
         qf="${STATE_DIR}/feeds/${prov}.quota.$(date -u +%Y%m%d)"
         used="$(cat "$qf" 2>/dev/null || echo 0)"; [[ "$used" =~ ^[0-9]+$ ]] || used=0
-        printf '# TYPE swatter_intel_quota_used gauge\nswatter_intel_quota_used{provider="%s"} %s\n' "$prov" "$used"
+        printf 'swatter_intel_quota_used{provider="%s"} %s\n' "$prov" "$used"
     done
 }
 
