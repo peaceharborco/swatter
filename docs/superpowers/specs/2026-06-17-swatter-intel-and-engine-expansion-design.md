@@ -382,7 +382,9 @@ like the existing CF creds — never committed:
 
 - AbuseIPDB — `AI > AbuseIPDB > API Key`
 - GreyNoise — `AI > GreyNoise > API Key`
-- Project Honey Pot http:BL — to follow (same pattern) once the member key is issued
+- Project Honey Pot http:BL — `AI > Project HoneyPot > Access Key`
+
+All three keys are provisioned and in the vault.
 
 A deploy helper in `install/` (mirroring `swatter-deploy-cf-creds.sh`) writes the
 keys into `/etc/swatter/swatter.conf` or a root-only key file with `0600`
