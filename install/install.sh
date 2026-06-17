@@ -11,6 +11,8 @@
 #   /etc/swatter/swatter.conf              (0600; copied from example if absent)
 #   /etc/swatter/badpaths.conf             (0644)
 #   /etc/swatter/monitoring.cidr           (0644)
+#   /etc/swatter/hosting-asns.txt          (0644)
+#   /etc/swatter/honeypot.paths.example    (0644; live honeypot.paths is never overwritten)
 #   /etc/cron.d/swatter                    (0644)
 #   /etc/logrotate.d/swatter               (0644)
 #   /var/lib/swatter, /var/log/swatter     (0750)
@@ -34,6 +36,9 @@ _install_local() {
     install -d -m 0755 /etc/swatter
     install -m 0644 "${SRC}"/config/badpaths.conf    /etc/swatter/badpaths.conf
     [[ -f /etc/swatter/monitoring.cidr ]] || install -m 0644 "${SRC}"/config/monitoring.cidr /etc/swatter/monitoring.cidr
+    install -m 0644 "${SRC}"/config/hosting-asns.txt /etc/swatter/hosting-asns.txt 2>/dev/null || true
+    # honeypot is operator-authored; ship only the example, never overwrite a live file.
+    install -m 0644 "${SRC}"/config/honeypot.paths.example /etc/swatter/honeypot.paths.example 2>/dev/null || true
     if [[ -f /etc/swatter/swatter.conf ]]; then
         echo "keeping existing /etc/swatter/swatter.conf"
     else
