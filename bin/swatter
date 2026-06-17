@@ -278,6 +278,33 @@ cmd_test_config() {
         echo "  CF domain map:  ${CF_DOMAINS_MAP} ($( [[ -r ${CF_DOMAINS_MAP} ]] && echo "${ndoms} domain(s)" || echo 'MISSING' ))"
         echo "  CF action:      ${CF_ACTION}"
     fi
+    echo
+    echo "  --- v1.3 feature readiness (advisory) ---"
+    local p
+    for p in ${INTEL_PROVIDERS:-}; do
+        case "$p" in
+            greynoise)       [[ -n "${GREYNOISE_KEY:-}" ]] && echo "  intel greynoise: key set" || echo "  intel greynoise: key not set (GREYNOISE_KEY empty) -> provider inert" ;;
+            projecthoneypot) [[ -n "${HTTPBL_KEY:-}" ]] && echo "  intel projecthoneypot: key set" || echo "  intel projecthoneypot: key not set (HTTPBL_KEY empty) -> provider inert" ;;
+            abuseipdb)       [[ -n "${ABUSEIPDB_KEY:-}" ]] && echo "  intel abuseipdb: key set" || echo "  intel abuseipdb: key not set (ABUSEIPDB_KEY empty) -> provider inert" ;;
+        esac
+    done
+    if [[ "${ASN_SIGNAL_ENABLE:-false}" == "true" || " ${INTEL_PROVIDERS:-} " == *" projecthoneypot "* ]]; then
+        [[ "${SWATTER_HAVE_DNS:-0}" -eq 1 ]] \
+            && echo "  dns client: ${SWATTER_DNS_TOOL} (http:BL + ASN ok)" \
+            || echo "  dns client: NONE -> http:BL + ASN inert (install dig/host)"
+    fi
+    if [[ "${ASN_SIGNAL_ENABLE:-false}" == "true" ]]; then
+        [[ -s "${HOSTING_ASNS_FILE:-}" ]] && echo "  asn signal: hosting list ${HOSTING_ASNS_FILE} ($(grep -cE '^[0-9]' "${HOSTING_ASNS_FILE}" 2>/dev/null) ASNs)" \
+            || echo "  asn signal: HOSTING_ASNS_FILE ${HOSTING_ASNS_FILE:-unset} missing/empty -> no boost"
+    fi
+    if [[ -n "${HONEYPOT_PATHS_FILE:-}" ]]; then
+        [[ -s "${HONEYPOT_PATHS_FILE}" ]] && echo "  honeypot: ${HONEYPOT_PATHS_FILE} active (run 'swatter honeypot' to advertise)" \
+            || echo "  honeypot: ${HONEYPOT_PATHS_FILE} empty/missing -> trap disabled"
+    fi
+    if [[ -n "${METRICS_FILE:-}" ]]; then
+        local md; md="$(dirname "${METRICS_FILE}")"
+        [[ -d "$md" && -w "$md" ]] && echo "  metrics: ${METRICS_FILE} writable" || echo "  metrics: ${md} missing/unwritable -> metrics skipped"
+    fi
 }
 
 cmd_honeypot() {
