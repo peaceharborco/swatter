@@ -60,6 +60,13 @@ branch that already exempts an allowlisted IP — auditing
   internet infrastructure. (One-line toggle `HONEYPOT_OVERRIDES_SUPPRESS` left
   for operators who want honeypot-wins; default `false`.)
 
+**Suppression is total.** A suppressed IP is exempt *everywhere*, not just at
+the block decision: it wins over any other provider's malicious score (a RIOT
+range that AbuseIPDB also flags — e.g. a shared CDN/NAT egress — is still
+exempted), and it accrues **no** low-and-slow sighting (§5) and can never be
+escalated by persistence. Concretely, `score.sh` checks `suppress_flag` first,
+before both the TEMP/PERM branch and the WATCH-band sighting accrual.
+
 **Files:** `lib/intel.sh` (contract + return value + cache format),
 `lib/score.sh` (consume `suppress_flag`).
 
@@ -88,7 +95,9 @@ suppresses (§0).
 
 **Config:** `GREYNOISE_KEY` (stub already exists in `common.sh`),
 `GREYNOISE_DAILY_QUOTA` (default e.g. 100; tune to your plan). Provider returns
-no-data when the key is empty, curl/jq missing, or quota exhausted.
+no-data when the key is empty, curl/jq missing, or quota exhausted. Any
+transport failure — timeout, HTTP 429 rate-limit, 5xx, unparseable body — is
+treated as **no-data** (exit 1), never a block.
 
 ---
 
@@ -104,9 +113,12 @@ no-data for any IPv6 IP. A valid hit's A record is `127.<days>.<threat>.<type>`:
 - octet4 = visitor-type bitmask: `0`=search engine, `1`=suspicious,
   `2`=harvester, `4`=comment spammer (bits combine).
 
-**Mapping.** If type == 0 (pure search engine) → no-data (good crawlers are
-already handled by `VERIFY_GOOD_CRAWLERS`). Otherwise score = `min(100, round(threat *
-100 / 255))`, label `httpbl:t<type>:s<threat>:d<days>`. No `suppress` verdict.
+**Mapping.** If type == 0 (pure search engine) → no-data. Two reasons: good
+crawlers are already handled by `VERIFY_GOOD_CRAWLERS`, **and** per the http:BL
+spec octet3 for a search-engine response is a *search-engine identifier*, not a
+threat score — so reading it as a 0–100 threat would be a bug. Otherwise score =
+`min(100, round(threat * 100 / 255))`, label `httpbl:t<type>:s<threat>:d<days>`.
+No `suppress` verdict. Any DNS failure/NXDOMAIN/non-127 first octet → no-data.
 
 **DNS client.** Prefer `dig +short`, fall back to `host` then `nslookup`;
 degrade to no-data if none present (a new *optional* dependency — does not break
@@ -126,8 +138,14 @@ anything when absent). A small `SWATTER_HAVE_DIG`-style probe is added in
 - IPv6: nibble-reverse + `.origin6.asn.cymru.com` TXT.
 - TXT payload `"ASN | BGP-prefix | CC | registry | date"`; take the first ASN.
 
-Runs **only for IPs past WATCH**, cached under `$STATE_DIR/asn/<ip>` with
-`INTEL_CACHE_TTL`. Same DNS-client probe/fallback as §2; no-data if no client.
+Runs **only for IPs past WATCH**. The cache (`$STATE_DIR/asn/<ip>`,
+`INTEL_CACHE_TTL`) stores the **resolved ASN + org**, not a hosting yes/no — so
+editing `hosting-asns.txt` takes effect immediately without re-resolving every
+IP; the hosting-set match is evaluated live each scan against the cached ASN.
+Same DNS-client probe/fallback as §2; no-data if no client. (An IP with multiple
+origin ASNs — rare multi-origin prefixes — uses the first.) Team Cymru's
+per-IP DNS is acceptable at this volume precisely because we only query
+past-WATCH IPs and cache for `INTEL_CACHE_TTL`.
 
 **Matching.** Resolved ASN is tested against `HOSTING_ASNS_FILE`
 (`/etc/swatter/hosting-asns.txt`), one AS number per line (`#` comments ok).
@@ -232,6 +250,16 @@ On any block of an IP (here or elsewhere), delete its sightings rows so it
 doesn't re-escalate every scan. Each scan also sweeps rows older than the window
 (cheap `DELETE WHERE bucket < cutoff`).
 
+**Structural note (avoid duplicated block logic).** A persistence escalation
+must run the *same* execution path a normal TEMP block does —
+classify-plane → never-block check → circuit-breaker → route to CSF/CF →
+`swatter_store_record` → audit. To avoid duplicating that ~40-line body, refactor
+it out of the inline `folded >= SCORE_TEMP` branch in `swatter_scan` into a
+single helper (e.g. `_swatter_execute_block ip action ttl folded reason ev rep
+novhost top_vhost`), called by both the normal path and the escalation. This
+refactor is part of step 6 and is the one structural change to the existing scan
+loop. Suppressed (§0) and never-block IPs accrue no sighting in the first place.
+
 **Defaults:** `PERSIST_ENABLE` = `true` (SQLite only), `PERSIST_N` = 6,
 `PERSIST_WINDOW_DAYS` = 3, `PERSIST_BUCKET_SECONDS` = 3600. On the flatfile
 store the feature no-ops with a `log_debug` (documented).
@@ -264,9 +292,36 @@ disables). Emitted at the **end of `swatter_scan`** *and* on-demand via
 `feed_age_seconds` is the staleness signal an operator alerts on (e.g. feed not
 refreshed in > 48 h ⇒ page). Reading the store is a handful of `COUNT`s; the
 whole emit is sub-millisecond and never fails the scan (best-effort, like
-`_swatter_audit`).
+`_swatter_audit`). If `METRICS_FILE`'s directory is missing or unwritable, the
+emit logs a warning **once** and skips — it never aborts the scan, and never
+leaves a partial file (the `mktemp`+`mv` is atomic, and the temp is created in
+the destination dir so the `mv` is a same-filesystem rename). `*_total` is
+cumulative since DB init; a DB reset resets it, which Prometheus handles as a
+normal counter reset.
 
 **Config:** `METRICS_FILE` (empty disables).
+
+---
+
+## 7. Operational integration (test-config + digest)
+
+**`swatter test-config`** is where operators catch misconfiguration, so it gains
+readiness checks for everything above (all advisory — none fail the command):
+
+- each provider in `INTEL_PROVIDERS`: present on disk, and key set where required
+  (warn "greynoise enabled but `GREYNOISE_KEY` empty → provider inert");
+- DNS client availability when `projecthoneypot`/`asn` are active (warn if no
+  `dig`/`host`/`nslookup`);
+- `HOSTING_ASNS_FILE` present and parseable when `ASN_SIGNAL_ENABLE`;
+- `HONEYPOT_PATHS_FILE` present and non-empty when configured (and a reminder to
+  run `swatter honeypot` to advertise the trap);
+- `METRICS_FILE` directory exists and is writable.
+
+**Nightly digest (`report.sh`) needs no code change.** It already groups actions
+by `action` and `reason`, so the new decisive rules (`honeypot`,
+`low_and_slow_persist`) and the new exemptions (`exempt … intel:riot:*`) surface
+in the existing buckets automatically. Confirmed in scope, no edit required — a
+deliberate non-change, recorded so it isn't re-litigated during implementation.
 
 ---
 
@@ -367,7 +422,8 @@ Matches the existing `test/` harness; no live keys needed (mock `curl`/`dig`):
 5. Honeypot (score.awk + score.sh + `swatter honeypot`)
 6. Persistence (store schema + score.sh escalation)
 7. Metrics (`lib/metrics.sh` + `swatter metrics` + scan hook)
-8. Docs + installer + `SWATTER_VERSION` bump to `1.3.0`
+8. `test-config` readiness checks (§7) + docs + installer + `SWATTER_VERSION`
+   bump to `1.3.0`
 
 Steps 1–3 share the intel layer; 4–6 are independent of each other; 7 reads what
 the others write. Per Swatter's release rule, the version bump + tag +
