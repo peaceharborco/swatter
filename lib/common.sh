@@ -207,11 +207,37 @@ swatter_check_deps() {
     SWATTER_HAVE_SQLITE=0;  have sqlite3 && SWATTER_HAVE_SQLITE=1
     SWATTER_HAVE_CSF=0;     have csf     && SWATTER_HAVE_CSF=1
     export SWATTER_HAVE_JQ SWATTER_HAVE_CURL SWATTER_HAVE_SQLITE SWATTER_HAVE_CSF
+    # DNS client for the DNS-based lookups (http:BL, Team Cymru ASN). Optional.
+    if have dig; then SWATTER_HAVE_DNS=1; SWATTER_DNS_TOOL="dig"
+    elif have host; then SWATTER_HAVE_DNS=1; SWATTER_DNS_TOOL="host"
+    elif have nslookup; then SWATTER_HAVE_DNS=1; SWATTER_DNS_TOOL="nslookup"
+    else SWATTER_HAVE_DNS=0; SWATTER_DNS_TOOL=""; fi
+    export SWATTER_HAVE_DNS SWATTER_DNS_TOOL
     # Fall back to flatfile if sqlite was requested but is unavailable.
     if [[ "${STORE}" == "sqlite" && "${SWATTER_HAVE_SQLITE}" -eq 0 ]]; then
         log_warn "sqlite3 not found; falling back to flatfile store"
         STORE="flatfile"
     fi
+}
+
+# _swatter_dns_a <hostname> : echo the first A-record dotted-quad, or nothing.
+_swatter_dns_a() {
+    local name="$1"
+    case "${SWATTER_DNS_TOOL}" in
+        dig)      dig +short +time=3 +tries=1 A "$name" 2>/dev/null | awk '/^[0-9]+\./{print; exit}' ;;
+        host)     host -W 3 -t A "$name" 2>/dev/null | awk '/has address/{print $NF; exit}' ;;
+        nslookup) nslookup -type=A "$name" 2>/dev/null | awk '/^Address: /{print $2; exit}' ;;
+    esac
+}
+
+# _swatter_dns_txt <hostname> : echo the first TXT record (quotes stripped), or nothing.
+_swatter_dns_txt() {
+    local name="$1"
+    case "${SWATTER_DNS_TOOL}" in
+        dig)      dig +short +time=3 +tries=1 TXT "$name" 2>/dev/null | head -1 | sed 's/^"//; s/"$//' ;;
+        host)     host -W 3 -t TXT "$name" 2>/dev/null | sed -n 's/.*descriptive text "\(.*\)"$/\1/p' | head -1 ;;
+        nslookup) nslookup -type=TXT "$name" 2>/dev/null | sed -n 's/.*text = "\(.*\)"$/\1/p' | head -1 ;;
+    esac
 }
 
 # ---------------------------------------------------------------------------
