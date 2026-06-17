@@ -433,16 +433,17 @@ GitHub/GitLab release is part of step 8 (push alone does not publish).
 
 ## Deployment (keys)
 
-Keys live in the Proton Pass `AI` vault, deployed root-only to `/etc/swatter/`
-like the existing CF creds — never committed:
+All three providers are optional — Swatter runs fully with zero API keys. When
+an operator does want them, keys are deployed root-only into `/etc/swatter/`
+(`0600`, `root:root`) and **never committed**:
 
-- AbuseIPDB — `AI > AbuseIPDB > API Key`
-- GreyNoise — `AI > GreyNoise > API Key`
-- Project Honey Pot http:BL — `AI > Project HoneyPot > Access Key`
+- **AbuseIPDB** — free tier (1,000 checks/day); key from the AbuseIPDB account page.
+- **GreyNoise** — free Community account; key from the GreyNoise account/profile.
+- **Project Honey Pot http:BL** — free 12-char access key from a Project Honey
+  Pot member dashboard.
 
-All three keys are provisioned and in the vault.
-
-A deploy helper in `install/` (mirroring `swatter-deploy-cf-creds.sh`) writes the
-keys into `/etc/swatter/swatter.conf` or a root-only key file with `0600`
-`root:root`, matching the cross-tree SSH/ownership rules.
+The README's "Getting your own provider API keys" section is the public-facing
+guide (each provider, free/paid, signup URL, all optional). Operators pull keys
+from their own secret store; nothing about any specific deployment's secret
+management belongs in this repo.
 ```

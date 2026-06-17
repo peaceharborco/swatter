@@ -993,13 +993,12 @@ case "$out" in *'swatter_mode{mode="enforce"} 1'*) PASS=$((PASS+1));; *) echo "F
 swatter_metrics_write "$STATE_DIR/swatter.prom"
 [[ -s "$STATE_DIR/swatter.prom" ]] && PASS=$((PASS+1)) || { echo "FAIL wrote-file"; FAIL=$((FAIL+1)); }
 
-# Empty path disables (no error, no file).
-swatter_metrics_write ""
-PASS=$((PASS+1))  # reaching here without error is the assertion
+# Empty path disables: returns 0 and writes nothing.
+swatter_metrics_write ""; check empty-rc "$?" "0"
 
-# Missing dir warns + skips, never errors.
-swatter_metrics_write "/nonexistent-dir-xyz/swatter.prom" 2>/dev/null && true
-PASS=$((PASS+1))
+# Missing dir warns + skips: returns 0 and creates no file at the bad path.
+swatter_metrics_write "$STATE_DIR/nope/swatter.prom" 2>/dev/null; check missingdir-rc "$?" "0"
+[[ ! -e "$STATE_DIR/nope/swatter.prom" ]] && PASS=$((PASS+1)) || { echo "FAIL missingdir-nofile"; FAIL=$((FAIL+1)); }
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
@@ -1759,6 +1758,26 @@ install -m 0644 -o root -g root "${SRC}/config/honeypot.paths.example" /etc/swat
   `benign` scanners are logged but still judged on behavior.
 - **Project Honey Pot http:BL** — DNS reputation (harvesters, comment spammers,
   suspicious hosts). Needs a free member access key and a DNS client.
+```
+
+and add a **public-facing key-guidance subsection** immediately after that list (this is the section the user explicitly asked for — prospective users guided to obtain THEIR OWN keys; no operator's keys or secret-store details appear anywhere in the repo):
+
+```markdown
+### Getting your own provider API keys
+
+**Swatter runs fully with zero API keys** — IPsum and Spamhaus need none, and
+every keyed provider degrades silently to "no data" when its key is unset. Add
+a key only for the providers you want; each is free:
+
+| Provider | Cost | Get a key |
+|---|---|---|
+| AbuseIPDB | Free (1,000 checks/day) | Create an account at abuseipdb.com → **Account → API** → generate a key. Set `ABUSEIPDB_KEY`. |
+| GreyNoise | Free (Community) | Sign up at greynoise.io → **Account / Profile** → copy the API key. Set `GREYNOISE_KEY`. |
+| Project Honey Pot | Free (membership) | Join projecthoneypot.org → request an **http:BL access key** (12 chars) from your member dashboard. Set `HTTPBL_KEY`. Needs `dig`/`host` installed. |
+
+Put keys in your **own** `/etc/swatter/swatter.conf` (root-only, `0600`) — never
+in the repo, never shared. The shipped `swatter.example.conf` has every key set
+to empty by default.
 ```
 
 and add a new top-level section after it:
