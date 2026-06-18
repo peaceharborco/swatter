@@ -237,7 +237,8 @@ swatter_check_deps() {
     SWATTER_HAVE_SQLITE=0;  have sqlite3 && SWATTER_HAVE_SQLITE=1
     SWATTER_HAVE_CSF=0;     have csf     && SWATTER_HAVE_CSF=1
     if have ipset && have iptables; then SWATTER_HAVE_IPSET=1; else SWATTER_HAVE_IPSET=0; fi
-    export SWATTER_HAVE_JQ SWATTER_HAVE_CURL SWATTER_HAVE_SQLITE SWATTER_HAVE_CSF SWATTER_HAVE_IPSET
+    SWATTER_HAVE_IP6TABLES=0; have ip6tables && SWATTER_HAVE_IP6TABLES=1   # gates IPv6 ipset DROP rule
+    export SWATTER_HAVE_JQ SWATTER_HAVE_CURL SWATTER_HAVE_SQLITE SWATTER_HAVE_CSF SWATTER_HAVE_IPSET SWATTER_HAVE_IP6TABLES
     # DNS client for the DNS-based lookups (http:BL, Team Cymru ASN). Optional.
     if have dig; then SWATTER_HAVE_DNS=1; SWATTER_DNS_TOOL="dig"
     elif have host; then SWATTER_HAVE_DNS=1; SWATTER_DNS_TOOL="host"

@@ -16,10 +16,33 @@ check() { local n="$1" g="$2" w="$3"; if [[ "$g" == "$w" ]]; then PASS=$((PASS+1
 swatter_store_record 1.2.3.4 perm csf 0 95 "r" 0
 swatter_store_record 5.6.7.8 perm csf 0 95 "r" 0
 swatter_store_record 9.9.9.9 temp csf 3600 80 "r" 0
+# 7.7.7.7: perm recorded ONLY in dry-run (dry_run=1) — detected, never blocked.
+swatter_store_record 7.7.7.7 perm csf 0 95 "r" 1
+# 8.8.8.8: really perm-blocked, then unblocked — must not be re-exported.
+swatter_store_record 8.8.8.8 perm csf 0 95 "r" 0
+swatter_store_unblock 8.8.8.8
 mapfile -t perms < <(swatter_store_perm_ips)
 check perm-count "${#perms[@]}" "2"
 case " ${perms[*]} " in *" 1.2.3.4 "*) PASS=$((PASS+1));; *) echo "FAIL perm-has-ip"; FAIL=$((FAIL+1));; esac
 case " ${perms[*]} " in *" 9.9.9.9 "*) echo "FAIL perm-excludes-temp"; FAIL=$((FAIL+1));; *) PASS=$((PASS+1));; esac
+case " ${perms[*]} " in *" 7.7.7.7 "*) echo "FAIL perm-excludes-dryrun"; FAIL=$((FAIL+1));; *) PASS=$((PASS+1));; esac
+case " ${perms[*]} " in *" 8.8.8.8 "*) echo "FAIL perm-excludes-unblocked"; FAIL=$((FAIL+1));; *) PASS=$((PASS+1));; esac
+
+# Same invariants on the flatfile (JSONL replay) backend.
+( STORE=flatfile; STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/swatter-fleet-ff.XXXXXX")"; swatter_store_init
+  swatter_store_record 1.2.3.4 perm csf 0 95 "r" 0      # enforced perm -> exported
+  swatter_store_record 7.7.7.7 perm csf 0 95 "r" 1      # dry-run only  -> excluded
+  swatter_store_record 8.8.8.8 perm csf 0 95 "r" 0; swatter_store_unblock 8.8.8.8  # unblocked -> excluded
+  swatter_store_record 9.9.9.9 temp csf 3600 80 "r" 0   # temp          -> excluded
+  ffp="$(swatter_store_perm_ips | tr '\n' ' ')"
+  rm -rf "$STATE_DIR"
+  ec=0
+  case " $ffp " in *" 1.2.3.4 "*) ;; *) echo "FAIL ff-has-enforced-perm: '$ffp'"; ec=1;; esac
+  case " $ffp " in *" 7.7.7.7 "*) echo "FAIL ff-excludes-dryrun"; ec=1;; esac
+  case " $ffp " in *" 8.8.8.8 "*) echo "FAIL ff-excludes-unblocked"; ec=1;; esac
+  case " $ffp " in *" 9.9.9.9 "*) echo "FAIL ff-excludes-temp"; ec=1;; esac
+  exit $ec
+) && PASS=$((PASS+1)) || FAIL=$((FAIL+1))
 
 echo
 echo "=== import-bans: never-block + invalid skipped, valid applied (dry-run) ==="

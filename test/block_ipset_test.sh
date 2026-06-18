@@ -8,13 +8,14 @@ source "${ROOT}/lib/block_ipset.sh"
 PASS=0; FAIL=0
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/swatter-ips.XXXXXX")"; trap 'rm -rf "$TMP"' EXIT
 CALLS="$TMP/calls"; : > "$CALLS"
-SWATTER_HAVE_IPSET=1; SWATTER_MODE="enforce"; MAX_CSF_DENIES_PER_RUN=10
+SWATTER_HAVE_IPSET=1; SWATTER_HAVE_IP6TABLES=1; SWATTER_MODE="enforce"; MAX_CSF_DENIES_PER_RUN=10
 IPSET_SAVE_FILE="$TMP/ipset.save"
 check() { local n="$1" g="$2" w="$3"; if [[ "$g" == "$w" ]]; then PASS=$((PASS+1)); else echo "FAIL ${n}: want='${w}' got='${g}'"; FAIL=$((FAIL+1)); fi; }
 has()   { local n="$1" pat="$2"; if grep -qF "$pat" "$CALLS"; then PASS=$((PASS+1)); else echo "FAIL ${n}: '${pat}' not in calls"; FAIL=$((FAIL+1)); fi; }
 
-# Mock ipset/iptables/ip6tables. `ipset save` writes the save file via redirection in the impl.
-ipset()    { if [[ "$1" == "save" ]]; then echo "SAVED"; else echo "ipset $*" >> "$CALLS"; fi; return 0; }
+# Mock ipset/iptables/ip6tables. For `ipset save <set>` record the call AND emit a
+# named create line to stdout (the impl redirects it into the save file).
+ipset()    { if [[ "$1" == "save" ]]; then echo "ipset $*" >> "$CALLS"; echo "create $2 hash:ip"; else echo "ipset $*" >> "$CALLS"; fi; return 0; }
 iptables() { echo "iptables $*" >> "$CALLS"; return 1; }   # return 1 so -C "misses" and -I runs
 ip6tables(){ echo "ip6tables $*" >> "$CALLS"; return 1; }
 
@@ -33,6 +34,10 @@ swatter_ipset_temp 2001:db8::1 60 r; has temp-v6 "ipset add swatter6 2001:db8::1
 # perm -> timeout 0, and writes the save file.
 swatter_ipset_perm 5.6.7.8 r; has perm "ipset add swatter4 5.6.7.8 timeout 0 -exist"
 [[ -f "$IPSET_SAVE_FILE" ]] && PASS=$((PASS+1)) || { echo "FAIL perm-save"; FAIL=$((FAIL+1)); }
+# save must name ONLY our two sets (not a bare `ipset save` of every set on the box).
+has perm-save-v4 "ipset save swatter4"
+has perm-save-v6 "ipset save swatter6"
+grep -qF "ipset save" "$CALLS" && ! grep -qE 'ipset save$' "$CALLS" && PASS=$((PASS+1)) || { echo "FAIL save-not-bare"; FAIL=$((FAIL+1)); }
 # unblock -> del from both sets.
 : > "$CALLS"; swatter_ipset_unblock 5.6.7.8
 has unb-v4 "ipset del swatter4 5.6.7.8 -exist"

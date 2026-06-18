@@ -40,13 +40,13 @@ _report_window_secs() {
 }
 
 # Build the plain-text digest body on stdout. Sets globals used for the subject:
-#   RPT_ACTED RPT_PERM RPT_TEMP RPT_CF RPT_CSF RPT_EXEMPT RPT_WATCH
+#   RPT_ACTED RPT_PERM RPT_TEMP RPT_CF RPT_DIRECT RPT_EXEMPT RPT_WATCH
 swatter_report_build() {
     local window="$1" cutoff
     cutoff=$(( $(swatter_now) - $(_report_window_secs "$window") ))
     local log="${LOG_DIR}/decisions.jsonl"
 
-    RPT_ACTED=0 RPT_PERM=0 RPT_TEMP=0 RPT_CF=0 RPT_CSF=0 RPT_EXEMPT=0 RPT_WATCH=0
+    RPT_ACTED=0 RPT_PERM=0 RPT_TEMP=0 RPT_CF=0 RPT_DIRECT=0 RPT_EXEMPT=0 RPT_WATCH=0
     ERR_TOTAL=0 ERR_FATAL=0 ERR_GENUINE=0 ERR_NOISE=0
 
     # The error-triage section runs first so its counters are set for the subject
@@ -106,7 +106,7 @@ _report_emit_abuse() {
     RPT_EXEMPT=$(printf '%s\n' "$recs" | jq -rc 'select(.action=="exempt")' | grep -c . || true)
     RPT_WATCH=$(printf '%s\n'  "$recs" | jq -rc 'select(.action=="watch")'  | grep -c . || true)
     RPT_CF=$(printf '%s\n'     "$recs" | jq -rc 'select(.channel=="cloudflare" and (.action=="temp" or .action=="perm"))' | grep -c . || true)
-    RPT_CSF=$(printf '%s\n'    "$recs" | jq -rc 'select(.channel=="csf" and (.action=="temp" or .action=="perm"))' | grep -c . || true)
+    RPT_DIRECT=$(printf '%s\n' "$recs" | jq -rc 'select((.channel=="csf" or .channel=="ipset") and (.action=="temp" or .action=="perm"))' | grep -c . || true)
     RPT_ACTED=$(( RPT_PERM + RPT_TEMP ))
 
     {
@@ -114,7 +114,7 @@ _report_emit_abuse() {
         echo "-------------"
         printf '  %-22s %s\n' "permanent blocks:" "${RPT_PERM}"
         printf '  %-22s %s\n' "temporary blocks:" "${RPT_TEMP}"
-        printf '  %-22s %s\n' "  via CSF (direct):" "${RPT_CSF}"
+        printf '  %-22s %s\n' "  direct (CSF/ipset):" "${RPT_DIRECT}"
         printf '  %-22s %s\n' "  via Cloudflare:"   "${RPT_CF}"
         printf '  %-22s %s\n' "exempted (allowlist):" "${RPT_EXEMPT}"
         printf '  %-22s %s\n' "watched (no action):" "${RPT_WATCH}"
@@ -192,7 +192,7 @@ _report_render_html() {
         printf '<div style="margin-bottom:6px">'
         _pill "${RPT_PERM:-0}"  "#ffeef0" "#b31d28" 0 "permanent"
         _pill "${RPT_TEMP:-0}"  "#fff5b1" "#735c0f" 0 "temporary"
-        _pill "${RPT_CSF:-0}"   "#dbedff" "#0349b4" 0 "via&nbsp;CSF"
+        _pill "${RPT_DIRECT:-0}"   "#dbedff" "#0349b4" 0 "direct"
         _pill "${RPT_CF:-0}"    "#ffead7" "#9a4d00" 0 "via&nbsp;Cloudflare"
         _pill "${RPT_WATCH:-0}" "#eaecef" "#444d56" 0 "watched"
         if [[ "${ERROR_DIGEST_ENABLE}" == "true" ]]; then

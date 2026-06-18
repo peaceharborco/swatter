@@ -356,7 +356,7 @@ cmd_import_bans() {
     swatter_store_init
     local line ip nb n=0 dry
     dry="$([[ "${SWATTER_MODE}" == "enforce" ]] && echo 0 || echo 1)"
-    local channel; channel="$([[ "${DIRECT_BACKEND:-csf}" == "ipset" ]] && echo ipset || echo csf)"
+    local channel="${DIRECT_BACKEND:-csf}"
     while IFS= read -r line; do
         ip="${line%%#*}"; ip="$(printf '%s' "$ip" | tr -d '[:space:]')"
         [[ -n "$ip" ]] || continue

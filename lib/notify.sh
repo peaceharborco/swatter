@@ -58,22 +58,35 @@ _notify_webhook() {
             *) fmt="generic" ;;
         esac
     fi
-    local text; text="swatter: $1 — $2"
-    case "$fmt" in
-        slack)   payload="$(printf '{"text":"%s"}' "$(_notify_jesc "$text")")" ;;
-        discord) payload="$(printf '{"content":"%s"}' "$(_notify_jesc "$text")")" ;;
-        *)       payload="$(printf '{"host":"%s","subject":"%s","body":"%s"}' "$(_notify_jesc "$(hostname -s 2>/dev/null)")" "$(_notify_jesc "$1")" "$(_notify_jesc "$2")")" ;;
-    esac
+    local text host; text="swatter: $1 — $2"; host="$(hostname -s 2>/dev/null)"
+    if [[ "${SWATTER_HAVE_JQ:-0}" -eq 1 ]]; then
+        # jq escapes control chars correctly; the bash _notify_jesc path is the
+        # no-jq fallback only (it maps newlines/tabs to space, drops nothing else).
+        case "$fmt" in
+            slack)   payload="$(jq -nc --arg t "$text" '{text:$t}')" ;;
+            discord) payload="$(jq -nc --arg c "$text" '{content:$c}')" ;;
+            *)       payload="$(jq -nc --arg h "$host" --arg s "$1" --arg b "$2" '{host:$h,subject:$s,body:$b}')" ;;
+        esac
+    else
+        case "$fmt" in
+            slack)   payload="$(printf '{"text":"%s"}' "$(_notify_jesc "$text")")" ;;
+            discord) payload="$(printf '{"content":"%s"}' "$(_notify_jesc "$text")")" ;;
+            *)       payload="$(printf '{"host":"%s","subject":"%s","body":"%s"}' "$(_notify_jesc "$host")" "$(_notify_jesc "$1")" "$(_notify_jesc "$2")")" ;;
+        esac
+    fi
     curl --max-time 8 -fsS -H "Content-Type: application/json" -d "$payload" "${ALERT_WEBHOOK_URL}" >/dev/null 2>&1 \
         || log_warn "notify: webhook post failed"
 }
 
 swatter_notify() {
     local subject="$1" body="$2" key="${3:-}"
+    # Rate-limit marker is written SYNCHRONOUSLY here; the channel sends (each a
+    # bounded-timeout curl/MTA) are dispatched in the BACKGROUND so a slow SMS/
+    # webhook/mail endpoint never delays the scan — mirrors the AbuseIPDB report.
     _notify_ratelimited "$key" && { log_debug "alert '${key}' rate-limited"; return 0; }
-    _notify_mail    "$subject" "$body" || true
-    _notify_email   "$subject" "$body" || true
-    _notify_sms     "$subject" "$body" || true
-    _notify_webhook "$subject" "$body" || true
+    ( _notify_mail    "$subject" "$body"
+      _notify_email   "$subject" "$body"
+      _notify_sms     "$subject" "$body"
+      _notify_webhook "$subject" "$body" ) &
     return 0
 }
