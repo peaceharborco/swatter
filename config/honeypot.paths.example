@@ -6,7 +6,8 @@
 # Pick a SECRET path nobody legitimately requests, advertise it only where bots
 # look (run `swatter honeypot` for a robots.txt + invisible-anchor snippet), and
 # copy this file to /etc/swatter/honeypot.paths. Keep patterns anchored-loose
-# (no ^/$), matched case-insensitively like badpaths.
+# (no ^/$). Patterns MUST be LOWERCASE: request paths are lowercased before
+# matching (like badpaths), so any uppercase token here silently never matches.
 #
 # Example (CHANGE THE TOKEN to something unique to your site):
 # /__trap_a7f3c1d9(/|$)

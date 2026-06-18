@@ -161,8 +161,11 @@ swatter_scan() {
         [[ -n "$replabel" ]] && reason="${reason} intel=${replabel}(${rep})"
         [[ -n "$asn_label" ]] && reason="${reason} asn=${asn_label}+${W_ASN:-12}"
 
-        # Suppression is total: exempt everywhere, before any action or sighting.
-        if [[ "$suppress" == "1" ]]; then
+        # Suppression is total — exempt everywhere — UNLESS a honeypot hit and
+        # HONEYPOT_OVERRIDES_SUPPRESS=true together override it (operator opt-in;
+        # default false keeps a known-good RIOT range safe even on a trap hit).
+        if [[ "$suppress" == "1" ]] \
+           && ! { (( is_honeypot )) && [[ "${HONEYPOT_OVERRIDES_SUPPRESS:-false}" == "true" ]]; }; then
             log_info "exempt ${ip} (intel:${replabel}) score=${folded}"
             _swatter_audit "$ip" "$folded" "exempt" "none" 0 "intel:${replabel}" "$ev" "$rep"
             continue

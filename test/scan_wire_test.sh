@@ -80,6 +80,26 @@ feed $'5.5.5.5\t64\t30\t{"sub":{"burst":0},"novhost":0,"hibad_fail":12,"decisive
 swatter_scan >/dev/null 2>&1
 check no-asn-watch "$(last_action)" "watch"
 
+# 5) HONEYPOT_OVERRIDES_SUPPRESS: suppressed IP that hits a honeypot.
+#    Default/false -> suppression wins (exempt). True -> honeypot wins (perm).
+swatter_asn_resolve() { return 1; }   # don't matter here; keep ASN off for this IP
+feed $'7.7.7.7\t10\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"honeypot","honeypot":1,"top_vhost":""}'
+swatter_intel_score() { printf '0\triot:google\t1\n'; }   # suppress=1
+HONEYPOT_OVERRIDES_SUPPRESS="false"
+swatter_scan >/dev/null 2>&1
+check honeypot-suppress-default-exempt "$(last_action)" "exempt"
+
+unset HONEYPOT_OVERRIDES_SUPPRESS
+feed $'7.7.7.7\t10\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"honeypot","honeypot":1,"top_vhost":""}'
+swatter_scan >/dev/null 2>&1
+check honeypot-suppress-unset-exempt "$(last_action)" "exempt"
+
+HONEYPOT_OVERRIDES_SUPPRESS="true"
+feed $'7.7.7.7\t10\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"honeypot","honeypot":1,"top_vhost":""}'
+swatter_scan >/dev/null 2>&1
+check honeypot-suppress-override-perm "$(last_action)" "perm"
+unset HONEYPOT_OVERRIDES_SUPPRESS
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

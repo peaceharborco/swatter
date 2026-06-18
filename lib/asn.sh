@@ -61,6 +61,7 @@ _swatter_asn_attack_shaped() {
     burst="$(printf '%s' "$ev" | sed -n 's/.*"burst":\([0-9]*\).*/\1/p')"
     [[ -n "$rule" ]] && return 0
     [[ "$hibad" =~ ^[0-9]+$ ]] && (( hibad > 0 )) && return 0
+    # burst is the burst SUBSCORE (0-100), not a raw count: 50 ≈ ~20 raw 403/404/444 hits.
     [[ "$burst" =~ ^[0-9]+$ ]] && (( burst >= 50 )) && return 0
     return 1
 }

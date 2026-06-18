@@ -46,6 +46,12 @@ GN_RC=0
 GREYNOISE_KEY=""
 if provider_greynoise 6.6.6.6 >/dev/null 2>&1; then echo "FAIL nokey-nodata"; FAIL=$((FAIL+1)); else PASS=$((PASS+1)); fi
 
+# Daily quota exhausted -> no-data (restore key + a good response so only quota gates it).
+GREYNOISE_KEY="testkey"; GREYNOISE_DAILY_QUOTA=0
+GN_RESP='{"classification":"malicious","riot":false,"name":"Mirai"}'
+if provider_greynoise 7.7.7.7 >/dev/null 2>&1; then echo "FAIL quota-nodata"; FAIL=$((FAIL+1)); else PASS=$((PASS+1)); fi
+GREYNOISE_DAILY_QUOTA=1000
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
