@@ -129,8 +129,9 @@ main() {
     done
     (( fails == 0 )) || die "tests failing — not releasing"
 
-    # Release notes.
-    local notes; notes="$(mktemp)"; trap 'rm -f "$notes"' EXIT
+    # Release notes. (Bake the path into the trap NOW — a single-quoted trap would
+    # reference $notes at EXIT time, after this local is out of scope: set -u abort.)
+    local notes; notes="$(mktemp)"; trap "rm -f '$notes'" EXIT
     if [[ -n "$notes_override" ]]; then
         cat "$notes_override" > "$notes"
     else
