@@ -335,7 +335,9 @@ EOF
 cmd_export_bans() {
     swatter_store_init
     local out="${1:-}"
-    if [[ -n "$out" ]]; then swatter_store_perm_ips > "$out"; log_info "exported $(swatter_store_perm_ips | grep -c .) perm ban(s) -> ${out}"
+    if [[ -n "$out" ]]; then
+        swatter_store_perm_ips > "$out"
+        log_info "exported $(grep -c . "$out" 2>/dev/null || echo 0) perm ban(s) -> ${out}"
     else swatter_store_perm_ips; fi
 }
 
