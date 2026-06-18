@@ -211,8 +211,7 @@ cmd_refresh_feeds() {
     fi
     # Intel feeds.
     swatter_intel_init
-    declare -F provider_ipsum_refresh    >/dev/null && provider_ipsum_refresh || true
-    declare -F provider_spamhaus_refresh >/dev/null && provider_spamhaus_refresh || true
+    swatter_intel_refresh_all
 
     # Re-run Cloudflare posture detection now that ranges are fresh. Only matters
     # for CF_MODE=auto, but caching it always keeps `status`/`test-config`

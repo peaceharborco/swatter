@@ -20,17 +20,38 @@
 # (providers are sourced lazily in swatter_intel_init)
 
 swatter_intel_init() {
+    # Aggregate provider files define multiple named providers (registry feeds);
+    # source them first so per-name resolution can find them.
+    local agg
+    for agg in listfeeds; do
+        local af="${SWATTER_LIB_DIR}/providers/${agg}.sh"
+        # shellcheck disable=SC1090
+        [[ -f "$af" ]] && source "$af"
+    done
     local p
     for p in ${INTEL_PROVIDERS}; do
         local f="${SWATTER_LIB_DIR}/providers/${p}.sh"
         if [[ -f "$f" ]]; then
             # shellcheck disable=SC1090
             source "$f"
+        elif declare -F "provider_${p}" >/dev/null; then
+            :   # already defined by an aggregate (e.g. listfeeds)
         else
             log_warn "intel provider not found: ${p} (${f})"
         fi
     done
     SWATTER_INTEL_QUOTA_USED=0
+}
+
+# Refresh every list feed: call provider_<p>_refresh for each configured provider
+# that defines one (per-IP providers define none and are skipped).
+swatter_intel_refresh_all() {
+    local p
+    for p in ${INTEL_PROVIDERS}; do
+        if declare -F "provider_${p}_refresh" >/dev/null; then
+            provider_"${p}"_refresh || true
+        fi
+    done
 }
 
 # Has intel at all? (used to decide whether to fold W_REPUTATION into the score)
