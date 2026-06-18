@@ -39,6 +39,9 @@ MAX_BYTES_PER_FILE=209715200
 # disables the signal; an absent key in the config inherits this default.
 DIRECT_WEB_PORTS="80 443"
 
+: "${DIRECT_BACKEND:=csf}"
+: "${IPSET_SAVE_FILE:=/etc/swatter/ipset.save}"
+
 SCORE_WATCH=50
 SCORE_TEMP=70
 SCORE_PERM=85
@@ -219,7 +222,8 @@ swatter_check_deps() {
     SWATTER_HAVE_CURL=0;    have curl    && SWATTER_HAVE_CURL=1
     SWATTER_HAVE_SQLITE=0;  have sqlite3 && SWATTER_HAVE_SQLITE=1
     SWATTER_HAVE_CSF=0;     have csf     && SWATTER_HAVE_CSF=1
-    export SWATTER_HAVE_JQ SWATTER_HAVE_CURL SWATTER_HAVE_SQLITE SWATTER_HAVE_CSF
+    if have ipset && have iptables; then SWATTER_HAVE_IPSET=1; else SWATTER_HAVE_IPSET=0; fi
+    export SWATTER_HAVE_JQ SWATTER_HAVE_CURL SWATTER_HAVE_SQLITE SWATTER_HAVE_CSF SWATTER_HAVE_IPSET
     # DNS client for the DNS-based lookups (http:BL, Team Cymru ASN). Optional.
     if have dig; then SWATTER_HAVE_DNS=1; SWATTER_DNS_TOOL="dig"
     elif have host; then SWATTER_HAVE_DNS=1; SWATTER_DNS_TOOL="host"

@@ -73,7 +73,7 @@ _swatter_execute_block() {
     local plane; plane="$(swatter_classify "$ip" "$novhost")"
     local channel="none" did=0
     if [[ "$plane" == "DIRECT" ]]; then
-        channel="csf"
+        channel="${DIRECT_BACKEND:-csf}"
         if (( ! healthy )); then
             log_warn "fail-closed: not CSF-denying ${ip} (allowlist unhealthy)"
             _swatter_audit "$ip" "$folded" "skipped-failclosed" "csf" "$ttl" "$reason" "$ev" "$rep"; return 1
