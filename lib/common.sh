@@ -80,7 +80,8 @@ CF_DOMAINS_MAP="/etc/swatter/cf-domains.map"
 # CF-Connecting-IP block (a "behind Cloudflare" signal). cPanel/EA-Apache paths.
 SWATTER_HTTPD_CF_GLOB="/etc/apache2/conf.d/*.conf /etc/apache2/conf.modules.d/*.conf /usr/local/apache/conf/includes/*.conf"
 
-: "${INTEL_PROVIDERS:=ipsum spamhaus abuseipdb greynoise projecthoneypot}"
+: "${INTEL_PROVIDERS:=ipsum spamhaus abuseipdb greynoise projecthoneypot firehol_level1 blocklist_de cins greensnow dshield et_compromised}"
+: "${ABUSEIPDB_BLOCKLIST_CONFIDENCE:=90}"
 ABUSEIPDB_KEY=""
 ABUSEIPDB_DAILY_QUOTA=1000
 : "${GREYNOISE_KEY:=}"

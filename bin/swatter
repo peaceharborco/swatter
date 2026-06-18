@@ -33,7 +33,7 @@ umask 0027
 
 SWATTER_ENTRYPOINT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
 SWATTER_ARGV=("$@")
-SWATTER_VERSION="1.3.0"
+SWATTER_VERSION="1.4.0"
 
 # Locate libs: installed layout (/usr/local/lib/swatter) or repo layout (../lib).
 _self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -211,8 +211,7 @@ cmd_refresh_feeds() {
     fi
     # Intel feeds.
     swatter_intel_init
-    declare -F provider_ipsum_refresh    >/dev/null && provider_ipsum_refresh || true
-    declare -F provider_spamhaus_refresh >/dev/null && provider_spamhaus_refresh || true
+    swatter_intel_refresh_all
 
     # Re-run Cloudflare posture detection now that ranges are fresh. Only matters
     # for CF_MODE=auto, but caching it always keeps `status`/`test-config`

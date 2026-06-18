@@ -40,6 +40,26 @@ rm -rf "$STATE_DIR/intel"; mkdir -p "$STATE_DIR/intel"
 out="$(swatter_intel_score 9.9.9.9)"
 check nodata      "$(printf '%s' "$out" | cut -f1)" "0"
 
+# --- registry wiring: intel_init sources aggregates + refresh loop ---
+SWATTER_LIB_DIR="${ROOT}/lib"
+# A fake aggregate provider file would normally define provider_<name>; emulate by
+# pre-defining one, then assert intel_init does NOT warn for it and DOES warn for a
+# genuinely-missing provider.
+provider_fakefeed() { printf '50\t%s\tfakefeed\n' "$INTEL_CACHE_TTL"; }
+INTEL_PROVIDERS="ipsum fakefeed totallymissing"
+warns="$(swatter_intel_init 2>&1 1>/dev/null)"
+case "$warns" in *fakefeed*) echo "FAIL init-warns-defined"; FAIL=$((FAIL+1));; *) PASS=$((PASS+1));; esac
+case "$warns" in *totallymissing*) PASS=$((PASS+1));; *) echo "FAIL init-missing-no-warn"; FAIL=$((FAIL+1));; esac
+
+# swatter_intel_refresh_all calls _refresh for providers that define one, skips others.
+RAN=""
+provider_aaa_refresh() { RAN="${RAN}aaa "; }
+provider_bbb_refresh() { RAN="${RAN}bbb "; }
+provider_ccc()         { :; }   # no _refresh -> must be skipped
+INTEL_PROVIDERS="aaa bbb ccc"
+swatter_intel_refresh_all
+check refresh-all "$RAN" "aaa bbb "
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -40,6 +40,25 @@ if _swatter_asn_attack_shaped '{"sub":{"burst":80},"hibad_fail":0,"decisive_rule
 if _swatter_asn_attack_shaped '{"sub":{"burst":5},"hibad_fail":0,"decisive_rule":"scanner_profile"}'; then PASS=$((PASS+1)); else echo "FAIL shaped-rule"; FAIL=$((FAIL+1)); fi
 if _swatter_asn_attack_shaped '{"sub":{"burst":5},"hibad_fail":0,"decisive_rule":""}'; then echo "FAIL clean-not-shaped"; FAIL=$((FAIL+1)); else PASS=$((PASS+1)); fi
 
+# --- IPv6 ASN via origin6 ---
+source "${ROOT}/lib/allowlist.sh"   # for _ipv6_expand
+_TXT_Q_FILE="$(mktemp "${TMPDIR:-/tmp}/swatter-asn-q.XXXXXX")"
+LAST_TXT_Q=""
+_swatter_dns_txt() { printf '%s' "$1" >"$_TXT_Q_FILE"; [[ -n "$CYMRU_TXT" ]] && printf '%s\n' "$CYMRU_TXT"; }
+rm -f "$STATE_DIR/asn/2001:db8::1"
+CYMRU_TXT='13335 | 2001:db8::/32 | US | arin | 2010-01-01'
+check v6-resolve "$(swatter_asn_resolve 2001:db8::1)" "13335"
+LAST_TXT_Q="$(cat "$_TXT_Q_FILE" 2>/dev/null || true)"; rm -f "$_TXT_Q_FILE"
+# query must target origin6 with the reversed nibble labels (ends with the high nibbles).
+case "$LAST_TXT_Q" in
+  *origin6.asn.cymru.com) PASS=$((PASS+1));;
+  *) echo "FAIL v6-query-origin6: ${LAST_TXT_Q}"; FAIL=$((FAIL+1));;
+esac
+case "$LAST_TXT_Q" in
+  1.0.0.0.*.8.b.d.0.1.0.0.2.origin6.asn.cymru.com) PASS=$((PASS+1));;
+  *) echo "FAIL v6-query-nibbles: ${LAST_TXT_Q}"; FAIL=$((FAIL+1));;
+esac
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

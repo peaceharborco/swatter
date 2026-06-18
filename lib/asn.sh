@@ -20,9 +20,12 @@ swatter_asn_resolve() {
     fi
     local query
     if [[ "$ip" == *:* ]]; then
-        # TODO(v1.3.1): origin6 nibble-reverse for IPv6 ASN lookups; v4 covers
-        # the shipped default hosting list. No boost applied to v6 today (safe).
-        return 1
+        # IPv6: expand to 32 hex nibbles, reverse + dot-separate, query origin6.
+        declare -F _ipv6_expand >/dev/null || return 1
+        local nib rev
+        nib="$(_ipv6_expand "$ip")" || return 1
+        rev="$(printf '%s' "$nib" | rev | sed 's/./&./g; s/\.$//')"
+        query="${rev}.origin6.asn.cymru.com"
     else
         query="$(_asn_rev_v4 "$ip").origin.asn.cymru.com"
     fi
