@@ -5,6 +5,10 @@
 useDefault = true
 
 [[allowlists]]
-description = "Audited false positives (apps/swatter)"
+description = "Audited false positives (apps/swatter): empty credential placeholders"
 regexTarget = "line"
-regexes = ['''ABUSEIPDB_KEY=""''']  # empty placeholder; a pasted key still trips
+# Empty-string credential assignments (KEY/TOKEN/SID/SECRET/PASSWORD = "") in the
+# example config and design docs. An empty value is categorically not a secret;
+# a pasted NON-empty key/token still trips (the value must be "" to match here).
+# Covers ABUSEIPDB_KEY, GREYNOISE_KEY, HTTPBL_KEY, BREVO_API_KEY, TWILIO_SID, etc.
+regexes = ['''[A-Z0-9_]*(?:KEY|TOKEN|SID|SECRET|PASSWORD)\s*=\s*""''']
