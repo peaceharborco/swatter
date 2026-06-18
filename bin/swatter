@@ -23,6 +23,8 @@
 #   swatter honeypot               print robots.txt + invisible-anchor snippet for the trap path
 #   swatter setup-ipset            create ipset sets + iptables DROP rules (idempotent)
 #   swatter metrics [--print]      write the Prometheus textfile (or print it)
+#   swatter export-bans [file]     write perm-ban list to file (or stdout)
+#   swatter import-bans <file>     block each listed IP as perm (skips never-block/invalid)
 #   swatter version
 
 set -uo pipefail
@@ -330,6 +332,33 @@ Disallow: ${clean}/
 EOF
 }
 
+cmd_export_bans() {
+    swatter_store_init
+    local out="${1:-}"
+    if [[ -n "$out" ]]; then swatter_store_perm_ips > "$out"; log_info "exported $(swatter_store_perm_ips | grep -c .) perm ban(s) -> ${out}"
+    else swatter_store_perm_ips; fi
+}
+
+cmd_import_bans() {
+    local file="${1:-}"
+    [[ -f "$file" ]] || die "usage: swatter import-bans <file>"
+    swatter_store_init
+    local line ip nb n=0 dry
+    dry="$([[ "${SWATTER_MODE}" == "enforce" ]] && echo 0 || echo 1)"
+    local channel; channel="$([[ "${DIRECT_BACKEND:-csf}" == "ipset" ]] && echo ipset || echo csf)"
+    while IFS= read -r line; do
+        ip="${line%%#*}"; ip="$(printf '%s' "$ip" | tr -d '[:space:]')"
+        [[ -n "$ip" ]] || continue
+        swatter_is_valid_ip_or_cidr "$ip" 2>/dev/null || { log_warn "import-bans: skip invalid '${ip}'"; continue; }
+        if nb="$(swatter_is_never_block "$ip")"; then log_info "import-bans: skip never-block ${ip} (${nb})"; continue; fi
+        if swatter_block_direct_perm "$ip" "imported ban"; then
+            swatter_store_record "$ip" perm "$channel" 0 90 "imported ban" "$dry"
+            n=$(( n + 1 ))
+        fi
+    done < "$file"
+    log_info "import-bans: ${n} ban(s) applied (mode=${SWATTER_MODE}, backend=${channel})"
+}
+
 cmd_setup_ipset() { swatter_ipset_setup; }
 
 cmd_metrics() {
@@ -354,6 +383,8 @@ main() {
         honeypot)      cmd_honeypot ;;
         setup-ipset)   cmd_setup_ipset ;;
         metrics)       cmd_metrics "$@" ;;
+        export-bans)   cmd_export_bans "$@" ;;
+        import-bans)   cmd_import_bans "$@" ;;
         version|--version|-v) echo "swatter ${SWATTER_VERSION}" ;;
         ""|help|-h|--help) usage ;;
         *) echo "swatter: unknown command '${sub}' (try: swatter help)" >&2; exit 2 ;;

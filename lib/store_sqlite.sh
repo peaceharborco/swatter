@@ -197,6 +197,16 @@ swatter_store_sighting_sweep() {
     _sql "DELETE FROM sightings WHERE last_ts<${cutoff};"
 }
 
+# Echo permanently-banned IPs, one per line (source for `swatter export-bans`).
+swatter_store_perm_ips() {
+    if [[ "${STORE}" == "sqlite" ]]; then
+        _sqlq "SELECT ip FROM offenders WHERE perm=1 ORDER BY ip;"
+    else
+        grep -F '"action":"perm"' "$(_swatter_jsonl)" 2>/dev/null \
+            | sed -n 's/.*"ip":"\([^"]*\)".*/\1/p' | sort -u
+    fi
+}
+
 # Echo "temp_offenders <TAB> perm_offenders" (for metrics).
 swatter_store_counts() {
     if [[ "${STORE}" != "sqlite" ]]; then printf '0\t0\n'; return 0; fi
