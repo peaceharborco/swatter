@@ -78,8 +78,8 @@ _swatter_execute_block() {
             log_warn "fail-closed: not CSF-denying ${ip} (allowlist unhealthy)"
             _swatter_audit "$ip" "$folded" "skipped-failclosed" "csf" "$ttl" "$reason" "$ev" "$rep"; return 1
         fi
-        if [[ "$action" == "perm" ]]; then swatter_csf_perm "$ip" "$reason" && did=1
-        else swatter_csf_temp "$ip" "$ttl" "$reason" && did=1; fi
+        if [[ "$action" == "perm" ]]; then swatter_block_direct_perm "$ip" "$reason" && did=1
+        else swatter_block_direct_temp "$ip" "$ttl" "$reason" && did=1; fi
     else
         channel="cloudflare"
         if ! swatter_cf_manages_plane; then

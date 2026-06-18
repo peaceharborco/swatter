@@ -55,7 +55,7 @@ swatter_check_deps
 SWATTER_NOW_EPOCH="$(date -u +%s)"; export SWATTER_NOW_EPOCH
 
 # Source the rest.
-for m in allowlist classify ingest store_sqlite block_csf block_cf intel asn metrics score errors report; do
+for m in allowlist classify ingest store_sqlite block_csf block block_cf intel asn metrics score errors report; do
     # shellcheck disable=SC1090
     source "${LIBDIR}/${m}.sh"
 done
@@ -137,7 +137,7 @@ cmd_unblock() {
     swatter_validate_ip_or_cidr "$ip"
     [[ "${2:-}" == "--perm-allow" ]] && perm_allow=1
     swatter_store_init
-    swatter_csf_unblock "$ip"
+    swatter_block_direct_unblock "$ip"
     swatter_cf_unblock "$ip"
     swatter_store_unblock "$ip"
     if (( perm_allow )); then
