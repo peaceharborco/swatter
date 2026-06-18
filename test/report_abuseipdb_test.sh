@@ -17,9 +17,17 @@ EV='{"decisive_rule":"high_badpath_repeat","honeypot":0}'
 # Off by default (ABUSEIPDB_REPORT unset/false) -> no POST, no marker.
 swatter_abuseipdb_report 1.2.3.4 "$EV" "brute"; wait 2>/dev/null
 [[ -s "$POSTS" ]] && { echo "FAIL off-no-post"; FAIL=$((FAIL+1)); } || PASS=$((PASS+1))
+[[ ! -f "$STATE_DIR/reported/1.2.3.4" ]] && PASS=$((PASS+1)) || { echo "FAIL off-no-marker"; FAIL=$((FAIL+1)); }
 
-# Enabled -> background POST with mapped categories (brute -> 18,21); marker written synchronously.
+# Dry-run (SWATTER_MODE=report) with ABUSEIPDB_REPORT=true + key -> no POST, no marker.
 ABUSEIPDB_REPORT="true"
+SWATTER_MODE="report"
+swatter_abuseipdb_report 3.3.3.3 "$EV" "brute"; wait 2>/dev/null
+grep -q "ip=3.3.3.3" "$POSTS" && { echo "FAIL dryrun-no-post"; FAIL=$((FAIL+1)); } || PASS=$((PASS+1))
+[[ ! -f "$STATE_DIR/reported/3.3.3.3" ]] && PASS=$((PASS+1)) || { echo "FAIL dryrun-no-marker"; FAIL=$((FAIL+1)); }
+
+# Enabled (enforce mode) -> background POST with mapped categories (brute -> 18,21); marker written synchronously.
+SWATTER_MODE="enforce"
 swatter_abuseipdb_report 1.2.3.4 "$EV" "brute"
 [[ -f "$STATE_DIR/reported/1.2.3.4" ]] && PASS=$((PASS+1)) || { echo "FAIL marker"; FAIL=$((FAIL+1)); }
 wait 2>/dev/null   # let the backgrounded curl finish

@@ -65,10 +65,11 @@ _install_local() {
     if [[ "${_backend}" == "ipset" ]]; then
         echo "DIRECT_BACKEND=ipset detected — running setup-ipset ..."
         /usr/local/bin/swatter setup-ipset || echo "  (setup-ipset had errors; install ipset/iptables and re-run)"
+        local ipsf
+        ipsf="$(bash -c 'source /etc/swatter/swatter.conf 2>/dev/null; echo "${IPSET_SAVE_FILE:-/etc/swatter/ipset.save}"')"
         echo "  NOTE: ipset rules are not persistent across reboots."
         echo "  Add the following to /etc/rc.local (or an equivalent boot hook) to restore them:"
-        echo "    ipset restore < \"\$(grep IPSET_SAVE_FILE /etc/swatter/swatter.conf | cut -d'\"' -f2)\""
-        echo "  Or use the default: ipset restore < /etc/swatter/ipset.save"
+        echo "    ipset restore < \"${ipsf}\""
         echo
     fi
 

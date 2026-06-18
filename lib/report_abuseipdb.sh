@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # lib/report_abuseipdb.sh — opt-in outbound reporting to AbuseIPDB.
 #
-# After a CONFIRMED block, optionally report the offender to AbuseIPDB so the
-# wider community benefits. Gated on ABUSEIPDB_REPORT=true + ABUSEIPDB_KEY (off by
-# default — it publishes data externally). Best-effort and NON-BLOCKING: the dedup
-# marker is written synchronously, then the POST runs in the background with a
-# bounded timeout, so a slow endpoint never delays the scan. Deduped per IP within
+# After a CONFIRMED block (enforce mode only), optionally report the offender to
+# AbuseIPDB so the wider community benefits. Gated on SWATTER_MODE=enforce +
+# ABUSEIPDB_REPORT=true + ABUSEIPDB_KEY (off by default — it publishes data
+# externally). In report/dry-run mode the function no-ops so no POST is made and
+# no dedup marker is written. Best-effort and NON-BLOCKING: the dedup marker is
+# written synchronously, then the POST runs in the background with a bounded
+# timeout, so a slow endpoint never delays the scan. Deduped per IP within
 # ABUSEIPDB_REPORT_TTL.
 
 ABUSEIPDB_REPORT_URL="https://api.abuseipdb.com/api/v2/report"
@@ -22,8 +24,12 @@ _abuseipdb_categories() {
 }
 
 # swatter_abuseipdb_report <ip> <evidence_json> <reason>
+# Only fires in enforce mode — after a CONFIRMED block. In report/dry-run mode
+# no block was actually made, so we must not publish data externally or write
+# a dedup marker that would suppress a future (real) report.
 swatter_abuseipdb_report() {
     local ip="$1" ev="$2" reason="$3"
+    [[ "${SWATTER_MODE:-report}" == "enforce" ]] || return 0   # never report on a block we didn't actually make
     [[ "${ABUSEIPDB_REPORT:-false}" == "true" ]] || return 0
     [[ -n "${ABUSEIPDB_KEY:-}" && "${SWATTER_HAVE_CURL}" -eq 1 ]] || return 0
 
