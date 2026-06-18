@@ -75,8 +75,8 @@ _swatter_execute_block() {
     if [[ "$plane" == "DIRECT" ]]; then
         channel="${DIRECT_BACKEND:-csf}"
         if (( ! healthy )); then
-            log_warn "fail-closed: not CSF-denying ${ip} (allowlist unhealthy)"
-            _swatter_audit "$ip" "$folded" "skipped-failclosed" "csf" "$ttl" "$reason" "$ev" "$rep"; return 1
+            log_warn "fail-closed: not ${channel}-denying ${ip} (allowlist unhealthy)"
+            _swatter_audit "$ip" "$folded" "skipped-failclosed" "$channel" "$ttl" "$reason" "$ev" "$rep"; return 1
         fi
         if [[ "$action" == "perm" ]]; then swatter_block_direct_perm "$ip" "$reason" && did=1
         else swatter_block_direct_temp "$ip" "$ttl" "$reason" && did=1; fi

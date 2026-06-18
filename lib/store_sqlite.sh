@@ -198,12 +198,28 @@ swatter_store_sighting_sweep() {
 }
 
 # Echo permanently-banned IPs, one per line (source for `swatter export-bans`).
+# Only IPs that were ACTUALLY perm-blocked (an enforced, dry_run=0 perm action)
+# and are still banned (not later unblocked) — so a report/dry-run box never
+# exports IPs it merely detected, and an unblocked IP is never re-exported.
 swatter_store_perm_ips() {
     if [[ "${STORE}" == "sqlite" ]]; then
-        _sqlq "SELECT ip FROM offenders WHERE perm=1 ORDER BY ip;"
+        # offenders.perm reflects current state (unblock sets it 0); the subquery
+        # requires at least one real enforced perm block (excludes dry-run perms).
+        _sqlq "SELECT ip FROM offenders WHERE perm=1
+                 AND ip IN (SELECT ip FROM actions WHERE action='perm' AND dry_run=0)
+               ORDER BY ip;"
     else
-        grep -F '"action":"perm"' "$(_swatter_jsonl)" 2>/dev/null \
-            | sed -n 's/.*"ip":"\([^"]*\)".*/\1/p' | sort -u
+        # Flatfile JSONL is append-only: replay records per IP, banned on an
+        # enforced perm, cleared on a later unblock.
+        awk '
+            { ip=""; act=""; dr=1 }
+            match($0, /"ip":"[^"]*"/)     { ip=substr($0, RSTART+6, RLENGTH-7) }
+            match($0, /"action":"[^"]*"/) { act=substr($0, RSTART+10, RLENGTH-11) }
+            /"dry_run":0/                 { dr=0 }
+            ip!="" && act=="perm"    && dr==0 { state[ip]=1 }
+            ip!="" && act=="unblock"          { state[ip]=0 }
+            END { for (i in state) if (state[i]) print i }
+        ' "$(_swatter_jsonl)" 2>/dev/null | sort -u
     fi
 }
 
