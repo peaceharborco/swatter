@@ -22,6 +22,11 @@ check abl-score "$(provider_abuseipdb_blocklist 1.2.3.4 | cut -f1)" "90"
 check abl-name  "$(provider_abuseipdb_blocklist 1.2.3.4 | cut -f3)" "abuseipdb_blocklist"
 provider_abuseipdb_blocklist 9.9.9.9 >/dev/null 2>&1 && { echo "FAIL abl-miss"; FAIL=$((FAIL+1)); } || PASS=$((PASS+1))
 
+# Score tracks the configured confidence floor.
+ABUSEIPDB_BLOCKLIST_CONFIDENCE=75
+check abl-score-floor "$(provider_abuseipdb_blocklist 1.2.3.4 | cut -f1)" "75"
+ABUSEIPDB_BLOCKLIST_CONFIDENCE=90
+
 # No key -> refresh no-ops (no fetch, no file), lookup no-data.
 rm -f "$STATE_DIR/feeds/abuseipdb_blocklist.txt"
 ABUSEIPDB_KEY=""

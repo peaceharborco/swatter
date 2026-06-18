@@ -28,5 +28,7 @@ provider_abuseipdb_blocklist() {
     local ip="$1" feed="${STATE_DIR}/feeds/abuseipdb_blocklist.txt"
     [[ -f "$feed" ]] || return 1
     awk -v ip="$ip" '$1==ip{f=1; exit} END{exit !f}' "$feed" 2>/dev/null || return 1
-    printf '90\t%s\tabuseipdb_blocklist\n' "${INTEL_CACHE_TTL}"
+    # Score tracks the operator's download confidence floor: a broader (lower-
+    # confidence) blocklist corroborates less than a strict one.
+    printf '%s\t%s\tabuseipdb_blocklist\n' "${ABUSEIPDB_BLOCKLIST_CONFIDENCE:-90}" "${INTEL_CACHE_TTL}"
 }
