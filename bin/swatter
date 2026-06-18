@@ -20,6 +20,8 @@
 #   swatter report [WINDOW] [--test|--print]  email a digest grouped by offense+action (--print: stdout only)
 #   swatter refresh-feeds                update Cloudflare ranges + intel feeds
 #   swatter test-config                  validate config + dependencies
+#   swatter honeypot               print robots.txt + invisible-anchor snippet for the trap path
+#   swatter metrics [--print]      write the Prometheus textfile (or print it)
 #   swatter version
 
 set -uo pipefail
@@ -31,7 +33,7 @@ umask 0027
 
 SWATTER_ENTRYPOINT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
 SWATTER_ARGV=("$@")
-SWATTER_VERSION="1.2.2"
+SWATTER_VERSION="1.3.0"
 
 # Locate libs: installed layout (/usr/local/lib/swatter) or repo layout (../lib).
 _self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,7 +55,7 @@ swatter_check_deps
 SWATTER_NOW_EPOCH="$(date -u +%s)"; export SWATTER_NOW_EPOCH
 
 # Source the rest.
-for m in allowlist classify ingest store_sqlite block_csf block_cf intel score errors report; do
+for m in allowlist classify ingest store_sqlite block_csf block_cf intel asn metrics score errors report; do
     # shellcheck disable=SC1090
     source "${LIBDIR}/${m}.sh"
 done
@@ -276,9 +278,63 @@ cmd_test_config() {
         echo "  CF domain map:  ${CF_DOMAINS_MAP} ($( [[ -r ${CF_DOMAINS_MAP} ]] && echo "${ndoms} domain(s)" || echo 'MISSING' ))"
         echo "  CF action:      ${CF_ACTION}"
     fi
+    echo
+    echo "  --- v1.3 feature readiness (advisory) ---"
+    local p
+    for p in ${INTEL_PROVIDERS:-}; do
+        case "$p" in
+            greynoise)       [[ -n "${GREYNOISE_KEY:-}" ]] && echo "  intel greynoise: key set" || echo "  intel greynoise: key not set (GREYNOISE_KEY empty) -> provider inert" ;;
+            projecthoneypot) [[ -n "${HTTPBL_KEY:-}" ]] && echo "  intel projecthoneypot: key set" || echo "  intel projecthoneypot: key not set (HTTPBL_KEY empty) -> provider inert" ;;
+            abuseipdb)       [[ -n "${ABUSEIPDB_KEY:-}" ]] && echo "  intel abuseipdb: key set" || echo "  intel abuseipdb: key not set (ABUSEIPDB_KEY empty) -> provider inert" ;;
+        esac
+    done
+    if [[ "${ASN_SIGNAL_ENABLE:-false}" == "true" || " ${INTEL_PROVIDERS:-} " == *" projecthoneypot "* ]]; then
+        [[ "${SWATTER_HAVE_DNS:-0}" -eq 1 ]] \
+            && echo "  dns client: ${SWATTER_DNS_TOOL} (http:BL + ASN ok)" \
+            || echo "  dns client: NONE -> http:BL + ASN inert (install dig/host)"
+    fi
+    if [[ "${ASN_SIGNAL_ENABLE:-false}" == "true" ]]; then
+        [[ -s "${HOSTING_ASNS_FILE:-}" ]] && echo "  asn signal: hosting list ${HOSTING_ASNS_FILE} ($(grep -cE '^[0-9]' "${HOSTING_ASNS_FILE}" 2>/dev/null) ASNs)" \
+            || echo "  asn signal: HOSTING_ASNS_FILE ${HOSTING_ASNS_FILE:-unset} missing/empty -> no boost"
+    fi
+    if [[ -n "${HONEYPOT_PATHS_FILE:-}" ]]; then
+        [[ -s "${HONEYPOT_PATHS_FILE}" ]] && echo "  honeypot: ${HONEYPOT_PATHS_FILE} active (run 'swatter honeypot' to advertise)" \
+            || echo "  honeypot: ${HONEYPOT_PATHS_FILE} empty/missing -> trap disabled"
+    fi
+    if [[ -n "${METRICS_FILE:-}" ]]; then
+        local md; md="$(dirname "${METRICS_FILE}")"
+        [[ -d "$md" && -w "$md" ]] && echo "  metrics: ${METRICS_FILE} writable" || echo "  metrics: ${md} missing/unwritable -> metrics skipped"
+    fi
 }
 
-usage() { sed -n '2,30p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
+cmd_honeypot() {
+    local path
+    path="$(awk 'NF && $1 !~ /^#/ {print; exit}' "${HONEYPOT_PATHS_FILE:-/nonexistent}" 2>/dev/null)"
+    if [[ -z "$path" ]]; then
+        path="/__trap_$(head -c4 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n' || echo a7f3c1d9)/"
+        echo "# No HONEYPOT_PATHS_FILE entry found — suggested trap path: ${path}"
+        echo "# Add it (anchored) to ${HONEYPOT_PATHS_FILE:-/etc/swatter/honeypot.paths}:"
+        printf '#   %s(/|$)\n\n' "${path%/}"
+    fi
+    local clean="${path%(/\|$)}"; clean="${clean%/}"
+    cat <<EOF
+# --- robots.txt (advertise the trap so only path-scanning bots find it) ---
+User-agent: *
+Disallow: ${clean}/
+
+# --- invisible anchor (drop into a shared template; humans never see it) ---
+<a href="${clean}/" style="display:none" aria-hidden="true" rel="nofollow">do-not-follow</a>
+
+# Any IP that requests ${clean}/ is scored 100 and permanently banned on its
+# next Swatter scan (plane-classified + allowlist-checked as always).
+EOF
+}
+
+cmd_metrics() {
+    if [[ "${1:-}" == "--print" ]]; then swatter_metrics_emit; else swatter_metrics_write; fi
+}
+
+usage() { sed -n '2,25p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
 
 main() {
     local sub="${1:-}"; shift || true
@@ -293,6 +349,8 @@ main() {
         report)        cmd_report "$@" ;;
         refresh-feeds) cmd_refresh_feeds ;;
         test-config)   cmd_test_config ;;
+        honeypot)      cmd_honeypot ;;
+        metrics)       cmd_metrics "$@" ;;
         version|--version|-v) echo "swatter ${SWATTER_VERSION}" ;;
         ""|help|-h|--help) usage ;;
         *) echo "swatter: unknown command '${sub}' (try: swatter help)" >&2; exit 2 ;;

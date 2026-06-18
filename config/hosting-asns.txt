@@ -1,0 +1,17 @@
+# hosting-asns.txt — datacenter / hosting / bulletproof ASNs.
+# One AS number per line; '#' starts a comment (name kept for the audit label).
+# Edit freely. Used only when ASN_SIGNAL_ENABLE="true". The signal adds a small
+# bounded boost ONLY when an offender's behavior is already attack-shaped, so a
+# legitimate visitor from one of these networks is never penalized on origin
+# alone. AWS EC2 (14618/16509) is intentionally omitted by default — huge legit
+# traffic; uncomment if your box is a pure API/origin with no AWS-based users.
+16276   # OVH
+14061   # DigitalOcean
+24940   # Hetzner
+20473   # Vultr / Choopa
+63949   # Akamai / Linode
+51167   # Contabo
+9009    # M247
+49981   # WorldStream
+#14618  # AWS EC2 (legacy) — high legit traffic; opt in deliberately
+#16509  # AWS EC2 — high legit traffic; opt in deliberately

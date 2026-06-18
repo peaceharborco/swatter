@@ -130,12 +130,47 @@ reputation feeds before acting:
 
 - **IPsum** — aggregated blocklist, no key needed.
 - **Spamhaus DROP/EDROP** — hijacked/criminal netblocks, no key needed.
-- **AbuseIPDB** — confidence score, free tier (1,000 checks/day), cached and
-  quota-limited. Enable it by setting `ABUSEIPDB_KEY` in
-  `/etc/swatter/swatter.conf`.
+- **AbuseIPDB** — confidence score, free tier (1,000 checks/day), cached + quota-limited.
+- **GreyNoise** — Community API classification. `malicious` raises; **RIOT**
+  (known business services — Google/Slack/CDNs) is a soft never-block guard;
+  `benign` scanners are logged but still judged on behavior.
+- **Project Honey Pot http:BL** — DNS reputation (harvesters, comment spammers,
+  suspicious hosts). Needs a free member access key and a DNS client.
 
 Reputation only ever *raises* a borderline score — it never blocks on its own, and
 a failed or offline lookup is simply ignored. Works fully with **zero** API keys.
+
+### Getting your own provider API keys
+
+**Swatter runs fully with zero API keys** — IPsum and Spamhaus need none, and
+every keyed provider degrades silently to "no data" when its key is unset. Add
+a key only for the providers you want; each is free:
+
+| Provider | Cost | Get a key |
+|---|---|---|
+| AbuseIPDB | Free (1,000 checks/day) | Create an account at abuseipdb.com → **Account → API** → generate a key. Set `ABUSEIPDB_KEY`. |
+| GreyNoise | Free (Community) | Sign up at greynoise.io → **Account / Profile** → copy the API key. Set `GREYNOISE_KEY`. |
+| Project Honey Pot | Free (membership) | Join projecthoneypot.org → request an **http:BL access key** (12 chars) from your member dashboard. Set `HTTPBL_KEY`. Needs `dig`/`host` installed. |
+
+Put keys in your **own** `/etc/swatter/swatter.conf` (root-only, `0600`) — never
+in the repo, never shared. The shipped `swatter.example.conf` has every key set
+to empty by default.
+
+## Beyond reputation: ASN, traps, persistence, metrics
+
+- **Hosting-ASN signal** *(`ASN_SIGNAL_ENABLE`)* — when an offender is already
+  behaving like an attack, originating from a datacenter/bulletproof ASN
+  (Team Cymru lookup) adds a small bounded boost. Legit visitors from those
+  networks are never penalized on origin alone.
+- **Honeypot traps** *(`HONEYPOT_PATHS_FILE`)* — define a secret path no human
+  hits; one request = score 100 = instant permanent ban. `swatter honeypot`
+  prints a robots.txt + invisible-anchor snippet to advertise it to bots only.
+- **Low-and-slow persistence** — an IP that lingers just under the block
+  threshold across many hours is escalated once it recurs in
+  `PERSIST_N` distinct buckets within `PERSIST_WINDOW_DAYS`.
+- **Prometheus metrics** *(`METRICS_FILE`)* — a node_exporter textfile with
+  block counts, current offender counts, feed-staleness ages, quota use, and
+  fail-closed state, written atomically each scan and via `swatter metrics`.
 
 ---
 
@@ -332,6 +367,8 @@ error responses), so even the default tuning won't ban an owner for logging in.
 | `swatter report [WINDOW] [--test\|--print]` | email a digest grouped by offense + action (`--print`: stdout only) |
 | `swatter refresh-feeds` | update Cloudflare ranges + intel feeds |
 | `swatter test-config` | validate config and dependencies |
+| `swatter honeypot` | print robots.txt + invisible-anchor snippet for the trap path |
+| `swatter metrics [--print]` | write (or print) the Prometheus textfile |
 
 ---
 

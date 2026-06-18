@@ -16,6 +16,7 @@ _swatter_run_scorer() {
          -v W_FANOUT="${W_FANOUT}" -v W_BADPATH="${W_BADPATH}" -v W_UA="${W_UA}" \
          -v W_POST_FLOOD="${W_POST_FLOOD}" -v W_NOVHOST="${W_NOVHOST}" \
          -v BADPATHS="${BADPATHS_CONF}" \
+         -v HONEYPOTS="${HONEYPOT_PATHS_FILE:-}" \
          -f "${SWATTER_LIB_DIR}/score.awk"
 }
 
@@ -53,6 +54,50 @@ _swatter_audit() {
         >> "$f" 2>/dev/null || true
 }
 
+# Execute a decided block on the right plane. Reads/updates the run-scoped
+# globals _SW_TOTAL_BLOCKS / SWATTER_RUN_ACTED. Echoes nothing; audits + records.
+#   _swatter_execute_block <ip> <action> <ttl> <folded> <reason> <ev> <rep> <novhost> <top_vhost> <healthy>
+_swatter_execute_block() {
+    local ip="$1" action="$2" ttl="$3" folded="$4" reason="$5" ev="$6" rep="$7" novhost="$8" top_vhost="$9" healthy="${10}"
+    # never-block, LAST, right before acting.
+    local nb
+    if nb="$(swatter_is_never_block "$ip")"; then
+        log_info "exempt ${ip} (${nb}) score=${folded}"
+        _swatter_audit "$ip" "$folded" "exempt" "none" 0 "exempt:${nb}" "$ev" "$rep"; return 1
+    fi
+    if (( _SW_TOTAL_BLOCKS >= MAX_BLOCKS_PER_RUN )); then
+        log_warn "circuit_breaker: MAX_BLOCKS_PER_RUN=${MAX_BLOCKS_PER_RUN} reached; ${ip} skipped"
+        SWATTER_RUN_BREAKER=1
+        _swatter_audit "$ip" "$folded" "skipped-cap" "none" 0 "circuit_breaker" "$ev" "$rep"; return 1
+    fi
+    local plane; plane="$(swatter_classify "$ip" "$novhost")"
+    local channel="none" did=0
+    if [[ "$plane" == "DIRECT" ]]; then
+        channel="csf"
+        if (( ! healthy )); then
+            log_warn "fail-closed: not CSF-denying ${ip} (allowlist unhealthy)"
+            _swatter_audit "$ip" "$folded" "skipped-failclosed" "csf" "$ttl" "$reason" "$ev" "$rep"; return 1
+        fi
+        if [[ "$action" == "perm" ]]; then swatter_csf_perm "$ip" "$reason" && did=1
+        else swatter_csf_temp "$ip" "$ttl" "$reason" && did=1; fi
+    else
+        channel="cloudflare"
+        if ! swatter_cf_manages_plane; then
+            _swatter_audit "$ip" "$folded" "skipped-cf-plane" "$channel" 0 "${reason} cf_mode=${CF_MODE}" "$ev" "$rep"; return 1
+        fi
+        [[ "$action" == "perm" ]] && ttl="$(_swatter_pick_ttl 99)"
+        swatter_cf_block "$ip" "$ttl" "$reason" "$top_vhost" && did=1
+    fi
+    if (( did )); then
+        _SW_TOTAL_BLOCKS=$(( _SW_TOTAL_BLOCKS + 1 )); SWATTER_RUN_ACTED=$(( SWATTER_RUN_ACTED + 1 ))
+        swatter_store_sighting_clear "$ip"
+        swatter_store_record "$ip" "$action" "$channel" "$ttl" "$folded" "$reason" \
+            "$([[ "${SWATTER_MODE}" == "enforce" ]] && echo 0 || echo 1)"
+    fi
+    _swatter_audit "$ip" "$folded" "$action" "$channel" "$ttl" "$reason" "$ev" "$rep"
+    return 0
+}
+
 # Main scan.
 swatter_scan() {
     # Fail closed only when a Cloudflare plane exists but its range list is
@@ -68,10 +113,6 @@ swatter_scan() {
     swatter_build_direct_set
     swatter_cf_sweep_expired
 
-    local intel_on=0
-    swatter_intel_available && intel_on=1
-
-    local total_blocks=0 watched=0 acted=0
     local parsed scored
     parsed="$(mktemp "${TMPDIR:-/tmp}/swatter-parsed.XXXXXX")"
     scored="$(mktemp "${TMPDIR:-/tmp}/swatter-scored.XXXXXX")"
@@ -81,119 +122,100 @@ swatter_scan() {
     swatter_ingest > "$parsed"
     _swatter_run_scorer < "$parsed" | sort -t$'\t' -k2,2nr > "$scored"
 
-    local ip score reqs ev novhost rep replabel folded
+    local ip score reqs ev novhost rep replabel suppress folded
+    _SW_TOTAL_BLOCKS=0; SWATTER_RUN_WATCHED=0; SWATTER_RUN_ACTED=0; SWATTER_RUN_BREAKER=0
     while IFS=$'\t' read -r ip score reqs ev; do
         [[ -n "$ip" ]] || continue
-        watched=$(( watched + 1 ))
+        SWATTER_RUN_WATCHED=$(( SWATTER_RUN_WATCHED + 1 ))
 
-        # novhost subscore drives the direct/CF classifier.
         novhost="$(printf '%s' "$ev" | sed -n 's/.*"novhost":\([0-9]*\).*/\1/p')"
         [[ "$novhost" =~ ^[0-9]+$ ]] || novhost=0
-        # top_vhost = the zone the attacker mainly hit (CF plane needs it).
         local top_vhost; top_vhost="$(printf '%s' "$ev" | sed -n 's/.*"top_vhost":"\([^"]*\)".*/\1/p')"
+        local is_honeypot=0
+        printf '%s' "$ev" | grep -q '"honeypot":1' && is_honeypot=1
 
-        # Reputation enrichment only for IPs past WATCH (we are already there).
-        rep=0; replabel=""
-        if (( intel_on )); then
+        # Reputation enrichment (now 3-field: score, label, suppress).
+        rep=0; replabel=""; suppress=0
+        if swatter_intel_available; then
             local ir; ir="$(swatter_intel_score "$ip")"
             rep="$(printf '%s' "$ir" | cut -f1)"; replabel="$(printf '%s' "$ir" | cut -f2)"
-            [[ "$rep" =~ ^[0-9]+$ ]] || rep=0
+            suppress="$(printf '%s' "$ir" | cut -f3)"
+            [[ "$rep" =~ ^[0-9]+$ ]] || rep=0; [[ "$suppress" =~ ^[01]$ ]] || suppress=0
         fi
 
         folded="$score"
-        if (( intel_on && rep > 0 )); then
+        if [[ "$suppress" != "1" ]] && (( rep > 0 )); then
             folded="$(_swatter_fold_reputation "$score" "$rep")"
         fi
 
-        # Decide action from the folded score.
-        local action="watch" channel="none" ttl=0 reason
-        reason="score=${folded}"
+        # ASN conditional boost (only when not suppressed and behavior is attack-shaped).
+        local asn_label=""
+        if [[ "$suppress" != "1" && "${ASN_SIGNAL_ENABLE:-false}" == "true" ]] \
+           && _swatter_asn_attack_shaped "$ev"; then
+            if asn_label="$(swatter_asn_is_hosting "$ip")"; then
+                folded=$(( folded + ${W_ASN:-12} )); (( folded > 100 )) && folded=100
+            else asn_label=""; fi
+        fi
+
+        local reason="score=${folded}"
         [[ -n "$replabel" ]] && reason="${reason} intel=${replabel}(${rep})"
+        [[ -n "$asn_label" ]] && reason="${reason} asn=${asn_label}+${W_ASN:-12}"
+
+        # Suppression is total — exempt everywhere — UNLESS a honeypot hit and
+        # HONEYPOT_OVERRIDES_SUPPRESS=true together override it (operator opt-in;
+        # default false keeps a known-good RIOT range safe even on a trap hit).
+        if [[ "$suppress" == "1" ]] \
+           && ! { (( is_honeypot )) && [[ "${HONEYPOT_OVERRIDES_SUPPRESS:-false}" == "true" ]]; }; then
+            log_info "exempt ${ip} (intel:${replabel}) score=${folded}"
+            _swatter_audit "$ip" "$folded" "exempt" "none" 0 "intel:${replabel}" "$ev" "$rep"
+            continue
+        fi
+
+        # Honeypot -> instant perm (skip the ladder).
+        if (( is_honeypot )); then
+            if swatter_store_is_perm "$ip"; then
+                _swatter_audit "$ip" "$folded" "noop-perm" "none" 0 "$reason" "$ev" "$rep"; continue
+            fi
+            _swatter_execute_block "$ip" "perm" 0 "$folded" "honeypot ${reason}" "$ev" "$rep" "$novhost" "$top_vhost" "$healthy"
+            continue
+        fi
 
         if (( folded >= SCORE_TEMP )); then
-            # Already permanently blocked? skip.
             if swatter_store_is_perm "$ip"; then
                 log_debug "${ip} already perm-blocked; skipping"
-                _swatter_audit "$ip" "$folded" "noop-perm" "none" 0 "$reason" "$ev" "$rep"
-                continue
+                _swatter_audit "$ip" "$folded" "noop-perm" "none" 0 "$reason" "$ev" "$rep"; continue
             fi
-            # Never-block check, LAST, right before acting.
-            local nb
-            if nb="$(swatter_is_never_block "$ip")"; then
-                log_info "exempt ${ip} (${nb}) score=${folded}"
-                _swatter_audit "$ip" "$folded" "exempt" "none" 0 "exempt:${nb}" "$ev" "$rep"
-                continue
-            fi
-            # Circuit breaker.
-            if (( total_blocks >= MAX_BLOCKS_PER_RUN )); then
-                log_warn "circuit_breaker: MAX_BLOCKS_PER_RUN=${MAX_BLOCKS_PER_RUN} reached; ${ip} (score ${folded}) skipped"
-                _swatter_audit "$ip" "$folded" "skipped-cap" "none" 0 "circuit_breaker" "$ev" "$rep"
-                continue
-            fi
-
-            # Classify plane.
-            local plane; plane="$(swatter_classify "$ip" "$novhost")"
-
-            # Repeat-offender escalation.
             local prior; prior="$(swatter_store_recent_temp_count "$ip")"
             [[ "$prior" =~ ^[0-9]+$ ]] || prior=0
-
-            if (( prior + 1 >= REPEAT_N )); then
-                action="perm"
+            local action ttl=0
+            if (( prior + 1 >= REPEAT_N )); then action="perm"
             else
-                action="temp"
-                ttl="$(_swatter_pick_ttl "$prior")"
-                # CRITICAL bad-path gets a TTL floor.
+                action="temp"; ttl="$(_swatter_pick_ttl "$prior")"
                 if printf '%s' "$ev" | grep -q '"badpath_cat":"CRITICAL"'; then
                     (( ttl < CRITICAL_TTL_FLOOR )) && ttl="${CRITICAL_TTL_FLOOR}"
                 fi
             fi
-
-            # Route to the plane. DIRECT -> CSF (gated by allowlist health).
-            local did=0
-            if [[ "$plane" == "DIRECT" ]]; then
-                channel="csf"
-                if (( ! healthy )); then
-                    log_warn "fail-closed: not CSF-denying ${ip} (allowlist unhealthy)"
-                    _swatter_audit "$ip" "$folded" "skipped-failclosed" "csf" "$ttl" "$reason" "$ev" "$rep"
-                    continue
-                fi
-                if [[ "$action" == "perm" ]]; then swatter_csf_perm "$ip" "$reason" && did=1
-                else swatter_csf_temp "$ip" "$ttl" "$reason" && did=1; fi
-            else
-                channel="cloudflare"
-                # When Swatter does NOT manage the CF plane — CF_MODE=skip (the
-                # operator runs their own Cloudflare WAF/rules stack), or auto
-                # that hasn't got creds to act — record the decision so the
-                # digest shows what the edge is expected to handle, but act on
-                # nothing. Never fall through to CSF, where a proxied client's IP
-                # would cost them mail/cPanel.
-                if ! swatter_cf_manages_plane; then
-                    _swatter_audit "$ip" "$folded" "skipped-cf-plane" "$channel" 0 "${reason} cf_mode=${CF_MODE}" "$ev" "$rep"
-                    continue
-                fi
-                # Cloudflare plane has no "permanent" vs temp distinction here; a
-                # perm decision just uses the longest TTL.
-                [[ "$action" == "perm" ]] && ttl="$(_swatter_pick_ttl 99)"
-                swatter_cf_block "$ip" "$ttl" "$reason" "$top_vhost" && did=1
-            fi
-
-            if (( did )); then
-                total_blocks=$(( total_blocks + 1 )); acted=$(( acted + 1 ))
-                swatter_store_record "$ip" "$action" "$channel" "$ttl" "$folded" "$reason" \
-                    "$([[ "${SWATTER_MODE}" == "enforce" ]] && echo 0 || echo 1)"
-            fi
-            _swatter_audit "$ip" "$folded" "$action" "$channel" "$ttl" "$reason" "$ev" "$rep"
+            _swatter_execute_block "$ip" "$action" "$ttl" "$folded" "$reason" "$ev" "$rep" "$novhost" "$top_vhost" "$healthy"
         else
-            # WATCH band: log to the decision trail, count toward history, no action.
+            # WATCH band: low-and-slow accrual + escalation.
             _swatter_audit "$ip" "$folded" "watch" "none" 0 "$reason" "$ev" "$rep"
+            if [[ "${PERSIST_ENABLE:-true}" == "true" && "${STORE}" == "sqlite" ]]; then
+                swatter_store_sighting_add "$ip" "$folded" "${PERSIST_BUCKET_SECONDS:-3600}"
+                local nb; nb="$(swatter_store_sighting_buckets "$ip" "${PERSIST_WINDOW_DAYS:-3}")"
+                if [[ "$nb" =~ ^[0-9]+$ ]] && (( nb >= ${PERSIST_N:-6} )); then
+                    _swatter_execute_block "$ip" "temp" "$(_swatter_pick_ttl 0)" "$folded" \
+                        "low_and_slow_persist buckets=${nb} ${reason}" "$ev" "$rep" "$novhost" "$top_vhost" "$healthy"
+                fi
+            fi
         fi
     done < "$scored"
 
-    log_info "scan complete: ${watched} over-watch, ${acted} acted (mode=${SWATTER_MODE}, cap=${MAX_BLOCKS_PER_RUN})"
+    [[ "${PERSIST_ENABLE:-true}" == "true" ]] && swatter_store_sighting_sweep "${PERSIST_WINDOW_DAYS:-3}"
 
-    # Circuit-breaker notification.
-    if (( total_blocks >= MAX_BLOCKS_PER_RUN )) && [[ -n "${NOTIFY_EMAIL}" ]]; then
+    log_info "scan complete: ${SWATTER_RUN_WATCHED} over-watch, ${SWATTER_RUN_ACTED} acted (mode=${SWATTER_MODE}, cap=${MAX_BLOCKS_PER_RUN})"
+    swatter_metrics_write
+
+    if (( _SW_TOTAL_BLOCKS >= MAX_BLOCKS_PER_RUN )) && [[ -n "${NOTIFY_EMAIL}" ]]; then
         swatter_notify "swatter circuit breaker tripped on $(hostname -s 2>/dev/null)" \
             "Reached MAX_BLOCKS_PER_RUN=${MAX_BLOCKS_PER_RUN}. Review ${LOG_DIR}/decisions.jsonl." || true
     fi

@@ -2,10 +2,13 @@
 # lib/intel.sh — pluggable threat-intel reputation, cached and quota-limited.
 #
 # Each provider is a function provider_<name> "$ip" that prints
-#   score_0_100 \t ttl_seconds \t label
-# on success (exit 0) or exits non-zero for "no data". intel.sh dispatches the
-# configured INTEL_PROVIDERS in order, caches results under
-# $STATE_DIR/intel/<provider>/<ip>, and returns the MAX malicious score seen.
+#   score_0_100 \t ttl_seconds \t label [\t verdict]
+# on success (exit 0) or exits non-zero for "no data". verdict is optional;
+# omit it (3-field output) for legacy providers — an empty cut -f4 is valid.
+# verdict ∈ "" | "suppress" (suppress = known-good soft-allowlist exemption).
+# intel.sh dispatches the configured INTEL_PROVIDERS in order, caches results
+# under $STATE_DIR/intel/<provider>/<ip>, and returns the MAX malicious score
+# seen plus a suppress_flag.
 #
 # Hard rules:
 #   - Only ever called for IPs already past WATCH (don't spend quota on benign).
@@ -36,7 +39,8 @@ swatter_intel_available() {
 }
 
 _intel_cache_get() {
-    # $1=provider $2=ip ; echoes "score\tlabel" if fresh, else nothing
+    # $1=provider $2=ip ; echoes "score\tlabel\tverdict" if fresh, else nothing.
+    # verdict field may be empty (3-field legacy cache files are still valid).
     local prov="$1" ip="$2"
     local f="${STATE_DIR}/intel/${prov}/${ip}"
     [[ -f "$f" ]] || return 1
@@ -48,35 +52,39 @@ _intel_cache_get() {
 }
 
 _intel_cache_put() {
-    local prov="$1" ip="$2" score="$3" label="$4"
+    local prov="$1" ip="$2" score="$3" label="$4" verdict="${5:-}"
     local d="${STATE_DIR}/intel/${prov}"
     mkdir -p "$d" 2>/dev/null || return 0
-    printf '%s\t%s\n' "$score" "$label" > "${d}/${ip}" 2>/dev/null || true
+    printf '%s\t%s\t%s\n' "$score" "$label" "$verdict" > "${d}/${ip}" 2>/dev/null || true
 }
 
-# swatter_intel_score <ip> : echoes "score\tlabel" (max across providers).
+# swatter_intel_score <ip> : echoes "best_score \t best_label \t suppress_flag".
+# suppress_flag is 1 when any provider returned verdict "suppress"; else 0.
 # score 0 means no malicious signal (or no data).
 swatter_intel_score() {
-    local ip="$1" best=0 bestlabel="" prov out cached score ttl label
+    local ip="$1" best=0 bestlabel="" suppress=0
+    local prov out cached score ttl label verdict
     for prov in ${INTEL_PROVIDERS}; do
-        # Cache first.
         if cached="$(_intel_cache_get "$prov" "$ip")"; then
-            score="${cached%%$'\t'*}"; label="${cached#*$'\t'}"
+            score="$(printf '%s' "$cached" | cut -f1)"
+            label="$(printf '%s' "$cached" | cut -f2)"
+            verdict="$(printf '%s' "$cached" | cut -f3)"
         else
-            # Provider function present?
             if ! declare -F "provider_${prov}" >/dev/null; then continue; fi
             if out="$(provider_"${prov}" "$ip" 2>/dev/null)"; then
                 score="$(printf '%s' "$out" | cut -f1)"
                 ttl="$(printf '%s' "$out" | cut -f2)"
                 label="$(printf '%s' "$out" | cut -f3)"
+                verdict="$(printf '%s' "$out" | cut -f4)"
                 [[ "$score" =~ ^[0-9]+$ ]] || score=0
-                _intel_cache_put "$prov" "$ip" "$score" "$label"
+                _intel_cache_put "$prov" "$ip" "$score" "$label" "$verdict"
             else
-                score=0; label=""
-                _intel_cache_put "$prov" "$ip" 0 "nodata"
+                score=0; label=""; verdict=""
+                _intel_cache_put "$prov" "$ip" 0 "nodata" ""
             fi
         fi
+        [[ "$verdict" == "suppress" ]] && { suppress=1; [[ -z "$bestlabel" ]] && bestlabel="${prov}:${label}"; }
         if (( score > best )); then best="$score"; bestlabel="${prov}:${label}"; fi
     done
-    printf '%s\t%s\n' "$best" "$bestlabel"
+    printf '%s\t%s\t%s\n' "$best" "$bestlabel" "$suppress"
 }
