@@ -163,6 +163,82 @@ Put keys in your **own** `/etc/swatter/swatter.conf` (root-only, `0600`) — nev
 in the repo, never shared. The shipped `swatter.example.conf` has every key set
 to empty by default.
 
+---
+
+## Alerting
+
+**Swatter needs no alerting config to run.** All channels are opt-in; omit any
+you don't need. Credentials go in root-only files on the server — never in the
+repo.
+
+| Channel | What to set | Where to sign up |
+|---|---|---|
+| SendGrid email | `ALERT_EMAIL` (recipient) + `SENDGRID_KEY_FILE` (shared with the nightly report mailer) | sendgrid.com — free tier, 100 emails/day. Create an API key with **Mail Send** permission only. |
+| Twilio SMS | `ALERT_SMS_TO`, `TWILIO_SID`, `TWILIO_FROM`, `TWILIO_TOKEN_FILE` | console.twilio.com — free trial credits. Copy Account SID and Auth Token from the dashboard; write the Auth Token to a `0600` file and set `TWILIO_TOKEN_FILE`. |
+| Webhook (Slack, Discord, PagerDuty, …) | `ALERT_WEBHOOK_URL`, `ALERT_WEBHOOK_FORMAT` | Slack: **App directory → Incoming Webhooks**. Discord: channel **Settings → Integrations → Webhooks**. Set `ALERT_WEBHOOK_FORMAT` to `slack`, `discord`, or `raw-json`; `auto` sniffs the URL. |
+
+`ALERT_REPEAT_TTL` (default 6 h) suppresses repeat alerts for the same IP so a
+sustained attack doesn't flood your inbox or phone.
+
+`swatter test-config` reports which channels are active.
+
+---
+
+## Firewall backend
+
+By default Swatter issues direct blocks through **CSF** (`DIRECT_BACKEND=csf`).
+On servers where CSF is not installed, or for lower-latency bulk drops, set
+`DIRECT_BACKEND=ipset` to use kernel **ipset + iptables DROP** rules instead.
+
+```bash
+# In /etc/swatter/swatter.conf:
+DIRECT_BACKEND="ipset"
+IPSET_SAVE_FILE="/etc/swatter/ipset.save"   # written by setup-ipset; restore at boot
+```
+
+After changing to `ipset`, run the one-time setup:
+
+```bash
+swatter setup-ipset      # creates swatter4/swatter6 ipsets + iptables DROP rules
+```
+
+`setup-ipset` is idempotent — safe to re-run after a reboot or kernel upgrade.
+The two backends can coexist: CSF continues to manage its own deny list; the
+ipset sets are separate. After a reboot, restore the ipset with the save file
+(`ipset restore < "${IPSET_SAVE_FILE}"`); the installer notes this if
+`DIRECT_BACKEND=ipset` is set.
+
+---
+
+## Outbound reporting
+
+Set `ABUSEIPDB_REPORT=true` in `/etc/swatter/swatter.conf` to report each
+permanent ban back to AbuseIPDB (reuses your existing `ABUSEIPDB_KEY`). Off by
+default — opt in deliberately.
+
+```bash
+ABUSEIPDB_REPORT="true"
+ABUSEIPDB_REPORT_TTL=900   # don't re-report the same IP within N seconds
+```
+
+`swatter test-config` shows whether reporting is on and warns if `ABUSEIPDB_KEY`
+is unset (reporting would be inert).
+
+---
+
+## Fleet ban-sync
+
+On a multi-server fleet, share the permanent-ban list across hosts:
+
+```bash
+swatter export-bans /tmp/bans.txt       # write perm-ban list to file (or stdout)
+swatter import-bans /tmp/bans.txt       # block each listed IP as perm on another host
+```
+
+`import-bans` skips IPs on the never-block list and any malformed entries — safe
+to pipe from an untrusted source. Use `export-bans` in a cron and `import-bans`
+on the receiving hosts to keep ban lists in sync across a fleet.
+
 ## Beyond reputation: ASN, traps, persistence, metrics
 
 - **Hosting-ASN signal** *(`ASN_SIGNAL_ENABLE`)* — when an offender is already
@@ -375,7 +451,10 @@ error responses), so even the default tuning won't ban an owner for logging in.
 | `swatter refresh-feeds` | update Cloudflare ranges + intel feeds |
 | `swatter test-config` | validate config and dependencies |
 | `swatter honeypot` | print robots.txt + invisible-anchor snippet for the trap path |
+| `swatter setup-ipset` | create ipset sets + iptables DROP rules (idempotent; use with `DIRECT_BACKEND=ipset`) |
 | `swatter metrics [--print]` | write (or print) the Prometheus textfile |
+| `swatter export-bans [file]` | write the perm-ban list to a file (or stdout) |
+| `swatter import-bans <file>` | block each listed IP as perm (skips allowlisted / invalid) |
 
 ---
 

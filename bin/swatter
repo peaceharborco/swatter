@@ -36,7 +36,7 @@ umask 0027
 
 SWATTER_ENTRYPOINT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
 SWATTER_ARGV=("$@")
-SWATTER_VERSION="1.4.0"
+SWATTER_VERSION="2.0.0"
 
 # Locate libs: installed layout (/usr/local/lib/swatter) or repo layout (../lib).
 _self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -307,6 +307,15 @@ cmd_test_config() {
         local md; md="$(dirname "${METRICS_FILE}")"
         [[ -d "$md" && -w "$md" ]] && echo "  metrics: ${METRICS_FILE} writable" || echo "  metrics: ${md} missing/unwritable -> metrics skipped"
     fi
+    echo "  --- v2.0 feature readiness (advisory) ---"
+    echo "  direct backend: ${DIRECT_BACKEND:-csf}$( [[ "${DIRECT_BACKEND:-csf}" == "ipset" ]] && { [[ "${SWATTER_HAVE_IPSET}" -eq 1 ]] && echo ' (ipset/iptables present; run setup-ipset)' || echo ' -> ipset/iptables MISSING'; } )"
+    local ch=""
+    [[ -n "${NOTIFY_EMAIL:-}" ]]     && ch="${ch}local-mail "
+    [[ -n "${ALERT_EMAIL:-}" ]]      && ch="${ch}sendgrid-email "
+    [[ -n "${ALERT_SMS_TO:-}" && -n "${TWILIO_SID:-}" ]] && ch="${ch}twilio-sms "
+    [[ -n "${ALERT_WEBHOOK_URL:-}" ]] && ch="${ch}webhook "
+    echo "  alerts: ${ch:-none configured}"
+    [[ "${ABUSEIPDB_REPORT:-false}" == "true" ]] && echo "  abuseipdb reporting: ENABLED$( [[ -z "${ABUSEIPDB_KEY:-}" ]] && echo ' but ABUSEIPDB_KEY empty -> inert' )" || echo "  abuseipdb reporting: off"
 }
 
 cmd_honeypot() {

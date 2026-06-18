@@ -42,6 +42,20 @@ DIRECT_WEB_PORTS="80 443"
 : "${DIRECT_BACKEND:=csf}"
 : "${IPSET_SAVE_FILE:=/etc/swatter/ipset.save}"
 
+# Alert channels (all optional; Swatter runs fine with none configured).
+: "${ALERT_EMAIL:=}"
+: "${ALERT_SMS_TO:=}"
+: "${TWILIO_SID:=}"
+: "${TWILIO_FROM:=}"
+: "${TWILIO_TOKEN_FILE:=}"
+: "${ALERT_WEBHOOK_URL:=}"
+: "${ALERT_WEBHOOK_FORMAT:=auto}"
+: "${ALERT_REPEAT_TTL:=21600}"
+
+# Outbound AbuseIPDB reporting (opt-in).
+: "${ABUSEIPDB_REPORT:=false}"
+: "${ABUSEIPDB_REPORT_TTL:=900}"
+
 SCORE_WATCH=50
 SCORE_TEMP=70
 SCORE_PERM=85
