@@ -20,6 +20,12 @@ check metrics-nonempty  "$([[ -n "${METRICS_FILE}" ]] && echo yes || echo no)" "
 check honeypot-override "${HONEYPOT_OVERRIDES_SUPPRESS}" "false"
 check persist-window    "${PERSIST_WINDOW_DAYS}" "3"
 check hosting-nonempty  "$([[ -n "${HOSTING_ASNS_FILE}" ]] && echo yes || echo no)" "yes"
+check intel-has-firehol "$(case " ${INTEL_PROVIDERS} " in *' firehol_level1 '*) echo yes;; *) echo no;; esac)" "yes"
+check intel-has-dshield "$(case " ${INTEL_PROVIDERS} " in *' dshield '*) echo yes;; *) echo no;; esac)" "yes"
+check intel-has-blde    "$(case " ${INTEL_PROVIDERS} " in *' blocklist_de '*) echo yes;; *) echo no;; esac)" "yes"
+check abl-conf-default   "${ABUSEIPDB_BLOCKLIST_CONFIDENCE}" "90"
+# abuseipdb_blocklist is OPT-IN: must NOT be in the default list.
+check abl-optin "$(case " ${INTEL_PROVIDERS} " in *' abuseipdb_blocklist '*) echo in;; *) echo out;; esac)" "out"
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -136,6 +136,13 @@ reputation feeds before acting:
   `benign` scanners are logged but still judged on behavior.
 - **Project Honey Pot http:BL** — DNS reputation (harvesters, comment spammers,
   suspicious hosts). Needs a free member access key and a DNS client.
+- **Keyless list feeds** — **FireHOL level1** (near-zero-FP aggregate), **CINS Army**,
+  **DShield** top attacker netblocks, **blocklist.de** (brute-force reporters),
+  **Emerging Threats** compromised hosts, and **GreenSnow** (scanners) — all no-key,
+  refreshed by `swatter refresh-feeds`, confidence-tiered so noisier feeds corroborate
+  less. On by default.
+- **AbuseIPDB daily blocklist** *(opt-in)* — a once-a-day download of the top abusive
+  IPs (reuses your `ABUSEIPDB_KEY`); add `abuseipdb_blocklist` to `INTEL_PROVIDERS`.
 
 Reputation only ever *raises* a borderline score — it never blocks on its own, and
 a failed or offline lookup is simply ignored. Works fully with **zero** API keys.
@@ -280,7 +287,7 @@ operator IPs deserve a guarantee, not a probability.
 
 When you trust it, set `SWATTER_MODE="enforce"` in `/etc/swatter/swatter.conf`.
 The installer adds a cron entry that scans every 5 minutes and refreshes feeds
-daily.
+daily. After upgrading, run `swatter refresh-feeds` so the new feeds download.
 
 ### Enabling the Cloudflare plane
 
