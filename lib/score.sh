@@ -93,6 +93,7 @@ _swatter_execute_block() {
         swatter_store_sighting_clear "$ip"
         swatter_store_record "$ip" "$action" "$channel" "$ttl" "$folded" "$reason" \
             "$([[ "${SWATTER_MODE}" == "enforce" ]] && echo 0 || echo 1)"
+        swatter_abuseipdb_report "$ip" "$ev" "$reason"
     fi
     _swatter_audit "$ip" "$folded" "$action" "$channel" "$ttl" "$reason" "$ev" "$rep"
     return 0
