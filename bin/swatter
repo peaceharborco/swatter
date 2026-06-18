@@ -21,7 +21,10 @@
 #   swatter refresh-feeds                update Cloudflare ranges + intel feeds
 #   swatter test-config                  validate config + dependencies
 #   swatter honeypot               print robots.txt + invisible-anchor snippet for the trap path
+#   swatter setup-ipset            create ipset sets + iptables DROP rules (idempotent)
 #   swatter metrics [--print]      write the Prometheus textfile (or print it)
+#   swatter export-bans [file]     write perm-ban list to file (or stdout)
+#   swatter import-bans <file>     block each listed IP as perm (skips never-block/invalid)
 #   swatter version
 
 set -uo pipefail
@@ -33,7 +36,7 @@ umask 0027
 
 SWATTER_ENTRYPOINT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
 SWATTER_ARGV=("$@")
-SWATTER_VERSION="1.4.0"
+SWATTER_VERSION="2.0.0"
 
 # Locate libs: installed layout (/usr/local/lib/swatter) or repo layout (../lib).
 _self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,7 +58,7 @@ swatter_check_deps
 SWATTER_NOW_EPOCH="$(date -u +%s)"; export SWATTER_NOW_EPOCH
 
 # Source the rest.
-for m in allowlist classify ingest store_sqlite block_csf block_cf intel asn metrics score errors report; do
+for m in allowlist classify ingest store_sqlite block_csf block_ipset block block_cf intel asn metrics errors mailer notify report_abuseipdb score report; do
     # shellcheck disable=SC1090
     source "${LIBDIR}/${m}.sh"
 done
@@ -137,7 +140,7 @@ cmd_unblock() {
     swatter_validate_ip_or_cidr "$ip"
     [[ "${2:-}" == "--perm-allow" ]] && perm_allow=1
     swatter_store_init
-    swatter_csf_unblock "$ip"
+    swatter_block_direct_unblock "$ip"
     swatter_cf_unblock "$ip"
     swatter_store_unblock "$ip"
     if (( perm_allow )); then
@@ -304,6 +307,15 @@ cmd_test_config() {
         local md; md="$(dirname "${METRICS_FILE}")"
         [[ -d "$md" && -w "$md" ]] && echo "  metrics: ${METRICS_FILE} writable" || echo "  metrics: ${md} missing/unwritable -> metrics skipped"
     fi
+    echo "  --- v2.0 feature readiness (advisory) ---"
+    echo "  direct backend: ${DIRECT_BACKEND:-csf}$( [[ "${DIRECT_BACKEND:-csf}" == "ipset" ]] && { [[ "${SWATTER_HAVE_IPSET}" -eq 1 ]] && echo ' (ipset/iptables present; run setup-ipset)' || echo ' -> ipset/iptables MISSING'; } )"
+    local ch=""
+    [[ -n "${NOTIFY_EMAIL:-}" ]]     && ch="${ch}local-mail "
+    [[ -n "${ALERT_EMAIL:-}" ]]      && ch="${ch}sendgrid-email "
+    [[ -n "${ALERT_SMS_TO:-}" && -n "${TWILIO_SID:-}" ]] && ch="${ch}twilio-sms "
+    [[ -n "${ALERT_WEBHOOK_URL:-}" ]] && ch="${ch}webhook "
+    echo "  alerts: ${ch:-none configured}"
+    [[ "${ABUSEIPDB_REPORT:-false}" == "true" ]] && echo "  abuseipdb reporting: ENABLED$( [[ -z "${ABUSEIPDB_KEY:-}" ]] && echo ' but ABUSEIPDB_KEY empty -> inert' )" || echo "  abuseipdb reporting: off"
 }
 
 cmd_honeypot() {
@@ -329,6 +341,37 @@ Disallow: ${clean}/
 EOF
 }
 
+cmd_export_bans() {
+    swatter_store_init
+    local out="${1:-}"
+    if [[ -n "$out" ]]; then
+        swatter_store_perm_ips > "$out"
+        log_info "exported $(grep -c . "$out" 2>/dev/null || echo 0) perm ban(s) -> ${out}"
+    else swatter_store_perm_ips; fi
+}
+
+cmd_import_bans() {
+    local file="${1:-}"
+    [[ -f "$file" ]] || die "usage: swatter import-bans <file>"
+    swatter_store_init
+    local line ip nb n=0 dry
+    dry="$([[ "${SWATTER_MODE}" == "enforce" ]] && echo 0 || echo 1)"
+    local channel; channel="$([[ "${DIRECT_BACKEND:-csf}" == "ipset" ]] && echo ipset || echo csf)"
+    while IFS= read -r line; do
+        ip="${line%%#*}"; ip="$(printf '%s' "$ip" | tr -d '[:space:]')"
+        [[ -n "$ip" ]] || continue
+        swatter_is_valid_ip_or_cidr "$ip" 2>/dev/null || { log_warn "import-bans: skip invalid '${ip}'"; continue; }
+        if nb="$(swatter_is_never_block "$ip")"; then log_info "import-bans: skip never-block ${ip} (${nb})"; continue; fi
+        if swatter_block_direct_perm "$ip" "imported ban"; then
+            swatter_store_record "$ip" perm "$channel" 0 90 "imported ban" "$dry"
+            n=$(( n + 1 ))
+        fi
+    done < "$file"
+    log_info "import-bans: ${n} ban(s) applied (mode=${SWATTER_MODE}, backend=${channel})"
+}
+
+cmd_setup_ipset() { swatter_ipset_setup; }
+
 cmd_metrics() {
     if [[ "${1:-}" == "--print" ]]; then swatter_metrics_emit; else swatter_metrics_write; fi
 }
@@ -349,7 +392,10 @@ main() {
         refresh-feeds) cmd_refresh_feeds ;;
         test-config)   cmd_test_config ;;
         honeypot)      cmd_honeypot ;;
+        setup-ipset)   cmd_setup_ipset ;;
         metrics)       cmd_metrics "$@" ;;
+        export-bans)   cmd_export_bans "$@" ;;
+        import-bans)   cmd_import_bans "$@" ;;
         version|--version|-v) echo "swatter ${SWATTER_VERSION}" ;;
         ""|help|-h|--help) usage ;;
         *) echo "swatter: unknown command '${sub}' (try: swatter help)" >&2; exit 2 ;;

@@ -26,6 +26,11 @@ check intel-has-blde    "$(case " ${INTEL_PROVIDERS} " in *' blocklist_de '*) ec
 check abl-conf-default   "${ABUSEIPDB_BLOCKLIST_CONFIDENCE}" "90"
 # abuseipdb_blocklist is OPT-IN: must NOT be in the default list.
 check abl-optin "$(case " ${INTEL_PROVIDERS} " in *' abuseipdb_blocklist '*) echo in;; *) echo out;; esac)" "out"
+check direct-backend-default "${DIRECT_BACKEND}" "csf"
+check alert-repeat-default   "${ALERT_REPEAT_TTL}" "21600"
+check abuse-report-default   "${ABUSEIPDB_REPORT}" "false"
+check abuse-report-ttl       "${ABUSEIPDB_REPORT_TTL}" "900"
+check webhook-fmt-default    "${ALERT_WEBHOOK_FORMAT}" "auto"
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

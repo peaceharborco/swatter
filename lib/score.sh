@@ -73,13 +73,13 @@ _swatter_execute_block() {
     local plane; plane="$(swatter_classify "$ip" "$novhost")"
     local channel="none" did=0
     if [[ "$plane" == "DIRECT" ]]; then
-        channel="csf"
+        channel="${DIRECT_BACKEND:-csf}"
         if (( ! healthy )); then
             log_warn "fail-closed: not CSF-denying ${ip} (allowlist unhealthy)"
             _swatter_audit "$ip" "$folded" "skipped-failclosed" "csf" "$ttl" "$reason" "$ev" "$rep"; return 1
         fi
-        if [[ "$action" == "perm" ]]; then swatter_csf_perm "$ip" "$reason" && did=1
-        else swatter_csf_temp "$ip" "$ttl" "$reason" && did=1; fi
+        if [[ "$action" == "perm" ]]; then swatter_block_direct_perm "$ip" "$reason" && did=1
+        else swatter_block_direct_temp "$ip" "$ttl" "$reason" && did=1; fi
     else
         channel="cloudflare"
         if ! swatter_cf_manages_plane; then
@@ -93,6 +93,7 @@ _swatter_execute_block() {
         swatter_store_sighting_clear "$ip"
         swatter_store_record "$ip" "$action" "$channel" "$ttl" "$folded" "$reason" \
             "$([[ "${SWATTER_MODE}" == "enforce" ]] && echo 0 || echo 1)"
+        swatter_abuseipdb_report "$ip" "$ev" "$reason"
     fi
     _swatter_audit "$ip" "$folded" "$action" "$channel" "$ttl" "$reason" "$ev" "$rep"
     return 0
@@ -108,6 +109,8 @@ swatter_scan() {
     swatter_failclosed_active && healthy=0
     if (( ! healthy )) && [[ "${SWATTER_MODE}" == "enforce" ]]; then
         log_warn "allowlist unhealthy -> CSF denies disabled this run (fail closed)"
+        swatter_notify "swatter fail-closed on $(hostname -s 2>/dev/null)" \
+            "CSF/direct denies disabled — Cloudflare range list stale/missing. Run: swatter refresh-feeds." "fail_closed"
     fi
 
     swatter_build_direct_set
@@ -215,15 +218,8 @@ swatter_scan() {
     log_info "scan complete: ${SWATTER_RUN_WATCHED} over-watch, ${SWATTER_RUN_ACTED} acted (mode=${SWATTER_MODE}, cap=${MAX_BLOCKS_PER_RUN})"
     swatter_metrics_write
 
-    if (( _SW_TOTAL_BLOCKS >= MAX_BLOCKS_PER_RUN )) && [[ -n "${NOTIFY_EMAIL}" ]]; then
+    if (( _SW_TOTAL_BLOCKS >= MAX_BLOCKS_PER_RUN )); then
         swatter_notify "swatter circuit breaker tripped on $(hostname -s 2>/dev/null)" \
-            "Reached MAX_BLOCKS_PER_RUN=${MAX_BLOCKS_PER_RUN}. Review ${LOG_DIR}/decisions.jsonl." || true
+            "Reached MAX_BLOCKS_PER_RUN=${MAX_BLOCKS_PER_RUN}. Review ${LOG_DIR}/decisions.jsonl." "circuit_breaker"
     fi
-}
-
-# Minimal mail hook (best-effort; uses local mail if present).
-swatter_notify() {
-    local subj="$1" body="$2"
-    [[ -n "${NOTIFY_EMAIL}" ]] || return 0
-    if have mail; then printf '%s\n' "$body" | mail -s "$subj" "${NOTIFY_EMAIL}" 2>/dev/null || true; fi
 }

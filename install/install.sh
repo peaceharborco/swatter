@@ -58,6 +58,21 @@ _install_local() {
     echo
     /usr/local/bin/swatter test-config
     echo
+
+    # If the operator chose the ipset backend, set up the kernel sets now.
+    local _backend=""
+    _backend="$(bash -c 'source /etc/swatter/swatter.conf 2>/dev/null; echo "${DIRECT_BACKEND:-csf}"' 2>/dev/null || echo "csf")"
+    if [[ "${_backend}" == "ipset" ]]; then
+        echo "DIRECT_BACKEND=ipset detected — running setup-ipset ..."
+        /usr/local/bin/swatter setup-ipset || echo "  (setup-ipset had errors; install ipset/iptables and re-run)"
+        local ipsf
+        ipsf="$(bash -c 'source /etc/swatter/swatter.conf 2>/dev/null; echo "${IPSET_SAVE_FILE:-/etc/swatter/ipset.save}"')"
+        echo "  NOTE: ipset rules are not persistent across reboots."
+        echo "  Add the following to /etc/rc.local (or an equivalent boot hook) to restore them:"
+        echo "    ipset restore < \"${ipsf}\""
+        echo
+    fi
+
     echo "Installed. Swatter is in REPORT mode (no blocks). Dry-run now:"
     echo "    swatter scan --dry-run"
     echo "When satisfied, set SWATTER_MODE=\"enforce\" in /etc/swatter/swatter.conf."
