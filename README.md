@@ -319,6 +319,36 @@ coexists with `DIRECT_BACKEND=ipset`: the offender `swatter4`/`swatter6` sets
 and the `cf_origin4`/`cf_origin6` sets are independent and both live in `INPUT`
 without conflict.
 
+### cPanel control-panel subdomains
+
+If your origin is a cPanel server, the lock will block its **service subdomains**
+on `:443`. cPanel auto-creates `cpanel.`, `whm.`, `webmail.`, `webdisk.`,
+`autodiscover.`, `autoconfig.`, `cpcontacts.`, and `cpcalendars.` as DNS-only
+(grey-cloud) records pointing straight at the origin — so they arrive **not** from
+a Cloudflare edge, and the lock drops them. (`mail.` and the MX/IMAP/SMTP records
+use other ports, so the lock never touches them — and they must stay DNS-only,
+since Cloudflare can't proxy mail protocols.)
+
+Two ways to restore the HTTP ones:
+
+- **Use their service ports** — `https://<domain>:2083` (cPanel), `:2087` (WHM),
+  `:2096` (webmail). The lock only covers `ORIGIN_LOCK_PORTS` (default `80,443`),
+  so the high ports are unaffected. Best for the admin panels (cPanel/WHM), which
+  you generally don't want publicly reachable anyway — restrict them to your own
+  IPs in `csf.allow`.
+- **Proxy them through Cloudflare** (orange-cloud the record) so they arrive via a
+  CF edge the lock accepts. Good for a customer-facing `webmail.`.
+
+**The 526 gotcha when proxying.** cPanel AutoSSL secures a *primary* domain's
+service subdomains, but **not an addon domain's** — for an addon's `webmail.`, the
+origin presents the server-hostname certificate, which Cloudflare **Full (strict)**
+rejects with **HTTP 526**. Fix it without weakening the zone: add a per-hostname
+**Configuration Rule** that sets SSL to **Full** (not strict) for the service-sub
+hostnames, leaving the apex on strict. Cloudflare then accepts the origin's
+hostname cert while still serving a valid edge certificate to visitors.
+Certificate renewal keeps working behind the lock because `ORIGIN_LOCK_ALLOW_ACME`
+permits the whole `/.well-known/` path (see above).
+
 ---
 
 ## Outbound reporting
