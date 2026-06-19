@@ -64,7 +64,7 @@ has  csf-add4   "ipset add cf_origin4 203.0.113.0/24"
 has  csf-add6   "ipset add cf_origin6 2001:db8:1::/48"
 has  csf-acc4   "iptables -A INPUT -p tcp -m multiport --dports 80,443 -m set --match-set cf_origin4 src -j ACCEPT"
 has  csf-acc6   "ip6tables -A INPUT -p tcp -m multiport --dports 80,443 -m set --match-set cf_origin6 src -j ACCEPT"
-has  csf-acme4  "iptables -A INPUT -p tcp --dport 80 -m string --string /.well-known/acme-challenge/ --algo bm -j ACCEPT"
+has  csf-acme4  "iptables -A INPUT -p tcp --dport 80 -m string --string /.well-known/ --algo bm -j ACCEPT"
 has  csf-log4   "iptables -A INPUT -p tcp -m multiport --dports 80,443 -m limit --limit 5/min -j LOG --log-prefix ORIGIN-LOCK: "
 has  csf-log6   "ip6tables -A INPUT -p tcp -m multiport --dports 80,443 -m limit --limit 5/min -j LOG --log-prefix ORIGIN-LOCK: "
 hasnt csf-no-drop4 "-j DROP"
@@ -180,14 +180,14 @@ SWATTER_HAVE_IP6TABLES=1
 : > "$CALLS"
 ORIGIN_LOCK_ALLOW_ACME="false"
 cmd_origin_lock apply --hook=csf >/dev/null 2>&1
-hasnt acme-off "acme-challenge"
+hasnt acme-off "well-known"
 ORIGIN_LOCK_ALLOW_ACME="true"
 
 # ACME soft-fail when xt_string missing => warn, no ACME rule, rest still applied
 : > "$CALLS"
 SWATTER_OL_HAVE_XT_STRING=0
 cmd_origin_lock apply --hook=csf >/dev/null 2>&1
-hasnt acme-xtstring-missing "acme-challenge"
+hasnt acme-xtstring-missing "well-known"
 has   acme-rest-still "iptables -A INPUT -p tcp -m multiport --dports 80,443 -m set --match-set cf_origin4 src -j ACCEPT"
 SWATTER_OL_HAVE_XT_STRING=1
 

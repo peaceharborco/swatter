@@ -261,11 +261,15 @@ leave a `DROP` standing without its preceding `ACCEPT`s (fail-open). If
 ranges, `apply` installs **no** restriction at all and logs why — an empty
 allowlist plus `DROP` would firewall the entire internet.
 
-If `ORIGIN_LOCK_ALLOW_ACME` is on (default), `/.well-known/acme-challenge/` on
-`:80` is accepted from any source so HTTP-01 certificate issuance still works
-behind the lock. It soft-fails with a warning if the kernel's `xt_string` match
-is unavailable; disable the toggle or use DNS-01 in that case. Only HTTP-01 is
-accommodated — TLS-ALPN-01 (`:443`) is not; DNS-01 needs no port access at all.
+If `ORIGIN_LOCK_ALLOW_ACME` is on (default), the whole `/.well-known/` prefix on
+`:80` is accepted from any source so HTTP domain-validation keeps working behind
+the lock — both ACME HTTP-01 (`/.well-known/acme-challenge/`) and cPanel/Sectigo
+AutoSSL DCV (`/.well-known/pki-validation/`, `/.well-known/cpanel-dcv/`). Narrowing
+this to just `acme-challenge` would let the lock silently break cPanel AutoSSL
+renewals. It soft-fails with a warning if the kernel's `xt_string` match is
+unavailable; disable the toggle or use DNS-01 in that case. (`/.well-known/` is
+public metadata, so allowing it on `:80` is low risk; TLS-ALPN-01 on `:443` is
+still not accommodated.)
 
 ### IPv4 and IPv6
 

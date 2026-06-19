@@ -5,7 +5,7 @@
 #
 # One idempotent code path (`apply`) builds, in accept-first / drop-last order:
 #   1. ACCEPT Cloudflare edges (ipset src match) -> web ports
-#   2. (opt) ACCEPT /.well-known/acme-challenge/ on :80 (HTTP-01, -m string)
+#   2. (opt) ACCEPT /.well-known/ on :80 (HTTP domain-validation: ACME + cPanel DCV)
 #   3. LOG (rate-limited) the remainder, prefix "ORIGIN-LOCK: "
 #   4. (drop mode) DROP the remainder
 #
@@ -147,12 +147,12 @@ _ol_rules_family() {
         if _ol_have_xt_string; then
             emit_acme=1
         else
-            log_warn "origin-lock: xt_string unavailable — skipping ACME HTTP-01 accept (set ORIGIN_LOCK_ALLOW_ACME=false or use DNS-01)"
+            log_warn "origin-lock: xt_string unavailable — skipping /.well-known/ domain-validation accept (set ORIGIN_LOCK_ALLOW_ACME=false or use DNS-01)"
         fi
     fi
 
     _ol_emit_cf()   { "$add" "$ipt" -p tcp -m multiport --dports "$ports" -m set --match-set "$set" src -j ACCEPT; }
-    _ol_emit_acme() { (( emit_acme )) && "$add" "$ipt" -p tcp --dport 80 -m string --string "/.well-known/acme-challenge/" --algo bm -j ACCEPT; }
+    _ol_emit_acme() { (( emit_acme )) && "$add" "$ipt" -p tcp --dport 80 -m string --string "/.well-known/" --algo bm -j ACCEPT; }
     _ol_emit_log()  { "$add" "$ipt" -p tcp -m multiport --dports "$ports" -m limit --limit 5/min -j LOG --log-prefix "ORIGIN-LOCK: "; }
     _ol_emit_drop() { [[ "$mode" == "drop" ]] && "$add" "$ipt" -p tcp -m multiport --dports "$ports" -j DROP; }
 
@@ -191,7 +191,7 @@ _ol_teardown_family() {
     ports="$(_ol_ports)"
     local rules=(
         "-p tcp -m multiport --dports ${ports} -m set --match-set ${set} src -j ACCEPT"
-        "-p tcp --dport 80 -m string --string /.well-known/acme-challenge/ --algo bm -j ACCEPT"
+        "-p tcp --dport 80 -m string --string /.well-known/ --algo bm -j ACCEPT"
         "-p tcp -m multiport --dports ${ports} -m limit --limit 5/min -j LOG --log-prefix ORIGIN-LOCK: "
         "-p tcp -m multiport --dports ${ports} -j DROP"
         "-i lo -p tcp -m multiport --dports ${ports} -j ACCEPT"
