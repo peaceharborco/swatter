@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- **Inline origin lock** (`swatter origin-lock`) — an optional L3 firewall
+  control that restricts the web ports (`80`/`443`) to Cloudflare ranges, so
+  direct-to-origin Cloudflare-bypass traffic is dropped at the socket. The
+  structural complement to the reactive direct-detection classifier. Off by
+  default; a three-state `off` → `log` → `drop` ladder with a drop guard
+  (`apply` runs `preflight` and requires confirmation before installing a
+  `DROP`), fail-open rule composition (accept-first, drop-last; no rules at all
+  on an empty/missing allowlist), IPv4 + IPv6 (gated on `ip6tables`), and
+  optional ACME HTTP-01 passthrough. Persists via a `csfpre.sh` hook under CSF
+  or a oneshot systemd unit standalone. Subcommands: `apply` / `status` /
+  `preflight` / `disable`. Reuses `CLOUDFLARE_IPS_FILE`; configured via the new
+  `ORIGIN_LOCK*` keys.
 
 ## [2.0.0] — 2026-06-17
 

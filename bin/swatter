@@ -22,6 +22,7 @@
 #   swatter test-config                  validate config + dependencies
 #   swatter honeypot               print robots.txt + invisible-anchor snippet for the trap path
 #   swatter setup-ipset            create ipset sets + iptables DROP rules (idempotent)
+#   swatter origin-lock {apply|status|preflight|disable}  restrict :80/:443 to Cloudflare edges (L3)
 #   swatter metrics [--print]      write the Prometheus textfile (or print it)
 #   swatter export-bans [file]     write perm-ban list to file (or stdout)
 #   swatter import-bans <file>     block each listed IP as perm (skips never-block/invalid)
@@ -58,7 +59,7 @@ swatter_check_deps
 SWATTER_NOW_EPOCH="$(date -u +%s)"; export SWATTER_NOW_EPOCH
 
 # Source the rest.
-for m in allowlist classify ingest store_sqlite block_csf block_ipset block block_cf intel asn metrics errors mailer notify report_abuseipdb score report; do
+for m in allowlist classify ingest store_sqlite block_csf block_ipset block block_cf origin_lock intel asn metrics errors mailer notify report_abuseipdb score report; do
     # shellcheck disable=SC1090
     source "${LIBDIR}/${m}.sh"
 done
@@ -104,6 +105,7 @@ cmd_status() {
     fi
     local dl="${LOG_DIR}/decisions.jsonl"
     [[ -f "$dl" ]] && echo "  decisions:   $(wc -l < "$dl" 2>/dev/null) lines ($dl)"
+    echo "  origin-lock: $(swatter_origin_lock_summary)"
 }
 
 cmd_top() {
@@ -309,6 +311,7 @@ cmd_test_config() {
     fi
     echo "  --- v2.0 feature readiness (advisory) ---"
     echo "  direct backend: ${DIRECT_BACKEND:-csf}$( [[ "${DIRECT_BACKEND:-csf}" == "ipset" ]] && { [[ "${SWATTER_HAVE_IPSET}" -eq 1 ]] && echo ' (ipset/iptables present; run setup-ipset)' || echo ' -> ipset/iptables MISSING'; } )"
+    echo "  origin-lock: $(swatter_origin_lock_summary)$( [[ "$(swatter_origin_lock_summary)" == *fail-open* ]] && echo ' (run: swatter refresh-feeds)' )"
     local ch=""
     [[ -n "${NOTIFY_EMAIL:-}" ]]     && ch="${ch}local-mail "
     [[ -n "${ALERT_EMAIL:-}" ]]      && ch="${ch}sendgrid-email "
@@ -376,7 +379,7 @@ cmd_metrics() {
     if [[ "${1:-}" == "--print" ]]; then swatter_metrics_emit; else swatter_metrics_write; fi
 }
 
-usage() { sed -n '2,25p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,29p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
 
 main() {
     local sub="${1:-}"; shift || true
@@ -393,6 +396,7 @@ main() {
         test-config)   cmd_test_config ;;
         honeypot)      cmd_honeypot ;;
         setup-ipset)   cmd_setup_ipset ;;
+        origin-lock)   cmd_origin_lock "$@" ;;
         metrics)       cmd_metrics "$@" ;;
         export-bans)   cmd_export_bans "$@" ;;
         import-bans)   cmd_import_bans "$@" ;;

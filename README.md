@@ -219,6 +219,104 @@ sources: the Project Honeypot provider and the live-socket direct-evidence check
 
 ---
 
+## Origin lock
+
+The direct-vs-proxied classifier (above) is **reactive**: it scores a
+direct-to-origin Cloudflare-bypass offender *after* it shows up in the logs,
+which a fast valid-`Host` flood can outrun. **Origin lock is the structural
+complement** — an inline L3 firewall rule that only lets Cloudflare edge ranges
+reach the web ports (`80`/`443`), so bypass traffic is dropped at the socket
+before it ever becomes a log line. The classifier still scores offenders from
+logs; the lock closes the door instead of scoring who walked through it. The two
+are independent and conflict-free (different chains, different purpose).
+
+It is **off by default** and config-driven — it carries no IPs, hostnames, or
+allow assumptions of its own. The Cloudflare ranges come from the same
+`CLOUDFLARE_IPS_FILE` (`/etc/swatter/cloudflare.cidr`) that `refresh-feeds`
+already maintains; everything policy-specific (whether to enforce, which extra
+sources to admit) lives in your own `/etc/swatter/` config.
+
+### Off → log → drop (validate before you enforce)
+
+`ORIGIN_LOCK` is a three-state ladder, and you climb it deliberately:
+
+| `ORIGIN_LOCK` | What `apply` installs |
+|---|---|
+| `off` *(default)* | nothing — a fresh install enforces no restriction |
+| `log` | `ACCEPT` Cloudflare edges → web ports, then a rate-limited `LOG` (prefix `ORIGIN-LOCK: `) of everything else. **No drop.** |
+| `drop` | the same `ACCEPT` + `LOG`, then a `DROP` of the remainder |
+
+> ⚠️ **Run `log` mode first. Read the would-be-drops with `preflight`. Allowlist
+> every legitimate source. THEN enforce.** A direct-to-origin lock that drops
+> blind can blackhole real visitors to a non-proxied (grey-cloud) vhost, your
+> monitoring, or your own health checks. `drop` is guarded for exactly this
+> reason: `apply` refuses to install a `DROP` without first running `preflight`
+> and getting an interactive confirmation (or `--yes` / `--force`). The most
+> embarrassing failure of any inline lock is firewalling your own customers — so
+> the tool makes enforcing blind hard to do by accident.
+
+Rules are built **accept-first, drop-last**, so a mid-build failure can never
+leave a `DROP` standing without its preceding `ACCEPT`s (fail-open). If
+`cloudflare.cidr` is missing, empty, or yields fewer than a sane minimum of
+ranges, `apply` installs **no** restriction at all and logs why — an empty
+allowlist plus `DROP` would firewall the entire internet.
+
+If `ORIGIN_LOCK_ALLOW_ACME` is on (default), `/.well-known/acme-challenge/` on
+`:80` is accepted from any source so HTTP-01 certificate issuance still works
+behind the lock. It soft-fails with a warning if the kernel's `xt_string` match
+is unavailable; disable the toggle or use DNS-01 in that case. Only HTTP-01 is
+accommodated — TLS-ALPN-01 (`:443`) is not; DNS-01 needs no port access at all.
+
+### IPv4 and IPv6
+
+`cloudflare.cidr` carries both v4 and v6 ranges (`refresh-feeds` fetches both
+families). `apply` builds the v4 path with `iptables` and the v6 path with
+`ip6tables`, **gated on `ip6tables` being present**. If it is absent the v6 path
+logs a loud warning and leaves v6 web ports uncovered rather than failing —
+install `ip6tables` so a dual-stack host doesn't keep a silent direct-to-origin
+hole on v6.
+
+### Persistence: CSF (csfpre) vs standalone
+
+A single idempotent code path (`apply`) serves both worlds; the execution
+context is explicit, never guessed:
+
+- **CSF present.** Install writes one line — `swatter origin-lock apply
+  --hook=csf` — into `/etc/csf/csfpre.sh` (created if absent). `csfpre.sh` runs
+  before CSF builds its chains on every `csf -r`, so the lock re-applies and is
+  ordered ahead of CSF's blanket TCP_IN accept. CSF already supplies loopback,
+  established/related, and `csf.allow` accepts above csfpre, so in this context
+  `apply` adds **only** the Cloudflare/ACME accept + LOG/DROP (a redundant
+  established accept is deliberately avoided — it can leak handshakes under
+  `nf_conntrack_tcp_loose=1`).
+- **No CSF (standalone).** Install writes a small `oneshot` systemd unit
+  (`WantedBy=multi-user.target`) that runs `apply` at boot; an `rc.local`
+  equivalent works too. Here `apply` lays a safe preamble before the `DROP` —
+  `ACCEPT -i lo` to the web ports (local self-calls / health checks) plus
+  `ACCEPT` of `allow.cidr` + `monitoring.cidr` (the portable `csf.allow`
+  equivalent). It still adds no standing established accept; outbound-initiated
+  return traffic lands on ephemeral ports, never `dport 80/443`, so the `DROP`
+  never matches it.
+
+`swatter origin-lock status` reports which persistence mode is active.
+
+### Subcommands
+
+| Command | Behavior |
+|---|---|
+| `swatter origin-lock apply` | Converge the firewall to the configured `ORIGIN_LOCK` mode (including removing rules when `off`). The drop guard applies. |
+| `swatter origin-lock status` | Mode, ipset health (v4/v6 entry counts), live ACCEPT/DROP counters, persistence mode (csfpre vs systemd), and whether the hook is installed. |
+| `swatter origin-lock preflight` | Read-only. Classifies the would-be-drops from the `log`-mode sample against Swatter's intel feeds + allowlist: **confirmed attacker** (in a feed, safe to drop), **legit** (in `monitoring.cidr` / `allow.cidr` — allowlist before you drop), or **unknown** (review — could be a real visitor to a non-CF vhost). It reads the kernel-LOG source (`journalctl -k`, else `/var/log/{messages,syslog,kern.log}`) and notes it is a rate-limited sample, not every packet. |
+| `swatter origin-lock disable` | Full teardown: removes the iptables/ip6tables rules, the `cf_origin4`/`cf_origin6` sets, **and** the persistence hooks (the csfpre line + the systemd unit), so nothing re-applies on reboot or `csf -r`. |
+
+`swatter test-config` and `swatter status` surface origin-lock state (mode,
+ipset health, hook installed) alongside the existing readiness checks. The lock
+coexists with `DIRECT_BACKEND=ipset`: the offender `swatter4`/`swatter6` sets
+and the `cf_origin4`/`cf_origin6` sets are independent and both live in `INPUT`
+without conflict.
+
+---
+
 ## Outbound reporting
 
 Set `ABUSEIPDB_REPORT=true` in `/etc/swatter/swatter.conf` to report each

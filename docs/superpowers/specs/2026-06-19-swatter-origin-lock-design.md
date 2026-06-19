@@ -105,9 +105,13 @@ so re-running converges instead of duplicating.
 ### Fail-open
 
 If `cloudflare.cidr` is missing, empty, or yields fewer than a sane minimum of
-ranges (reusing `swatter_allowlist_healthy` and falling back to the built-in CF
-set), `apply` installs **no** restriction at all and logs why. An empty allowlist
-plus DROP would firewall the entire internet — never acceptable.
+ranges, `apply` installs **no** restriction at all and logs why (a missing file
+means `refresh-feeds` never ran). It deliberately does **not** fall back to the
+compiled-in CF set for the enforcing lock: unlike the allowlist's never-block use
+(where an over-broad set is harmless), a stale builtin DROP could drop newly-added
+Cloudflare edges and take sites offline. A populated-but-stale file still locks
+(with a loud freshness warning). An empty allowlist plus DROP would firewall the
+entire internet — never acceptable.
 
 ## Safety model
 

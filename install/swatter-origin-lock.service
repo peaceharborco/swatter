@@ -1,0 +1,31 @@
+# Swatter origin-lock — re-apply the inline Cloudflare-only web-port lock at boot.
+# Installed to /etc/systemd/system/swatter-origin-lock.service (mode 0644).
+#
+# This is the STANDALONE (non-CSF) persistence path. On a CSF host the lock is
+# re-applied by /etc/csf/csfpre.sh on every `csf -r` instead, and this unit is
+# not installed. `swatter origin-lock apply` is idempotent and fail-open: if the
+# Cloudflare range list is missing/empty it installs NO restriction and logs why,
+# so a failed boot-time apply can never firewall the host off the internet.
+#
+# rc.local equivalent (documented in the README): add a line to /etc/rc.local —
+#     /usr/local/bin/swatter origin-lock apply || true
+
+[Unit]
+Description=Swatter origin-lock (Cloudflare-only web-port firewall)
+Documentation=https://github.com/peaceharborco/swatter
+# Order after the network and the firewall backend so the ipset/iptables tooling
+# and routes exist before we build the chain.
+After=network-online.target nftables.service iptables.service ip6tables.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/swatter origin-lock apply
+# Fail-open at boot: a non-zero apply must not block multi-user.target from
+# coming up (which could leave the box unreachable for remote recovery).
+SuccessExitStatus=0 1
+ExecStartPre=/bin/sh -c 'test -x /usr/local/bin/swatter || { echo "swatter binary missing; skipping origin-lock apply" >&2; exit 0; }'
+
+[Install]
+WantedBy=multi-user.target
