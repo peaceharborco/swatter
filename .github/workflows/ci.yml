@@ -18,3 +18,5 @@ jobs:
         run: bash test/score_test.sh
       - name: Cloudflare detection + fail-closed tests
         run: bash test/detect_test.sh
+      - name: Origin-lock tests
+        run: bash test/origin_lock_test.sh
