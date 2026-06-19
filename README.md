@@ -3,7 +3,8 @@
 [![CI](https://github.com/peaceharborco/swatter/actions/workflows/ci.yml/badge.svg)](https://github.com/peaceharborco/swatter/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**A Cloudflare-aware abuse swatter for cPanel + CSF servers.**
+**A Cloudflare-aware abuse swatter for cPanel + CSF servers** — and any Linux host
+with `ipset`/`iptables`, since CSF is optional (see [Firewall backend](#firewall-backend)).
 
 Swatter reads your web-server logs, scores every IP on weighted behavioral
 signals plus optional threat-intel, and blocks the malicious ones — automatically,
@@ -207,6 +208,14 @@ The two backends can coexist: CSF continues to manage its own deny list; the
 ipset sets are separate. After a reboot, restore the ipset with the save file
 (`ipset restore < "${IPSET_SAVE_FILE}"`); the installer notes this if
 `DIRECT_BACKEND=ipset` is set.
+
+### IPv6
+
+IPv6 is supported across scoring, exact-prefix allowlisting, ASN/hosting boost
+(`origin6` lookups), and blocking (the `swatter6` set + `ip6tables` DROP rule).
+Install `ip6tables` so v6 blocks actually enforce — `swatter test-config` warns
+if it's missing. Two signals remain **IPv4-only** by nature of their data
+sources: the Project Honeypot provider and the live-socket direct-evidence check.
 
 ---
 

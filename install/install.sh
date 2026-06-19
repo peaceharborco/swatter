@@ -73,9 +73,23 @@ _install_local() {
         echo
     fi
 
-    echo "Installed. Swatter is in REPORT mode (no blocks). Dry-run now:"
-    echo "    swatter scan --dry-run"
-    echo "When satisfied, set SWATTER_MODE=\"enforce\" in /etc/swatter/swatter.conf."
+    echo
+    echo "======================================================================"
+    echo " Installed — Swatter is in REPORT mode. It will NOT block anything yet."
+    echo "======================================================================"
+    echo
+    echo " DON'T ENFORCE BLIND. Run report mode for a day or so first, and read"
+    echo " what it WOULD have done before you let it touch the firewall:"
+    echo
+    echo "     swatter scan --dry-run         # score now, decide nothing"
+    echo "     swatter report 24h --print     # see the would-be blocks + exemptions"
+    echo
+    echo " Check the report for any legitimate IP (your office, a monitor, an API"
+    echo " client, a good crawler) that scored high — allowlist it BEFORE enforcing."
+    echo
+    echo " Only once the report looks right, flip to enforcing:"
+    echo "     set SWATTER_MODE=\"enforce\" in /etc/swatter/swatter.conf"
+    echo "======================================================================"
 }
 
 _install_remote() {

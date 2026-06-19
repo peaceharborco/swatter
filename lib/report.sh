@@ -78,7 +78,7 @@ swatter_report_build() {
     echo
     echo "------------------------------------------------------------------"
     echo "Full evidence:  swatter why <ip>      Abuse log: ${log}"
-    [[ "${ERROR_DIGEST_ENABLE}" == "true" ]] && echo "Error triage:   swatter report --test   (or /server-logs equivalent)"
+    [[ "${ERROR_DIGEST_ENABLE}" == "true" ]] && echo "Error triage:   swatter report --test"
 }
 
 # The abuse (bad-actor) digest body.
@@ -215,7 +215,7 @@ _report_send() {
 
 # Entry point: swatter report [WINDOW] [--test|--print]
 # --print writes the digest body to stdout and sends nothing — for operators
-# (and agents, e.g. /server-logs) who want the email's content on demand.
+# (and automation) who want the email's content on demand.
 swatter_report() {
     local window="${REPORT_WINDOW:-24h}" test_mode=0 print_mode=0 arg
     for arg in "$@"; do

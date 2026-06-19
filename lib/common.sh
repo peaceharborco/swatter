@@ -132,7 +132,7 @@ SENDGRID_KEY_FILE=""
 BREVO_API_KEY=""
 BREVO_KEY_FILE=""
 
-# Server error-log triage section (bundled /server-logs digest).
+# Server error-log triage section (bundled error digest).
 ERROR_DIGEST_ENABLE="false"
 ERROR_DIGEST_LOG=""               # pre-consolidated log; empty = aggregate live
 ERROR_FPM_GLOB="/opt/cpanel/ea-php8*/root/usr/var/log/php-fpm/error.log"

@@ -10,7 +10,7 @@
 # Two sources of truth:
 #   - ERROR_DIGEST_LOG set & readable  -> read that pre-consolidated log
 #     (lines: "[YYYY-MM-DD HH:MM:SS] [LEVEL] [source/id] message", UTC). This
-#     reuses an existing aggregator (e.g. a /server-logs ph-errors.log feed).
+#     reuses an existing aggregator (e.g. an hourly error-log feed).
 #   - otherwise -> aggregate live from raw Apache/PHP-FPM/MySQL/per-site logs.
 #
 # No persistent state: a once-nightly digest just scans the window directly.
