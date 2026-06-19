@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [2.1.0] — 2026-06-19
+
 ### Added
 - **Inline origin lock** (`swatter origin-lock`) — an optional L3 firewall
   control that restricts the web ports (`80`/`443`) to Cloudflare ranges, so
@@ -103,7 +107,8 @@ plane-correct blocking (CSF for direct-to-origin, Cloudflare IP Access Rules for
 via-proxy), a hardcoded Cloudflare never-block set, and fail-closed behavior when
 the range list is stale.
 
-[Unreleased]: https://github.com/peaceharborco/swatter/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/peaceharborco/swatter/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/peaceharborco/swatter/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/peaceharborco/swatter/compare/v1.2.2...v2.0.0
 [1.2.2]: https://github.com/peaceharborco/swatter/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/peaceharborco/swatter/compare/v1.2.0...v1.2.1
