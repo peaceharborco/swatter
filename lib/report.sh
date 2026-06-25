@@ -65,7 +65,7 @@ swatter_report_build() {
         rm -f "$errfile"
     fi
 
-    echo "Swatter nightly digest — $(hostname -f 2>/dev/null || hostname)"
+    echo "Swatter Nightly Report — $(hostname -f 2>/dev/null || hostname)"
     echo "Window: last ${window}  (mode: ${SWATTER_MODE})"
     echo
     echo "========================  BAD ACTORS  ==========================="
@@ -189,7 +189,7 @@ _report_render_html() {
 
     {
         printf '<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:760px;margin:0 auto;color:#24292e">'
-        printf '<h2 style="margin:0 0 2px;font-size:20px">🪰 Swatter nightly digest</h2>'
+        printf '<h2 style="margin:0 0 2px;font-size:20px">🪰 Swatter Nightly Report</h2>'
         printf '<p style="margin:0 0 14px;color:#586069;font-size:13px">%s &middot; last %s &middot; mode: <b>%s</b></p>' \
             "$(printf '%s' "$host" | _report_html_escape)" "${REPORT_WINDOW}" "${SWATTER_MODE}"
 
@@ -215,6 +215,25 @@ _report_render_html() {
 _report_send() {
     local subject="$1" body="$2" html="${3:-}"
     swatter_send_email "${REPORT_EMAIL}" "$subject" "$body" "$html"
+}
+
+# Worst-plane-wins severity. Echoes "LEVEL<TAB>SUMMARY" (LEVEL: green|amber|red).
+_report_verdict() {
+    local level="green" lead="healthy"
+    if   (( ${ERR_FATAL:-0}   > 0 )); then level="red";   lead="⚠ ${ERR_FATAL} FATAL"
+    elif (( ${ERR_GENUINE:-0} > 0 )); then level="amber"; lead="⚠ ${ERR_GENUINE} server error(s)"
+    fi
+    local tail="${RPT_ACTED:-0} blocked"
+    (( ${OL_HITS:-0} > 0 )) && tail="${tail} · ${OL_HITS} origin-lock"
+    [[ "$level" == "green" ]] && tail="${tail}, ${ERR_FATAL:-0} FATAL"
+    printf '%s\t%s · %s' "$level" "$lead" "$tail"
+}
+
+# Echoes "Report <YYYY-MM-DD> - <summary>" (UTC run date).
+_report_subject() {
+    local d; d="$(date -u -d "@$(swatter_now)" +%F 2>/dev/null || date -u -r "$(swatter_now)" +%F)"
+    local v; v="$(_report_verdict)"
+    printf 'Report %s - %s' "$d" "${v#*$'\t'}"
 }
 
 # Entry point: swatter report [WINDOW] [--test|--print]
@@ -253,18 +272,7 @@ swatter_report() {
     fi
 
     # Subject summarizes both planes.
-    local host subject parts=""
-    host="$(hostname -s 2>/dev/null || hostname)"
-    if (( RPT_PERM > 0 )); then parts="${RPT_PERM} perm + ${RPT_TEMP} temp block(s)"
-    elif (( RPT_ACTED > 0 )); then parts="${RPT_ACTED} block(s)"
-    elif (( RPT_EXEMPT > 0 )); then parts="${RPT_EXEMPT} exemption(s)"; fi
-    if (( err_genuine > 0 )); then
-        local errpart="${err_genuine} server error(s)"
-        (( err_fatal > 0 )) && errpart="${err_fatal} FATAL + ${err_genuine} error(s)"
-        parts="${parts:+${parts} + }${errpart}"
-    fi
-    [[ -n "$parts" ]] || parts="all quiet"
-    subject="[Swatter] ${parts} in ${window} — ${host}"
+    local subject; subject="$(_report_subject "$window")"
     (( test_mode )) && subject="[TEST] ${subject}"
 
     local html; html="$(_report_render_html "$body")"
