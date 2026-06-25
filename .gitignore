@@ -16,6 +16,7 @@ swatter.conf
 *.tmp
 .DS_Store
 test/fixtures/*.local
+grok-review/          # one-off external code-review scratch (spec + findings)
 
 # draft marketing — keep out of the public repo
 docs/launch-post.md
