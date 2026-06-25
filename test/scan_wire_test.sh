@@ -151,6 +151,8 @@ BLOCK_RC=1
 feed $'9.8.7.6\t82\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"scanner_profile","honeypot":0,"top_vhost":"x.com"}'
 swatter_scan >/dev/null 2>&1
 check temp-fail-audits-failed "$(last_action)" "failed"
+# and the failed temp left NO temp record in the store (not just the right label).
+check temp-fail-no-store "$(swatter_store_recent_temp_count 9.8.7.6)" "0"
 
 # 12) Backend hits its per-run cap (rc=2): a deliberate throttle, NOT a backend
 #     error -> "skipped-cap" (mirrors the MAX_BLOCKS_PER_RUN skip), not "failed".
@@ -168,6 +170,19 @@ BLOCK_RC=3
 feed $'12.12.12.12\t100\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"honeypot","honeypot":1,"top_vhost":"x.com"}'
 swatter_scan >/dev/null 2>&1
 check cfprecond-audits-skipped-config "$(last_action)" "skipped-config"
+check cfprecond-channel "$(last_channel)" "cloudflare"
+if swatter_store_is_perm "12.12.12.12"; then check cfprecond-no-perm "set" "unset"; else check cfprecond-no-perm "unset" "unset"; fi
+
+# 14) VIA_CF with no nameable target vhost this window (rc=4): data-dependent, may
+#     resolve next scan -> "skipped-novhost", distinct from the permanent
+#     "skipped-config" so a transient evidence shape isn't read as a misconfig.
+BLOCK_RC=4
+feed $'13.13.13.13\t100\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"honeypot","honeypot":1,"top_vhost":""}'
+swatter_scan >/dev/null 2>&1
+check novhost-audits-skipped-novhost "$(last_action)" "skipped-novhost"
+check novhost-channel "$(last_channel)" "cloudflare"
+if swatter_store_is_perm "13.13.13.13"; then check novhost-no-perm "set" "unset"; else check novhost-no-perm "unset" "unset"; fi
+
 BLOCK_RC=0
 swatter_classify()         { echo "DIRECT"; }
 swatter_cf_manages_plane() { return 1; }

@@ -17,6 +17,21 @@ export SWATTER_LIB_DIR SWATTER_ROOT_DIR
 export TZ=UTC
 
 # ---------------------------------------------------------------------------
+# Backend block return-code protocol — the single source of truth shared by the
+# block_*.sh backends (producers) and _swatter_execute_block in score.sh
+# (consumer). A backend's exit status tells the scorer how to audit a non-block:
+#   OK      (0) block placed (or idempotent dup / dry-run)  -> real perm/temp
+#   CAP     (2) per-run deny cap hit (deliberate throttle)   -> skipped-cap
+#   CONFIG  (3) deterministic config gap (unmapped vhost /   -> skipped-config
+#               missing token; never satisfied by retrying)
+#   NOVHOST (4) no nameable target vhost in THIS window      -> skipped-novhost
+#               (data-dependent; may resolve next scan — not a config error)
+#   1 / other   genuine backend error (API/csf/ipset/tooling)-> failed
+SWATTER_RC_CAP=2
+SWATTER_RC_CONFIG=3
+SWATTER_RC_NOVHOST=4
+
+# ---------------------------------------------------------------------------
 # Built-in defaults. The config file overrides any of these.
 # ---------------------------------------------------------------------------
 : "${SWATTER_CONF:=/etc/swatter/swatter.conf}"

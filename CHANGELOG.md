@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [2.1.3] — 2026-06-25
+
+### Changed
+- **A new `skipped-novhost` action distinguishes "no nameable target vhost this
+  window" from a genuine config gap.** 2.1.2 folded an empty `top_vhost` into
+  `skipped-config`, but that outcome is *data-dependent* — a raw-IP / no-Host
+  offender may present a blockable vhost on the next scan — so labeling it a
+  deterministic misconfig was misleading (an operator "fixing" the zone map
+  wouldn't change anything). `swatter_cf_block` now returns `SWATTER_RC_NOVHOST`
+  for an empty vhost and `_swatter_execute_block` audits it as `skipped-novhost`;
+  `skipped-config` is reserved for true config gaps (vhost not in
+  `CF_DOMAINS_MAP`, missing token).
+- **The backend return-code protocol is now defined once** as `SWATTER_RC_*`
+  constants in `lib/common.sh` (the single source of truth) and referenced by the
+  `block_*.sh` producers and `score.sh` consumer, instead of magic `2`/`3`/`4`
+  scattered across four files.
+- Documented the failure-vs-skip axis in `config/swatter.example.conf`:
+  config/credential/zone-map gaps → `skipped-config` (quiet, per-offender);
+  broken host tooling / zone-lookup / live API errors → `failed` (loud).
+
+### Added
+- `test/block_cf_test.sh` — pins the `swatter_cf_block` return-code contract
+  (empty vhost → novhost, unmapped/no-token → config, tooling/zone/API → failed,
+  duplicate → success), so a future edit can't silently re-break the taxonomy.
+- `test/block_csf_test.sh` — pins the CSF cap (`return 2`), dry-run, enforce, and
+  missing-csf return codes (the DIRECT-plane counterpart to the existing ipset
+  cap test).
+- `scan_wire_test.sh`: a `skipped-novhost` case, plus tighter store/channel
+  assertions on the cap/precondition cases.
+
+Credit: this round of hardening was again driven by an adversarial code review
+from Grok (via Cursor 2.5).
+
 ## [2.1.2] — 2026-06-25
 
 ### Changed

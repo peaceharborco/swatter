@@ -71,12 +71,9 @@ _swatter_execute_block() {
         _swatter_audit "$ip" "$folded" "skipped-cap" "none" 0 "circuit_breaker" "$ev" "$rep"; return 1
     fi
     local plane; plane="$(swatter_classify "$ip" "$novhost")"
-    # Backend return-code protocol (consumed below):
-    #   0 -> block placed (or idempotent dup / dry-run)  => did=1, real action
-    #   2 -> deliberate per-run cap (MAX_*_PER_RUN)       => skipped-cap
-    #   3 -> deterministic precondition (no zone/token/   => skipped-config
-    #        vhost; can't be satisfied by retrying)
-    #   other (1) -> genuine backend error               => failed
+    # Backend return-code protocol — defined once in lib/common.sh (SWATTER_RC_*),
+    # consumed here: 0 => did=1 (real action); RC_CAP => skipped-cap;
+    # RC_CONFIG => skipped-config; RC_NOVHOST => skipped-novhost; other => failed.
     local channel="none" did=0 rc=0
     if [[ "$plane" == "DIRECT" ]]; then
         channel="${DIRECT_BACKEND:-csf}"
@@ -102,17 +99,22 @@ _swatter_execute_block() {
             "$([[ "${SWATTER_MODE}" == "enforce" ]] && echo 0 || echo 1)"
         swatter_abuseipdb_report "$ip" "$ev" "$reason"
         _swatter_audit "$ip" "$folded" "$action" "$channel" "$ttl" "$reason" "$ev" "$rep"
-    elif (( rc == 2 )); then
+    elif (( rc == SWATTER_RC_CAP )); then
         # Backend hit its per-run deny cap (a deliberate throttle) — not a failure.
         # Mirror the MAX_BLOCKS_PER_RUN skipped-cap above so a high-volume incident
         # doesn't read as a wave of firewall failures.
         _swatter_audit "$ip" "$folded" "skipped-cap" "$channel" 0 "backend_cap action=${action} ${reason}" "$ev" "$rep"
-    elif (( rc == 3 )); then
-        # Deterministic precondition the offender can't satisfy by retrying (no
-        # mapped CF zone / token / target vhost). A config skip, not a backend
-        # error — keep it out of the "failed" bucket so a misconfig doesn't
-        # masquerade as a transient API failure on every */5 run forever.
+    elif (( rc == SWATTER_RC_CONFIG )); then
+        # Deterministic config gap the offender can't satisfy by retrying (vhost not
+        # in CF_DOMAINS_MAP / no token). A config skip, not a backend error — keep
+        # it out of "failed" so a misconfig doesn't masquerade as a transient API
+        # failure on every */5 run forever.
         _swatter_audit "$ip" "$folded" "skipped-config" "$channel" 0 "precondition action=${action} ${reason}" "$ev" "$rep"
+    elif (( rc == SWATTER_RC_NOVHOST )); then
+        # No nameable target vhost in this scan's evidence (raw-IP / no-Host hits).
+        # Data-dependent, not a config error — the same IP may present a vhost next
+        # window — so it gets its own label rather than the permanent skipped-config.
+        _swatter_audit "$ip" "$folded" "skipped-novhost" "$channel" 0 "no_target_vhost action=${action} ${reason}" "$ev" "$rep"
     else
         # Genuine backend error (CF API timeout/5xx or unresolved zone, csf/ipset
         # command failure, missing tooling). Record the TRUTH — not a phantom

@@ -44,7 +44,7 @@ swatter_ipset_setup() {
 swatter_ipset_temp() {
     local ip="$1" ttl="$2" reason="$3" set
     if (( SWATTER_IPSET_DENIES_THIS_RUN >= MAX_CSF_DENIES_PER_RUN )); then
-        log_warn "ipset cap reached (${MAX_CSF_DENIES_PER_RUN}); skipping temp deny ${ip}"; return 2
+        log_warn "ipset cap reached (${MAX_CSF_DENIES_PER_RUN}); skipping temp deny ${ip}"; return "$SWATTER_RC_CAP"
     fi
     if [[ "${SWATTER_MODE}" != "enforce" ]]; then
         log_info "[dry-run] ipset add ${ip} timeout ${ttl} (${reason})"; return 0
@@ -61,7 +61,7 @@ swatter_ipset_temp() {
 swatter_ipset_perm() {
     local ip="$1" reason="$2" set
     if (( SWATTER_IPSET_DENIES_THIS_RUN >= MAX_CSF_DENIES_PER_RUN )); then
-        log_warn "ipset cap reached (${MAX_CSF_DENIES_PER_RUN}); skipping perm deny ${ip}"; return 2
+        log_warn "ipset cap reached (${MAX_CSF_DENIES_PER_RUN}); skipping perm deny ${ip}"; return "$SWATTER_RC_CAP"
     fi
     if [[ "${SWATTER_MODE}" != "enforce" ]]; then
         log_info "[dry-run] ipset add ${ip} timeout 0 (${reason})"; return 0

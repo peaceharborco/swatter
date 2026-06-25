@@ -13,7 +13,7 @@ swatter_csf_temp() {
     local ip="$1" ttl="$2" reason="$3"
     if (( SWATTER_CSF_DENIES_THIS_RUN >= MAX_CSF_DENIES_PER_RUN )); then
         log_warn "CSF cap reached (${MAX_CSF_DENIES_PER_RUN}); skipping temp deny ${ip}"
-        return 2
+        return "$SWATTER_RC_CAP"   # protocol: lib/common.sh
     fi
     if [[ "${SWATTER_MODE}" != "enforce" ]]; then
         log_info "[dry-run] csf -td ${ip} ${ttl} (${reason})"
@@ -35,7 +35,7 @@ swatter_csf_perm() {
     local ip="$1" reason="$2"
     if (( SWATTER_CSF_DENIES_THIS_RUN >= MAX_CSF_DENIES_PER_RUN )); then
         log_warn "CSF cap reached (${MAX_CSF_DENIES_PER_RUN}); skipping perm deny ${ip}"
-        return 2
+        return "$SWATTER_RC_CAP"   # protocol: lib/common.sh
     fi
     if [[ "${SWATTER_MODE}" != "enforce" ]]; then
         log_info "[dry-run] csf -d ${ip} (${reason})"

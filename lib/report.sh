@@ -8,8 +8,8 @@
 #
 # Only perm/temp count toward the block tallies (exact-matched below). The other
 # actions are observability, not blocks: exempt, watch, noop-perm, skipped-cap,
-# skipped-config, skipped-cf-plane, skipped-failclosed, and failed (a backend
-# error — deliberately NOT counted as an enforced block).
+# skipped-config, skipped-novhost, skipped-cf-plane, skipped-failclosed, and
+# failed (a backend error — deliberately NOT counted as an enforced block).
 #
 # Delivery is method-pluggable for portability:
 #   sendmail (default) — pipe to the local MTA (/usr/sbin/sendmail or `mail`)
