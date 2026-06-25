@@ -288,13 +288,22 @@ DIG="$(mktemp -d "${TMPDIR:-/tmp}/swatter-oldig.XXXXXX")"; STATE_DIR="$DIG"
 mkdir -p "$DIG/feeds"
 printf '45.135.232.17\n193.32.162.40\n' > "$DIG/feeds/ipsum.txt"   # 2 known attackers
 ORIGIN_LOCK_LOG="$DIG/messages"
-# 3 sources: 45.. (attacker, :80 x2), 193.. (attacker, :443 x1), 198.51.100.7 (unknown, :80 x1)
-cat > "$DIG/messages" <<'LOG'
-Jun 25 03:00:01 cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=45.135.232.17 DPT=80 SPT=51000
-Jun 25 03:01:01 cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=45.135.232.17 DPT=80 SPT=51002
-Jun 25 03:02:01 cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=193.32.162.40 DPT=443 SPT=4000
-Jun 25 03:03:01 cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=198.51.100.7 DPT=80 SPT=4002
-LOG
+# Build date-relative syslog timestamps so the window filter is always exercised.
+# Use SWATTER_NOW_EPOCH (set at top of this file) as the reference "now" so the
+# day labels generated here match those computed inside swatter_originlock_section.
+_now_ts="${SWATTER_NOW_EPOCH}"
+_now_lbl="$(date -d "@${_now_ts}" +'%b %e %T' 2>/dev/null || date -r "${_now_ts}" +'%b %e %T')"
+_old_ts=$(( _now_ts - 864000 ))   # 10 days ago — well outside the 24h window
+_old_lbl="$(date -d "@${_old_ts}" +'%b %e %T' 2>/dev/null || date -r "${_old_ts}" +'%b %e %T')"
+# 3 sources in-window: 45.. (attacker, :80 x2), 193.. (attacker, :443 x1), 198.51.100.7 (unknown, :80 x1)
+# Plus one out-of-window line from a NEW IP (10.10.10.10) that must be excluded.
+{
+    printf '%s cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=45.135.232.17 DPT=80 SPT=51000\n'  "$_now_lbl"
+    printf '%s cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=45.135.232.17 DPT=80 SPT=51002\n'  "$_now_lbl"
+    printf '%s cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=193.32.162.40 DPT=443 SPT=4000\n'  "$_now_lbl"
+    printf '%s cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=198.51.100.7 DPT=80 SPT=4002\n'    "$_now_lbl"
+    printf '%s cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=10.10.10.10 DPT=80 SPT=9999\n'     "$_old_lbl"
+} > "$DIG/messages"
 # Call directly (not in $()) so OL_* globals persist in this shell; capture text separately.
 ORIGIN_LOCK_DIGEST="auto"
 _oltmp="$(mktemp "${TMPDIR:-/tmp}/swatter-olsec.XXXXXX")"; swatter_originlock_section 24h > "$_oltmp"; out="$(cat "$_oltmp")"; rm -f "$_oltmp"
@@ -303,6 +312,8 @@ check ol-ips    "$OL_IPS"  "3"
 check ol-p80    "$OL_P80"  "3"
 check ol-p443   "$OL_P443" "1"
 check ol-top-attacker "$(printf '%s\n' "$OL_TOP_ROWS" | awk -F'\t' '$1=="45.135.232.17"{print $3}')" "attacker"
+# Prove window filter: the 10-day-old line from 10.10.10.10 must be excluded.
+check ol-window-exclude-oldip "$(printf '%s\n' "$OL_TOP_ROWS" | grep -c '10\.10\.10\.10' || true)" "0"
 check ol-gate-auto-hits "$(_ol_digest_should_render 4 && echo show || echo hide)" "show"
 ORIGIN_LOCK_DIGEST="auto"
 check ol-gate-auto-zero  "$(_ol_digest_should_render 0 && echo show || echo hide)" "hide"

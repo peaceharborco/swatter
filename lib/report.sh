@@ -179,9 +179,6 @@ _report_emit_abuse() {
     }
 }
 
-# Minimal HTML escape — used internally by _report_render_html.
-_report_html_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
-
 # Render Direction-B structured HTML from globals. $1 = plain-text body (unused;
 # kept for call-site compatibility). Emits HTML on stdout.
 # Inline styles + tables only (email-client safe). No <pre> dump.

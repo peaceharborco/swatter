@@ -509,14 +509,43 @@ _ol_tag_ip() {
 # swatter_originlock_section <window> — emits the plain-text Origin-Lock section
 # and sets OL_* globals for the renderers. Read-only.
 swatter_originlock_section() {
-    local window="$1" cutoff
-    cutoff=$(( $(swatter_now) - $(_report_window_secs "$window") ))
+    local window="$1"
     OL_HITS=0 OL_IPS=0 OL_P80=0 OL_P443=0 OL_MODE="" OL_TOP_ROWS=""
+
+    # Build the set of syslog day-labels (Mon DD) that fall inside the window.
+    # days = floor(window_secs/86400)+1 covers the boundary day and prevents
+    # unbounded-retention over-counting (the grep below spans the full live log).
+    local window_secs days
+    window_secs="$(_report_window_secs "$window")"
+    days=$(( window_secs / 86400 + 1 ))
+    local now_ts; now_ts="$(swatter_now)"
+    # Build a pipe-separated label string (avoids newline-in-awk-var BSD awk limits).
+    local label_str="" i ts lbl
+    for (( i = 0; i < days; i++ )); do
+        ts=$(( now_ts - i * 86400 ))
+        lbl="$(date -d "@$ts" +'%b %e' 2>/dev/null || date -r "$ts" +'%b %e')"
+        # Normalize the double-space produced for single-digit days ("Jun  5" ->
+        # "Jun 5") to match awk's $1" "$2 reconstruction which collapses fields.
+        lbl="${lbl//  / }"
+        label_str+="${lbl}|"
+    done
+    label_str="${label_str%|}"; # strip trailing pipe
 
     local logs; logs="$(_ol_digest_logs)"
     # shellcheck disable=SC2086
     # $logs intentionally word-splits for multi-path glob support
-    local hits; hits="$(grep -hE "ORIGIN-LOCK:" $logs 2>/dev/null || true)"
+    local raw_hits; raw_hits="$(grep -hE "ORIGIN-LOCK:" $logs 2>/dev/null || true)"
+
+    # Keep only lines whose leading syslog "Mon DD" ($1 " " $2) is in the day set.
+    local hits
+    hits="$(printf '%s\n' "$raw_hits" | awk -v labels="$label_str" '
+        BEGIN {
+            n = split(labels, a, "|")
+            for (i = 1; i <= n; i++) { if (a[i] != "") valid[a[i]] = 1 }
+        }
+        NF > 0 { if (($1 " " $2) in valid) print }
+    ')"
+
     OL_HITS=$(printf '%s\n' "$hits" | grep -c . || true)
     [[ "$OL_HITS" -gt 0 ]] || { OL_HITS=0; echo "Origin-lock: no direct-to-origin drops in the last ${window}."; return 0; }
 
