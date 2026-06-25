@@ -477,7 +477,7 @@ cmd_origin_lock() {
 # --- nightly-report digest section (read-only) ------------------------------
 # Resolve the syslog source(s) holding ORIGIN-LOCK: lines.
 _ol_digest_logs() {
-    if [[ -n "${ORIGIN_LOCK_LOG}" ]]; then printf '%s' "${ORIGIN_LOCK_LOG}"; return; fi
+    if [[ -n "${ORIGIN_LOCK_LOG:-}" ]]; then printf '%s' "${ORIGIN_LOCK_LOG:-}"; return; fi
     printf '/var/log/messages'
 }
 
