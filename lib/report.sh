@@ -205,7 +205,7 @@ _report_render_html() {
 
     printf '<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff;border:1px solid #e1e4e8;border-radius:10px;overflow:hidden;color:#24292e">'
     printf '<div style="background:#24292e;color:#fff;padding:14px 18px"><div style="font-size:17px;font-weight:700">🪰 Swatter Nightly Report</div><div style="font-size:12px;color:#b1b8c0;margin-top:2px">%s · last %s · mode: <b style="color:#fff">%s</b></div></div>' \
-        "$(printf '%s' "$host" | esc)" "${REPORT_WINDOW:-24h}" "${SWATTER_MODE}"
+        "$(printf '%s' "$host" | esc)" "${REPORT_WINDOW:-24h}" "${SWATTER_MODE:-report}"
     printf '<div class="verdict-%s" style="padding:12px 18px;border-left:4px solid %s;background:%s;font-size:13px">%s</div>' \
         "$level" "$vbar" "$vbg" "$(printf '%s' "$summary" | esc)"
 
