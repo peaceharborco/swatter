@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [2.2.0] — 2026-06-25
+
+### Changed
+- **Nightly report redesigned as structured Direction-B HTML** — header →
+  color-coded verdict line → stat tiles → per-plane sections with tables,
+  replacing the old summary-pills-over-a-monospace-`<pre>` dump. Stat-tile
+  labels, table column headers, section headers, and the report title are all
+  Title Case.
+- **"Report" wording throughout** — the subject line is now
+  `Report {YYYY-MM-DD} — {summary}` (UTC date, brand in the sender name),
+  replacing the old `[Swatter] … in <window> — host` format.
+
+### Added
+- **Opt-in Origin-Lock digest plane** (`ORIGIN_LOCK_DIGEST`, default `auto`):
+  when the reporting window contains `ORIGIN-LOCK:` syslog hits the nightly
+  report gains a dedicated section showing drop count, unique source IPs,
+  `:80`/`:443` split, and top sources tagged attacker/legit. Invisible for
+  operators who don't run the lock. New `ORIGIN_LOCK_LOG` config key selects
+  the syslog source.
+- **Config-driven, DST-aware report scheduling**: new `REPORT_CRON`
+  (default `0 4`) and `REPORT_CRON_TZ` (IANA zone; empty = server/UTC). The
+  installer generates `/etc/cron.d/swatter` with an optional `CRON_TZ` line,
+  replacing the DST-drifting static `0 11 UTC` line.
+- `test/report_test.sh` — HTML render coverage (verdict line, stat tiles,
+  per-plane sections, Title Case, data-gated origin-lock block).
+- `test/report_cron_test.sh` — cron scheduling coverage (TZ header, default
+  time, custom time + zone, empty-zone fallback).
+- Origin-lock digest coverage added to `test/origin_lock_test.sh`.
+
 ## [2.1.3] — 2026-06-25
 
 ### Changed
