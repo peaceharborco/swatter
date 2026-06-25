@@ -21,7 +21,8 @@
 # After install: run `swatter refresh-feeds` then `swatter test-config`, leave it
 # in report mode for ~a week, review `swatter top`, then set SWATTER_MODE=enforce.
 
-set -euo pipefail
+set -uo pipefail
+[[ "${1:-}" == "--source-only" ]] && SWATTER_INSTALL_SOURCE_ONLY=1 || SWATTER_INSTALL_SOURCE_ONLY=0
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$(cd -- "${HERE}/.." && pwd)"
 
@@ -121,6 +122,15 @@ _install_origin_lock_systemd() {
     fi
 }
 
+# Render the final /etc/cron.d/swatter from the template + report schedule config.
+_swatter_render_cron() {
+    local tmpl="$1" report_cron="$2" report_tz="$3"
+    cat "$tmpl"
+    echo
+    [[ -n "$report_tz" ]] && echo "CRON_TZ=${report_tz}"
+    echo "${report_cron} * * * root /usr/local/bin/swatter report"
+}
+
 _install_local() {
     [[ "$(id -u)" -eq 0 ]] || { echo "install local must run as root" >&2; exit 1; }
 
@@ -146,7 +156,9 @@ _install_local() {
     fi
 
     install -d -m 0750 /var/lib/swatter /var/log/swatter
-    install -m 0644 "${SRC}"/install/swatter.cron      /etc/cron.d/swatter
+    _swatter_render_cron "${SRC}/install/swatter.cron" "${REPORT_CRON:-0 4}" "${REPORT_CRON_TZ:-}" \
+        > /etc/cron.d/swatter
+    chmod 0644 /etc/cron.d/swatter
     install -m 0644 "${SRC}"/install/swatter.logrotate /etc/logrotate.d/swatter
 
     echo "fetching Cloudflare ranges + intel feeds ..."
@@ -226,4 +238,4 @@ main() {
         *) echo "usage: install.sh {local | remote <ssh-destination>}" >&2; exit 2 ;;
     esac
 }
-main "$@"
+(( SWATTER_INSTALL_SOURCE_ONLY )) || main "$@"

@@ -2,9 +2,6 @@
 # Installed to /etc/cron.d/swatter (mode 0644, owner root:root).
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 MAILTO=""
-# Pin the report to a wall-clock timezone (follows DST). Uncomment + set yours;
-# cron otherwise runs in the server's local time. The */5 scan is unaffected.
-#CRON_TZ=America/Los_Angeles
 
 # minute hour dom month dow user  command
 */5 * * * * root /usr/local/bin/swatter scan
@@ -12,9 +9,4 @@ MAILTO=""
 # Refresh Cloudflare ranges + threat-intel feeds once daily (03:20).
 20 3 * * *  root /usr/local/bin/swatter refresh-feeds
 
-# Nightly combined digest (bad actors + server errors) of the last 24h, grouped
-# by offense + action. No-op unless REPORT_EMAIL is set; silent on a quiet window.
-# 11:00 UTC = 04:00 Pacific (PDT, summer) / 03:00 Pacific (PST, winter) — i.e.
-# early-morning Pacific year-round on a UTC server. Set CRON_TZ above instead if
-# you want an exact Pacific wall-clock hour that never drifts with DST.
-0 11 * * *  root /usr/local/bin/swatter report
+# The nightly report line is appended by install.sh from REPORT_CRON / REPORT_CRON_TZ.
