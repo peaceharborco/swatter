@@ -28,6 +28,28 @@ check subject-shape "$(_report_subject 24h)" "Report ${DATE_UTC} - healthy · 19
 OL_HITS=253
 check subject-ol "$(_report_subject 24h | grep -c '253 origin-lock')" "1"
 
+# Plane assembly + degradation. Stub the section builders so the test is hermetic.
+LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/swatter-rpt.XXXXXX")"; : > "$LOG_DIR/decisions.jsonl"
+SWATTER_HAVE_JQ=1; SWATTER_MODE="enforce"
+swatter_errors_section()    { ERR_GENUINE=0 ERR_FATAL=0; echo "(errors section)"; }
+swatter_originlock_section(){ OL_HITS="${FAKE_OL:-0}"; echo "(origin-lock section)"; }
+_ol_digest_should_render()  { local h="${1:-0}"; case "${ORIGIN_LOCK_DIGEST:-auto}" in on) return 0;; off) return 1;; *) (( h > 0 ));; esac; }
+
+# 1 plane: abuse only (error digest off, no origin-lock hits).
+ERROR_DIGEST_ENABLE="false"; ORIGIN_LOCK_DIGEST="auto"; FAKE_OL=0
+body="$(swatter_report_build 24h)"
+check title-report      "$(printf '%s' "$body" | grep -c 'Swatter Nightly Report')" "1"
+check titlecase-bad     "$(printf '%s' "$body" | grep -c 'Bad Actors')" "1"
+check no-origin-1plane  "$(printf '%s' "$body" | grep -c 'Origin-Lock')" "0"
+check no-errors-1plane  "$(printf '%s' "$body" | grep -c 'Server Errors')" "0"
+
+# 3 planes: error digest on + origin-lock hits present.
+ERROR_DIGEST_ENABLE="true"; FAKE_OL=253
+body="$(swatter_report_build 24h)"
+check has-origin-3plane "$(printf '%s' "$body" | grep -c 'Origin-Lock')" "1"
+check has-errors-3plane "$(printf '%s' "$body" | grep -c 'Server Errors')" "1"
+rm -rf "$LOG_DIR"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

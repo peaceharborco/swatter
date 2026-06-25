@@ -52,37 +52,46 @@ swatter_report_build() {
 
     RPT_ACTED=0 RPT_PERM=0 RPT_TEMP=0 RPT_CF=0 RPT_DIRECT=0 RPT_EXEMPT=0 RPT_WATCH=0
     ERR_TOTAL=0 ERR_FATAL=0 ERR_GENUINE=0 ERR_NOISE=0
+    OL_HITS=0 OL_IPS=0 OL_P80=0 OL_P443=0 OL_MODE="" OL_TOP_ROWS=""
 
-    # The error-triage section runs first so its counters are set for the subject
-    # even when the abuse log is empty. Captured to a temp, emitted after the
-    # abuse digest below.
-    local errsection="" errfile=""
+    # Gather origin-lock + errors via redirection (NOT $(...)) so the OL_* / ERR_*
+    # counters they set persist in this shell — a command substitution would run
+    # the builder in a subshell and lose them.
+    local olfile="" errsec="" errfile=""
+    olfile="$(mktemp "${TMPDIR:-/tmp}/swatter-olsec.XXXXXX")"
+    swatter_originlock_section "$window" > "$olfile"
     if [[ "${ERROR_DIGEST_ENABLE}" == "true" ]] && declare -F swatter_errors_section >/dev/null; then
-        # Redirection (not $(...)) so the ERR_* counters persist in this shell.
         errfile="$(mktemp "${TMPDIR:-/tmp}/swatter-errsec.XXXXXX")"
         swatter_errors_section "$window" > "$errfile"
-        errsection="$(cat "$errfile")"
+        errsec="$(cat "$errfile")"
         rm -f "$errfile"
     fi
 
     echo "Swatter Nightly Report — $(hostname -f 2>/dev/null || hostname)"
     echo "Window: last ${window}  (mode: ${SWATTER_MODE})"
     echo
-    echo "========================  BAD ACTORS  ==========================="
+    echo "========================  Bad Actors  ==========================="
     echo
     _report_emit_abuse "$window" "$cutoff" "$log"
 
+    if _ol_digest_should_render "${OL_HITS:-0}"; then
+        echo
+        echo "========================  Origin-Lock  =========================="
+        echo
+        cat "$olfile"
+    fi
+    rm -f "$olfile"
+
     if [[ "${ERROR_DIGEST_ENABLE}" == "true" ]]; then
         echo
-        echo "========================  SERVER ERRORS  ========================"
+        echo "========================  Server Errors  ========================"
         echo
-        printf '%s\n' "$errsection"
+        printf '%s\n' "$errsec"
     fi
 
     echo
     echo "------------------------------------------------------------------"
     echo "Full evidence:  swatter why <ip>      Abuse log: ${log}"
-    [[ "${ERROR_DIGEST_ENABLE}" == "true" ]] && echo "Error triage:   swatter report --test"
 }
 
 # The abuse (bad-actor) digest body.
@@ -114,7 +123,7 @@ _report_emit_abuse() {
     RPT_ACTED=$(( RPT_PERM + RPT_TEMP ))
 
     {
-        echo "Actions taken"
+        echo "Actions Taken"
         echo "-------------"
         printf '  %-22s %s\n' "permanent blocks:" "${RPT_PERM}"
         printf '  %-22s %s\n' "temporary blocks:" "${RPT_TEMP}"
@@ -124,8 +133,8 @@ _report_emit_abuse() {
         printf '  %-22s %s\n' "watched (no action):" "${RPT_WATCH}"
         echo
 
-        echo "By offense type (acted only)"
-        echo "----------------------------"
+        echo "By Offense Type"
+        echo "---------------"
         printf '%s\n' "$recs" \
             | jq -rc --argjson L "$_RPT_RULE_LABELS" \
                 'select(.action=="temp" or .action=="perm")
@@ -134,8 +143,8 @@ _report_emit_abuse() {
             | awk '{c=$1; sub(/^ *[0-9]+ /,""); printf "  %-30s %s\n", $0, c}'
         echo
 
-        echo "By bad-path category (acted only)"
-        echo "---------------------------------"
+        echo "By Bad-Path Category"
+        echo "--------------------"
         printf '%s\n' "$recs" \
             | jq -rc 'select(.action=="temp" or .action=="perm") | (.evidence.badpath_cat // "" | if .=="" then "(behavioral)" else . end)' \
             | sort | uniq -c | sort -rn \
@@ -143,7 +152,7 @@ _report_emit_abuse() {
         echo
 
         if (( RPT_ACTED > 0 )); then
-            echo "Blocks (newest first)"
+            echo "Blocks (Newest First)"
             echo "---------------------"
             printf '%-16s %5s %-12s %-30s %-10s %s\n' "IP" "SCORE" "ACTION" "WHY" "CHANNEL" "TTL"
             printf '%s\n' "$recs" \
@@ -157,8 +166,8 @@ _report_emit_abuse() {
         fi
 
         if (( RPT_EXEMPT > 0 )); then
-            echo "Exemptions (allowlist hits that scored high — review if unexpected)"
-            echo "------------------------------------------------------------------"
+            echo "Exemptions"
+            echo "----------"
             printf '%s\n' "$recs" \
                 | jq -rc 'select(.action=="exempt") | [.ip,(.score|tostring),.reason] | @tsv' \
                 | sort -u \
