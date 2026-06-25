@@ -7,6 +7,7 @@ set -uo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "${HERE}/.." && pwd)"
 source "${ROOT}/lib/common.sh"
+source "${ROOT}/lib/report.sh"
 source "${ROOT}/lib/allowlist.sh"
 source "${ROOT}/lib/origin_lock.sh"
 PASS=0; FAIL=0
@@ -280,6 +281,36 @@ if ! grep -qF 'swatter origin-lock apply --hook=csf' "$CSFPRE_FIXTURE" \
    && grep -qF 'operator-OWN-line-below' "$CSFPRE_FIXTURE"; then PASS=$((PASS+1)); else echo "FAIL disable-strips-csfpre-block"; FAIL=$((FAIL+1)); fi
 if [[ ! -f "$UNIT_FIXTURE" ]]; then PASS=$((PASS+1)); else echo "FAIL disable-removes-unit"; FAIL=$((FAIL+1)); fi
 SWATTER_OL_CSFPRE="$TMP/csfpre.none"; SWATTER_OL_UNIT="$TMP/unit.none"
+
+# --- origin-lock digest section ---------------------------------------------
+OLD_STATE="$STATE_DIR"
+DIG="$(mktemp -d "${TMPDIR:-/tmp}/swatter-oldig.XXXXXX")"; STATE_DIR="$DIG"
+mkdir -p "$DIG/feeds"
+printf '45.135.232.17\n193.32.162.40\n' > "$DIG/feeds/ipsum.txt"   # 2 known attackers
+ORIGIN_LOCK_LOG="$DIG/messages"
+# 3 sources: 45.. (attacker, :80 x2), 193.. (attacker, :443 x1), 198.51.100.7 (unknown, :80 x1)
+cat > "$DIG/messages" <<'LOG'
+Jun 25 03:00:01 cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=45.135.232.17 DPT=80 SPT=51000
+Jun 25 03:01:01 cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=45.135.232.17 DPT=80 SPT=51002
+Jun 25 03:02:01 cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=193.32.162.40 DPT=443 SPT=4000
+Jun 25 03:03:01 cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=198.51.100.7 DPT=80 SPT=4002
+LOG
+# Call directly (not in $()) so OL_* globals persist in this shell; capture text separately.
+ORIGIN_LOCK_DIGEST="auto"
+_oltmp="$(mktemp "${TMPDIR:-/tmp}/swatter-olsec.XXXXXX")"; swatter_originlock_section 24h > "$_oltmp"; out="$(cat "$_oltmp")"; rm -f "$_oltmp"
+check ol-hits   "$OL_HITS" "4"
+check ol-ips    "$OL_IPS"  "3"
+check ol-p80    "$OL_P80"  "3"
+check ol-p443   "$OL_P443" "1"
+check ol-top-attacker "$(printf '%s\n' "$OL_TOP_ROWS" | awk -F'\t' '$1=="45.135.232.17"{print $3}')" "attacker"
+check ol-gate-auto-hits "$(_ol_digest_should_render 4 && echo show || echo hide)" "show"
+ORIGIN_LOCK_DIGEST="auto"
+check ol-gate-auto-zero  "$(_ol_digest_should_render 0 && echo show || echo hide)" "hide"
+ORIGIN_LOCK_DIGEST="on"
+check ol-gate-on-zero    "$(_ol_digest_should_render 0 && echo show || echo hide)" "show"
+ORIGIN_LOCK_DIGEST="off"
+check ol-gate-off-hits   "$(_ol_digest_should_render 4 && echo show || echo hide)" "hide"
+STATE_DIR="$OLD_STATE"; rm -rf "$DIG"
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"

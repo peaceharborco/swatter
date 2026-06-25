@@ -474,6 +474,76 @@ cmd_origin_lock() {
     esac
 }
 
+# --- nightly-report digest section (read-only) ------------------------------
+# Resolve the syslog source(s) holding ORIGIN-LOCK: lines.
+_ol_digest_logs() {
+    if [[ -n "${ORIGIN_LOCK_LOG}" ]]; then printf '%s' "${ORIGIN_LOCK_LOG}"; return; fi
+    printf '/var/log/messages'
+}
+
+# Gate: should the section render given <hits> in the window?
+_ol_digest_should_render() {
+    local hits="${1:-0}"
+    case "${ORIGIN_LOCK_DIGEST:-auto}" in
+        on)  return 0 ;;
+        off) return 1 ;;
+        *)   (( hits > 0 )) ;;   # auto: render only when there were drops
+    esac
+}
+
+# Is <ip> in a swatter threat feed (attacker) or an allow/monitoring range (legit)?
+_ol_tag_ip() {
+    local ip="$1" f
+    for f in "${STATE_DIR}/feeds/"ipsum.txt "${STATE_DIR}/feeds/"blocklist_de.txt \
+             "${STATE_DIR}/feeds/"cins.txt "${STATE_DIR}/feeds/"greensnow.txt \
+             "${STATE_DIR}/feeds/"et_compromised.txt; do
+        [[ -r "$f" ]] && grep -qxF "$ip" "$f" 2>/dev/null && { printf 'attacker'; return; }
+    done
+    local c
+    for c in /etc/swatter/monitoring.cidr /etc/swatter/allow.cidr; do
+        [[ -r "$c" ]] && grep -qF "$ip" "$c" 2>/dev/null && { printf 'legit'; return; }
+    done
+    printf 'uncategorized'
+}
+
+# swatter_originlock_section <window> — emits the plain-text Origin-Lock section
+# and sets OL_* globals for the renderers. Read-only.
+swatter_originlock_section() {
+    local window="$1" cutoff
+    cutoff=$(( $(swatter_now) - $(_report_window_secs "$window") ))
+    OL_HITS=0 OL_IPS=0 OL_P80=0 OL_P443=0 OL_MODE="" OL_TOP_ROWS=""
+
+    local logs; logs="$(_ol_digest_logs)"
+    # shellcheck disable=SC2086
+    # $logs intentionally word-splits for multi-path glob support
+    local hits; hits="$(grep -hE "ORIGIN-LOCK:" $logs 2>/dev/null || true)"
+    OL_HITS=$(printf '%s\n' "$hits" | grep -c . || true)
+    [[ "$OL_HITS" -gt 0 ]] || { OL_HITS=0; echo "Origin-lock: no direct-to-origin drops in the last ${window}."; return 0; }
+
+    OL_P80=$(printf '%s\n' "$hits"  | grep -oE 'DPT=80\b'  | grep -c . || true)
+    OL_P443=$(printf '%s\n' "$hits" | grep -oE 'DPT=443\b' | grep -c . || true)
+    OL_MODE="$(grep -m1 '^MODE=' "${SWATTER_OL_CSFPRE:-/etc/csf/csfpre.sh}" 2>/dev/null | sed 's/.*=//; s/"//g; s/ .*//' || true)"
+    [[ -n "$OL_MODE" ]] || OL_MODE="$( [[ "$(_ol_mode)" == off ]] && echo "?" || echo "$(_ol_mode)" )"
+
+    local srcs; srcs="$(printf '%s\n' "$hits" | grep -oE 'SRC=[0-9a-fA-F:.]+' | sed 's/SRC=//' | sort | uniq -c | sort -rn)"
+    OL_IPS=$(printf '%s\n' "$srcs" | grep -c . || true)
+
+    local ip n tag
+    while read -r n ip; do
+        [[ -n "$ip" ]] || continue
+        tag="$(_ol_tag_ip "$ip")"
+        OL_TOP_ROWS+="${ip}"$'\t'"${n}"$'\t'"${tag}"$'\n'
+    done < <(printf '%s\n' "$srcs" | head -10)
+
+    {
+        echo "Direct-to-origin drops: ${OL_HITS} from ${OL_IPS} IPs  (:80 ${OL_P80} · :443 ${OL_P443}; mode ${OL_MODE})"
+        echo
+        echo "Top sources"
+        echo "-----------"
+        printf '%s' "$OL_TOP_ROWS" | awk -F'\t' '{printf "  %-16s %5s  %s\n",$1,$2,$3}'
+    }
+}
+
 # Brief one-line summary for `swatter status` / `swatter test-config`.
 swatter_origin_lock_summary() {
     local mode; mode="$(_ol_mode)"
