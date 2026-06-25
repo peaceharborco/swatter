@@ -50,6 +50,18 @@ check has-origin-3plane "$(printf '%s' "$body" | grep -c 'Origin-Lock')" "1"
 check has-errors-3plane "$(printf '%s' "$body" | grep -c 'Server Errors')" "1"
 rm -rf "$LOG_DIR"
 
+# HTML render: Direction B structure, verdict color, tiles, no <pre> dump.
+RPT_PERM=36 RPT_TEMP=162 RPT_ACTED=198 RPT_CF=198 RPT_DIRECT=0 RPT_EXEMPT=62 RPT_WATCH=2
+ERR_GENUINE=0 ERR_FATAL=0; OL_HITS=253 OL_IPS=61 OL_P80=171 OL_P443=82 OL_MODE="DROP"
+OL_TOP_ROWS=$'45.135.232.17\t88\tattacker\n193.32.162.40\t41\tattacker\n'
+ERROR_DIGEST_ENABLE="true"; ORIGIN_LOCK_DIGEST="auto"
+html="$(_report_render_html "plain body here")"
+check html-title    "$(printf '%s' "$html" | grep -c 'Swatter Nightly Report')" "1"
+check html-verdict  "$(printf '%s' "$html" | grep -c 'verdict-green')" "1"
+check html-bad      "$(printf '%s' "$html" | grep -c '🛡️ Bad Actors')" "1"
+check html-origin   "$(printf '%s' "$html" | grep -c '🔒 Origin-Lock')" "1"
+check html-no-pre   "$(printf '%s' "$html" | grep -c '<pre')" "0"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

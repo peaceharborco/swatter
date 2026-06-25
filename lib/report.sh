@@ -179,47 +179,76 @@ _report_emit_abuse() {
     }
 }
 
-# Minimal HTML escape for embedding the plain-text detail in <pre>.
+# Minimal HTML escape — used internally by _report_render_html.
 _report_html_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 
-# Render a styled HTML digest from the globals (summary pills) + the plain-text
-# body (detail, in a monospace block). $1 = plain-text body. Emits HTML on stdout.
-# Inline styles + table layout for email-client compatibility.
+# Render Direction-B structured HTML from globals. $1 = plain-text body (unused;
+# kept for call-site compatibility). Emits HTML on stdout.
+# Inline styles + tables only (email-client safe). No <pre> dump.
 _report_render_html() {
-    local body="$1"
+    local _unused_body="$1"   # text body no longer embedded; kept for call-site compat
     local host; host="$(hostname -f 2>/dev/null || hostname)"
-    local escaped; escaped="$(printf '%s' "$body" | _report_html_escape)"
+    local v level summary; v="$(_report_verdict)"; level="${v%%$'\t'*}"; summary="${v#*$'\t'}"
+    local vbar vbg
+    case "$level" in
+        red)   vbar="#b31d28"; vbg="#fff5f5" ;;
+        amber) vbar="#9a4d00"; vbg="#fffbea" ;;
+        *)     vbar="#1a7f37"; vbg="#f0fff4" ;;
+    esac
+    local esc; esc() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 
-    local pill='display:inline-block;margin:0 8px 8px 0;padding:6px 12px;border-radius:6px;font-size:13px;font-weight:600;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif'
-    local pre='background:#0d1117;color:#c9d1d9;border-radius:8px;padding:16px;overflow-x:auto;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word'
-
-    _pill() { # value label bg fg
-        (( $1 > 0 )) || [[ "$4" == "always" ]] || { return; }
-        printf '<span style="%s;background:%s;color:%s">%s&nbsp;%s</span>' "$pill" "$2" "$3" "$1" "$5"
+    _tile() { # value label bg border fg
+        (( ${1:-0} > 0 )) || return 0
+        printf '<div style="flex:1;min-width:80px;text-align:center;background:%s;border:1px solid %s;border-radius:8px;padding:8px 4px"><div style="font-size:20px;font-weight:800;color:%s">%s</div><div style="font-size:10px;color:#586069">%s</div></div>' "$3" "$4" "$5" "$1" "$2"
     }
+    _sechead() { printf '<div style="font-size:14px;font-weight:700;color:#24292e;border-bottom:2px solid #eaecef;padding-bottom:5px;margin:14px 0 9px">%s</div>' "$1"; }
 
-    {
-        printf '<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:760px;margin:0 auto;color:#24292e">'
-        printf '<h2 style="margin:0 0 2px;font-size:20px">🪰 Swatter Nightly Report</h2>'
-        printf '<p style="margin:0 0 14px;color:#586069;font-size:13px">%s &middot; last %s &middot; mode: <b>%s</b></p>' \
-            "$(printf '%s' "$host" | _report_html_escape)" "${REPORT_WINDOW}" "${SWATTER_MODE}"
+    printf '<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff;border:1px solid #e1e4e8;border-radius:10px;overflow:hidden;color:#24292e">'
+    printf '<div style="background:#24292e;color:#fff;padding:14px 18px"><div style="font-size:17px;font-weight:700">🪰 Swatter Nightly Report</div><div style="font-size:12px;color:#b1b8c0;margin-top:2px">%s · last %s · mode: <b style="color:#fff">%s</b></div></div>' \
+        "$(printf '%s' "$host" | esc)" "${REPORT_WINDOW:-24h}" "${SWATTER_MODE}"
+    printf '<div class="verdict-%s" style="padding:12px 18px;border-left:4px solid %s;background:%s;font-size:13px">%s</div>' \
+        "$level" "$vbar" "$vbg" "$(printf '%s' "$summary" | esc)"
 
-        printf '<div style="margin-bottom:6px">'
-        _pill "${RPT_PERM:-0}"  "#ffeef0" "#b31d28" 0 "permanent"
-        _pill "${RPT_TEMP:-0}"  "#fff5b1" "#735c0f" 0 "temporary"
-        _pill "${RPT_DIRECT:-0}"   "#dbedff" "#0349b4" 0 "direct"
-        _pill "${RPT_CF:-0}"    "#ffead7" "#9a4d00" 0 "via&nbsp;Cloudflare"
-        _pill "${RPT_WATCH:-0}" "#eaecef" "#444d56" 0 "watched"
-        if [[ "${ERROR_DIGEST_ENABLE}" == "true" ]]; then
-            _pill "${ERR_FATAL:-0}"   "#ffeef0" "#b31d28" 0 "FATAL"
-            _pill "${ERR_GENUINE:-0}" "#fff5b1" "#735c0f" 0 "server&nbsp;errors"
-        fi
+    printf '<div style="display:flex;flex-wrap:wrap;gap:8px;padding:14px 18px 6px">'
+    _tile "${RPT_PERM:-0}"  "Permanent"      "#fff5f5" "#ffd7d7" "#b31d28"
+    _tile "${RPT_TEMP:-0}"  "Temporary"      "#fffbea" "#f5e6a8" "#735c0f"
+    _tile "${RPT_CF:-0}"    "Via Cloudflare" "#fff5ec" "#ffd9b8" "#9a4d00"
+    _ol_digest_should_render "${OL_HITS:-0}" && _tile "${OL_HITS:-0}" "Origin-Lock" "#faf7ff" "#e6d8ff" "#8957e5"
+    [[ "${ERROR_DIGEST_ENABLE}" == "true" ]] && _tile "${ERR_GENUINE:-0}" "Server Errors" "#f6f8fa" "#e1e4e8" "#444d56"
+    printf '</div>'
+
+    # Bad Actors (always)
+    printf '<div style="padding:0 18px">'
+    _sechead "🛡️ Bad Actors"
+    printf '<div style="font-size:12px;color:#444d56">Permanent <b>%s</b> · Temporary <b>%s</b> · Via Cloudflare <b>%s</b> · Exempted <b>%s</b></div>' \
+        "${RPT_PERM:-0}" "${RPT_TEMP:-0}" "${RPT_CF:-0}" "${RPT_EXEMPT:-0}"
+    printf '</div>'
+
+    # Origin-Lock (gated)
+    if _ol_digest_should_render "${OL_HITS:-0}"; then
+        printf '<div style="padding:0 18px">'
+        _sechead "🔒 Origin-Lock"
+        printf '<div style="font-size:12px;color:#444d56"><b>%s</b> direct-to-origin hits dropped · %s IPs · :80 %s · :443 %s · mode %s</div>' \
+            "${OL_HITS:-0}" "${OL_IPS:-0}" "${OL_P80:-0}" "${OL_P443:-0}" "$(printf '%s' "${OL_MODE}" | esc)"
+        printf '<table style="width:100%%;border-collapse:collapse;font-size:12px;margin-top:6px"><thead><tr style="color:#586069;font-size:11px;text-align:left"><th style="padding:3px 6px">Source IP</th><th style="padding:3px 6px">Hits</th><th style="padding:3px 6px">Tag</th></tr></thead><tbody>'
+        printf '%s' "$OL_TOP_ROWS" | while IFS=$'\t' read -r ip n tag; do
+            [[ -n "$ip" ]] || continue
+            printf '<tr style="border-top:1px solid #ece3fb"><td style="padding:4px 6px;font-family:ui-monospace,Menlo,monospace">%s</td><td style="padding:4px 6px">%s</td><td style="padding:4px 6px">%s</td></tr>' \
+                "$(printf '%s' "$ip" | esc)" "$n" "$(printf '%s' "$tag" | esc)"
+        done
+        printf '</tbody></table></div>'
+    fi
+
+    # Server Errors (gated)
+    if [[ "${ERROR_DIGEST_ENABLE}" == "true" ]]; then
+        printf '<div style="padding:0 18px">'
+        _sechead "🩺 Server Errors"
+        printf '<div style="font-size:12px;color:#444d56"><b>%s Genuine</b> · %s FATAL</div>' "${ERR_GENUINE:-0}" "${ERR_FATAL:-0}"
         printf '</div>'
+    fi
 
-        printf '<pre style="%s">%s</pre>' "$pre" "$escaped"
-        printf '<p style="margin:14px 0 0;color:#959da5;font-size:12px">Swatter &middot; <code>swatter why &lt;ip&gt;</code> for evidence &middot; <code>swatter unblock &lt;ip&gt;</code> to reverse</p>'
-        printf '</div>'
-    }
+    printf '<div style="padding:14px 18px 16px;color:#959da5;font-size:11px"><code>swatter why &lt;ip&gt;</code> for evidence · <code>swatter unblock &lt;ip&gt;</code> to reverse</div>'
+    printf '</div>'
 }
 
 # Deliver the digest. $1 subject $2 text-body $3 html-body
