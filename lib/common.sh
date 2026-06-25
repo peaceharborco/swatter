@@ -150,6 +150,20 @@ BREVO_KEY_FILE=""
 # Server error-log triage section (bundled error digest).
 ERROR_DIGEST_ENABLE="false"
 ERROR_DIGEST_LOG=""               # pre-consolidated log; empty = aggregate live
+
+# Origin-lock digest plane (nightly report). auto = render when the window has
+# ORIGIN-LOCK: hits (works for the standalone csfpre.sh lock AND the inline lock);
+# on = always; off = never. ORIGIN_LOCK_LOG empty = /var/log/messages* (Debian: syslog).
+ORIGIN_LOCK_DIGEST="auto"
+ORIGIN_LOCK_LOG=""
+
+# Nightly report schedule. install.sh writes /etc/cron.d/swatter from these.
+# REPORT_CRON is "minute hour". REPORT_CRON_TZ is the delivery timezone (IANA);
+# empty = the server clock (UTC on a normal server). Set it to deliver at a true
+# local wall-clock hour, DST-aware via cron's CRON_TZ.
+REPORT_CRON="0 4"
+REPORT_CRON_TZ=""
+
 ERROR_FPM_GLOB="/opt/cpanel/ea-php8*/root/usr/var/log/php-fpm/error.log"
 ERROR_MYSQL_GLOB="/var/lib/mysql/*.err"
 ERROR_PHP_HOME_GLOB="/home"
