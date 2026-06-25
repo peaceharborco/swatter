@@ -18,6 +18,8 @@ swatter.conf
 test/fixtures/*.local
 # one-off external code-review scratch (spec + findings)
 grok-review/
+# subagent-driven-development progress ledger + scratch (NOT docs/superpowers/)
+/.superpowers/
 
 # draft marketing — keep out of the public repo
 docs/launch-post.md
