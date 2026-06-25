@@ -94,8 +94,19 @@ _swatter_execute_block() {
         swatter_store_record "$ip" "$action" "$channel" "$ttl" "$folded" "$reason" \
             "$([[ "${SWATTER_MODE}" == "enforce" ]] && echo 0 || echo 1)"
         swatter_abuseipdb_report "$ip" "$ev" "$reason"
+        _swatter_audit "$ip" "$folded" "$action" "$channel" "$ttl" "$reason" "$ev" "$rep"
+    else
+        # The backend block call returned non-zero (CF API timeout/5xx, unresolved
+        # zone, missing token, CSF failure). Record the TRUTH — a failed attempt,
+        # not the intended action — so the decision log and digest never count a
+        # block that never reached the firewall, and so offenders.perm stays 0 and
+        # the next run legitimately retries instead of a phantom perm being logged
+        # every cycle. "failed" is distinct from the deliberate skipped-* family
+        # (skipped = policy choice; failed = backend error) and, counted by exact
+        # action match in report.sh, drops out of the block tallies cleanly.
+        log_warn "block ${ip} (${action}/${channel}) failed; recording 'failed' not '${action}'"
+        _swatter_audit "$ip" "$folded" "failed" "$channel" "$ttl" "block_failed action=${action} ${reason}" "$ev" "$rep"
     fi
-    _swatter_audit "$ip" "$folded" "$action" "$channel" "$ttl" "$reason" "$ev" "$rep"
     return 0
 }
 

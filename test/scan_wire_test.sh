@@ -39,9 +39,18 @@ swatter_classify()          { echo "DIRECT"; }   # everything direct -> CSF
 swatter_is_never_block()    { return 1; }
 swatter_cf_manages_plane()  { return 1; }
 LAST_CSF=""
+# Stub the backends _swatter_execute_block ACTUALLY calls (swatter_block_direct_*
+# for the DIRECT plane, swatter_cf_block for VIA_CF) — block.sh is not sourced
+# here. BLOCK_RC flips success(0) vs failure(1) so the did=0 (failed-block) audit
+# path can be exercised. (Previously only swatter_csf_* were stubbed, leaving the
+# direct fns undefined -> did=0 in every case; the perm checks passed only because
+# the buggy unconditional audit logged the action regardless of block success.)
+BLOCK_RC=0
+swatter_block_direct_temp() { LAST_CSF="temp $1 $2"; return "$BLOCK_RC"; }
+swatter_block_direct_perm() { LAST_CSF="perm $1"; return "$BLOCK_RC"; }
 swatter_csf_temp() { LAST_CSF="temp $1 $2"; return 0; }
 swatter_csf_perm() { LAST_CSF="perm $1"; return 0; }
-swatter_cf_block() { return 0; }
+swatter_cf_block() { return "$BLOCK_RC"; }
 swatter_notify()   { :; }
 # ASN: 1.2.3.4 is OVH; resolve mock via asn.sh's resolver -> stub the resolver.
 swatter_asn_resolve() { [[ "$1" == "1.2.3.4" ]] && echo 16276; return 0; }
@@ -99,6 +108,25 @@ feed $'7.7.7.7\t10\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_r
 swatter_scan >/dev/null 2>&1
 check honeypot-suppress-override-perm "$(last_action)" "perm"
 unset HONEYPOT_OVERRIDES_SUPPRESS
+
+# 8) Block backend SUCCEEDS (did=1): the real action is audited and the offender
+#    is marked perm (so the next run short-circuits to noop-perm).
+BLOCK_RC=0
+swatter_intel_score() { printf '0\t\t0\n'; }
+feed $'3.3.3.3\t100\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"honeypot","honeypot":1,"top_vhost":""}'
+swatter_scan >/dev/null 2>&1
+check block-ok-audits-perm "$(last_action)" "perm"
+if swatter_store_is_perm "3.3.3.3"; then check block-ok-sets-perm "set" "set"; else check block-ok-sets-perm "unset" "set"; fi
+
+# 9) Block backend FAILS (did=0): audit the truth ("failed"), NOT the intended
+#    action, and DON'T mark the offender perm — so the duplicate-perm loop where a
+#    failed CF/CSF block was logged as a successful block can't recur.
+BLOCK_RC=1
+feed $'4.4.4.4\t100\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"honeypot","honeypot":1,"top_vhost":""}'
+swatter_scan >/dev/null 2>&1
+check block-fail-audits-failed "$(last_action)" "failed"
+if swatter_store_is_perm "4.4.4.4"; then check block-fail-no-perm "set" "unset"; else check block-fail-no-perm "unset" "unset"; fi
+BLOCK_RC=0
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"

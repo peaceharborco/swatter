@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [2.1.1] — 2026-06-25
+
+### Fixed
+- **Failed firewall blocks are no longer logged as successful `perm`/`temp`
+  decisions.** When a backend block call returned non-zero (`did=0`) — e.g. a
+  Cloudflare API timeout/5xx, an unresolved zone, a missing token, or a CSF
+  failure — `_swatter_execute_block` still audited the *intended* action,
+  recording a block that never reached the firewall while `offenders.perm` stayed
+  unset. That made the same offender re-attempt and re-log `perm` every `*/5`
+  scan cycle until the call finally landed, inflating the nightly digest's block
+  counts with phantom/duplicate entries and masking real block failures. Failed
+  attempts are now audited as a distinct `failed` action (with the attempted
+  action in the reason); the decision log and digest count only blocks that
+  actually landed, and a failed block legitimately retries next run instead of
+  looping. Also surfaced a latent test gap in `scan_wire_test.sh`, which stubbed
+  only `swatter_csf_*` (never the `swatter_block_direct_*` the scorer calls), so
+  `did=0` in every case and the `perm` assertions passed *because of* the bug;
+  the test now stubs the real backends and asserts both the success and
+  failed-block paths.
+
 ## [2.1.0] — 2026-06-19
 
 ### Added
