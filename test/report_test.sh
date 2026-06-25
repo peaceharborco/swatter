@@ -44,7 +44,7 @@ check no-origin-1plane  "$(printf '%s' "$body" | grep -c 'Origin-Lock')" "0"
 check no-errors-1plane  "$(printf '%s' "$body" | grep -c 'Server Errors')" "0"
 
 # 3 planes: error digest on + origin-lock hits present.
-ERROR_DIGEST_ENABLE="true"; FAKE_OL=253
+ERROR_DIGEST_ENABLE="true"; ORIGIN_LOCK_DIGEST="auto"; FAKE_OL=253
 body="$(swatter_report_build 24h)"
 check has-origin-3plane "$(printf '%s' "$body" | grep -c 'Origin-Lock')" "1"
 check has-errors-3plane "$(printf '%s' "$body" | grep -c 'Server Errors')" "1"

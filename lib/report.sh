@@ -58,8 +58,10 @@ swatter_report_build() {
     # counters they set persist in this shell — a command substitution would run
     # the builder in a subshell and lose them.
     local olfile="" errsec="" errfile=""
-    olfile="$(mktemp "${TMPDIR:-/tmp}/swatter-olsec.XXXXXX")"
-    swatter_originlock_section "$window" > "$olfile"
+    if [[ "${ORIGIN_LOCK_DIGEST:-auto}" != "off" ]]; then
+        olfile="$(mktemp "${TMPDIR:-/tmp}/swatter-olsec.XXXXXX")"
+        swatter_originlock_section "$window" > "$olfile"
+    fi
     if [[ "${ERROR_DIGEST_ENABLE}" == "true" ]] && declare -F swatter_errors_section >/dev/null; then
         errfile="$(mktemp "${TMPDIR:-/tmp}/swatter-errsec.XXXXXX")"
         swatter_errors_section "$window" > "$errfile"
