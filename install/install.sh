@@ -21,8 +21,8 @@
 # After install: run `swatter refresh-feeds` then `swatter test-config`, leave it
 # in report mode for ~a week, review `swatter top`, then set SWATTER_MODE=enforce.
 
-set -uo pipefail
 [[ "${1:-}" == "--source-only" ]] && SWATTER_INSTALL_SOURCE_ONLY=1 || SWATTER_INSTALL_SOURCE_ONLY=0
+(( SWATTER_INSTALL_SOURCE_ONLY )) || set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$(cd -- "${HERE}/.." && pwd)"
 
