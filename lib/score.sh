@@ -71,23 +71,30 @@ _swatter_execute_block() {
         _swatter_audit "$ip" "$folded" "skipped-cap" "none" 0 "circuit_breaker" "$ev" "$rep"; return 1
     fi
     local plane; plane="$(swatter_classify "$ip" "$novhost")"
-    local channel="none" did=0
+    # Backend return-code protocol (consumed below):
+    #   0 -> block placed (or idempotent dup / dry-run)  => did=1, real action
+    #   2 -> deliberate per-run cap (MAX_*_PER_RUN)       => skipped-cap
+    #   3 -> deterministic precondition (no zone/token/   => skipped-config
+    #        vhost; can't be satisfied by retrying)
+    #   other (1) -> genuine backend error               => failed
+    local channel="none" did=0 rc=0
     if [[ "$plane" == "DIRECT" ]]; then
         channel="${DIRECT_BACKEND:-csf}"
         if (( ! healthy )); then
             log_warn "fail-closed: not ${channel}-denying ${ip} (allowlist unhealthy)"
             _swatter_audit "$ip" "$folded" "skipped-failclosed" "$channel" "$ttl" "$reason" "$ev" "$rep"; return 1
         fi
-        if [[ "$action" == "perm" ]]; then swatter_block_direct_perm "$ip" "$reason" && did=1
-        else swatter_block_direct_temp "$ip" "$ttl" "$reason" && did=1; fi
+        if [[ "$action" == "perm" ]]; then swatter_block_direct_perm "$ip" "$reason"; rc=$?
+        else swatter_block_direct_temp "$ip" "$ttl" "$reason"; rc=$?; fi
     else
         channel="cloudflare"
         if ! swatter_cf_manages_plane; then
             _swatter_audit "$ip" "$folded" "skipped-cf-plane" "$channel" 0 "${reason} cf_mode=${CF_MODE}" "$ev" "$rep"; return 1
         fi
         [[ "$action" == "perm" ]] && ttl="$(_swatter_pick_ttl 99)"
-        swatter_cf_block "$ip" "$ttl" "$reason" "$top_vhost" && did=1
+        swatter_cf_block "$ip" "$ttl" "$reason" "$top_vhost"; rc=$?
     fi
+    (( rc == 0 )) && did=1
     if (( did )); then
         _SW_TOTAL_BLOCKS=$(( _SW_TOTAL_BLOCKS + 1 )); SWATTER_RUN_ACTED=$(( SWATTER_RUN_ACTED + 1 ))
         swatter_store_sighting_clear "$ip"
@@ -95,16 +102,25 @@ _swatter_execute_block() {
             "$([[ "${SWATTER_MODE}" == "enforce" ]] && echo 0 || echo 1)"
         swatter_abuseipdb_report "$ip" "$ev" "$reason"
         _swatter_audit "$ip" "$folded" "$action" "$channel" "$ttl" "$reason" "$ev" "$rep"
+    elif (( rc == 2 )); then
+        # Backend hit its per-run deny cap (a deliberate throttle) — not a failure.
+        # Mirror the MAX_BLOCKS_PER_RUN skipped-cap above so a high-volume incident
+        # doesn't read as a wave of firewall failures.
+        _swatter_audit "$ip" "$folded" "skipped-cap" "$channel" 0 "backend_cap action=${action} ${reason}" "$ev" "$rep"
+    elif (( rc == 3 )); then
+        # Deterministic precondition the offender can't satisfy by retrying (no
+        # mapped CF zone / token / target vhost). A config skip, not a backend
+        # error — keep it out of the "failed" bucket so a misconfig doesn't
+        # masquerade as a transient API failure on every */5 run forever.
+        _swatter_audit "$ip" "$folded" "skipped-config" "$channel" 0 "precondition action=${action} ${reason}" "$ev" "$rep"
     else
-        # The backend block call returned non-zero (CF API timeout/5xx, unresolved
-        # zone, missing token, CSF failure). Record the TRUTH — a failed attempt,
-        # not the intended action — so the decision log and digest never count a
-        # block that never reached the firewall, and so offenders.perm stays 0 and
-        # the next run legitimately retries instead of a phantom perm being logged
-        # every cycle. "failed" is distinct from the deliberate skipped-* family
-        # (skipped = policy choice; failed = backend error) and, counted by exact
-        # action match in report.sh, drops out of the block tallies cleanly.
-        log_warn "block ${ip} (${action}/${channel}) failed; recording 'failed' not '${action}'"
+        # Genuine backend error (CF API timeout/5xx or unresolved zone, csf/ipset
+        # command failure, missing tooling). Record the TRUTH — not a phantom
+        # success — so the decision log/digest never count a block that never
+        # reached the firewall, and offenders.perm stays 0 so the next run
+        # legitimately retries instead of a phantom perm looping every cycle.
+        # "failed" is exact-matched out of the block tallies in report.sh.
+        log_warn "block ${ip} (${action}/${channel}) failed (rc=${rc}); recording 'failed' not '${action}'"
         _swatter_audit "$ip" "$folded" "failed" "$channel" "$ttl" "block_failed action=${action} ${reason}" "$ev" "$rep"
     fi
     return 0

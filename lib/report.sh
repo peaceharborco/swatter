@@ -2,10 +2,14 @@
 # lib/report.sh — nightly email digest of offenses and actions.
 #
 # Reads the structured decision log (decisions.jsonl), filters to a window
-# (default 24h), groups what happened by ACTION (perm/temp/exempt/skipped/watch),
-# by OFFENSE (decisive rule + bad-path category), and by CHANNEL (csf/cloudflare),
-# then emails a compact digest. Stays silent when the window had no activity
-# unless --test is given.
+# (default 24h), groups what happened by ACTION, by OFFENSE (decisive rule +
+# bad-path category), and by CHANNEL (csf/cloudflare), then emails a compact
+# digest. Stays silent when the window had no activity unless --test is given.
+#
+# Only perm/temp count toward the block tallies (exact-matched below). The other
+# actions are observability, not blocks: exempt, watch, noop-perm, skipped-cap,
+# skipped-config, skipped-cf-plane, skipped-failclosed, and failed (a backend
+# error — deliberately NOT counted as an enforced block).
 #
 # Delivery is method-pluggable for portability:
 #   sendmail (default) — pipe to the local MTA (/usr/sbin/sendmail or `mail`)

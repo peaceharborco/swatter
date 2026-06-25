@@ -58,7 +58,8 @@ swatter_asn_resolve() { [[ "$1" == "1.2.3.4" ]] && echo 16276; return 0; }
 check() { local name="$1" got="$2" want="$3"
   if [[ "$got" == "$want" ]]; then PASS=$((PASS+1));
   else echo "FAIL ${name}: want='${want}' got='${got}'"; FAIL=$((FAIL+1)); fi; }
-last_action() { tail -1 "$LOG_DIR/decisions.jsonl" | sed -n 's/.*"action":"\([^"]*\)".*/\1/p'; }
+last_action()  { tail -1 "$LOG_DIR/decisions.jsonl" | sed -n 's/.*"action":"\([^"]*\)".*/\1/p'; }
+last_channel() { tail -1 "$LOG_DIR/decisions.jsonl" | sed -n 's/.*"channel":"\([^"]*\)".*/\1/p'; }
 
 # Helper: feed one synthetic scored line by overriding _swatter_run_scorer.
 # FEED_LINE is global so the override closure resolves it under `set -u` when
@@ -127,6 +128,49 @@ swatter_scan >/dev/null 2>&1
 check block-fail-audits-failed "$(last_action)" "failed"
 if swatter_store_is_perm "4.4.4.4"; then check block-fail-no-perm "set" "unset"; else check block-fail-no-perm "unset" "unset"; fi
 BLOCK_RC=0
+
+# 10) VIA_CF plane, backend FAILS (rc=1): the EXACT prod failure mode (52.138.3.29
+#     went via Cloudflare). Earlier cases route DIRECT; this proves the failed-audit
+#     fix covers the cloudflare plane too — audit "failed" on channel=cloudflare,
+#     perm unset.
+swatter_classify()         { echo "VIA_CF"; }
+swatter_cf_manages_plane() { return 0; }
+BLOCK_RC=1
+swatter_intel_score() { printf '0\t\t0\n'; }
+feed $'5.6.7.8\t100\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"honeypot","honeypot":1,"top_vhost":"x.com"}'
+swatter_scan >/dev/null 2>&1
+check viacf-fail-audits-failed "$(last_action)" "failed"
+check viacf-fail-channel "$(last_channel)" "cloudflare"
+if swatter_store_is_perm "5.6.7.8"; then check viacf-fail-no-perm "set" "unset"; else check viacf-fail-no-perm "unset" "unset"; fi
+
+# 11) temp action (score>=TEMP, repeat-count not yet met) with backend FAIL ->
+#     "failed", NOT "temp" (the non-perm half of the fix).
+swatter_classify()         { echo "DIRECT"; }
+swatter_cf_manages_plane() { return 1; }
+BLOCK_RC=1
+feed $'9.8.7.6\t82\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"scanner_profile","honeypot":0,"top_vhost":"x.com"}'
+swatter_scan >/dev/null 2>&1
+check temp-fail-audits-failed "$(last_action)" "failed"
+
+# 12) Backend hits its per-run cap (rc=2): a deliberate throttle, NOT a backend
+#     error -> "skipped-cap" (mirrors the MAX_BLOCKS_PER_RUN skip), not "failed".
+BLOCK_RC=2
+feed $'11.11.11.11\t100\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"honeypot","honeypot":1,"top_vhost":""}'
+swatter_scan >/dev/null 2>&1
+check cap-audits-skipped-cap "$(last_action)" "skipped-cap"
+
+# 13) VIA_CF deterministic precondition (rc=3, e.g. vhost not in CF map / no token):
+#     a config skip we'll never satisfy by retrying -> "skipped-config", not "failed"
+#     (so a misconfig doesn't masquerade as a transient backend error forever).
+swatter_classify()         { echo "VIA_CF"; }
+swatter_cf_manages_plane() { return 0; }
+BLOCK_RC=3
+feed $'12.12.12.12\t100\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"honeypot","honeypot":1,"top_vhost":"x.com"}'
+swatter_scan >/dev/null 2>&1
+check cfprecond-audits-skipped-config "$(last_action)" "skipped-config"
+BLOCK_RC=0
+swatter_classify()         { echo "DIRECT"; }
+swatter_cf_manages_plane() { return 1; }
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"

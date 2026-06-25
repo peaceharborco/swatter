@@ -92,16 +92,20 @@ swatter_cf_block() {
     swatter_cf_manages_plane || { log_debug "CF_MODE=${CF_MODE}; not CF-blocking ${ip}"; return 1; }
     _cf_load
 
+    # Deterministic preconditions return 3 ("skipped-config") not 1 ("failed"):
+    # retrying never satisfies them, so the caller must not log them as transient
+    # backend errors every */5 run. Broken tooling / zone-resolve / API errors
+    # below stay 1 (genuine, possibly-transient failures).
     if [[ -z "$vhost" ]]; then
         log_warn "CF block ${ip}: no target vhost in evidence; cannot pick a zone — skipping"
-        return 1
+        return 3
     fi
     local acct; acct="$(_cf_account_for_vhost "$vhost")" || {
         log_warn "CF block ${ip}: vhost ${vhost} not in CF_DOMAINS_MAP — skipping (add it or it's a skip-profile domain)"
-        return 1
+        return 3
     }
     local token="${_CF_TOKEN[$acct]:-}"
-    [[ -n "$token" ]] || { log_warn "CF block ${ip}: no token for account ${acct} in CF_CREDS_FILE — skipping"; return 1; }
+    [[ -n "$token" ]] || { log_warn "CF block ${ip}: no token for account ${acct} in CF_CREDS_FILE — skipping"; return 3; }
 
     if [[ "${SWATTER_MODE}" != "enforce" ]]; then
         log_info "[dry-run] cloudflare ${CF_ACTION} ${ip} in ${vhost} (acct ${acct}; ${reason})"

@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [2.1.2] — 2026-06-25
+
+### Changed
+- **Backend block calls now use a return-code protocol so deliberate non-blocks
+  aren't mislabeled `failed`.** The 2.1.1 fix audited every non-zero backend
+  return as `failed`, which lumped two *deliberate* outcomes in with real errors:
+  a per-run deny cap (`MAX_CSF_DENIES_PER_RUN`, which the CSF/ipset backends
+  signal with `return 2`) and deterministic Cloudflare preconditions that retrying
+  can never satisfy (no target vhost, vhost absent from `CF_DOMAINS_MAP`, no token
+  — now `return 3`). `_swatter_execute_block` maps `2 → skipped-cap` (mirroring the
+  existing `MAX_BLOCKS_PER_RUN` skip) and `3 → skipped-config`; only genuine
+  backend errors (API timeout/5xx, unresolved zone, failed `csf`/`ipset` command,
+  missing tooling) remain `failed`. Keeps a misconfigured zone map or an exhausted
+  cap from masquerading as a wave of firewall failures every `*/5` run.
+- Documented the full decision-log action vocabulary (and which actions count
+  toward the digest block tallies) in `config/swatter.example.conf` and
+  `lib/report.sh`.
+
+### Added
+- `scan_wire_test.sh`: regression coverage for the VIA_CF failure path (the exact
+  prod mode that produced the original `52.138.3.29` evidence), the `temp` failure
+  path, and the new `skipped-cap` / `skipped-config` return-code mappings.
+- `config_defaults_test.sh`: asserts origin-lock resolves to `off` when
+  `ORIGIN_LOCK` is unset (guards the "shipped inert" claim).
+
+### Notes
+- Verified against the live prod CSF (cPanel build): `csf -d` on an already-denied
+  IP exits `0`, so a duplicate permanent deny is recorded as success — no inverse
+  "real block logged as failed" bug exists on the DIRECT plane. No code change
+  needed there; documented for future reference.
+
+Credit: hardening in this release was driven by an adversarial code review from
+Grok (via Cursor 2.5).
+
 ## [2.1.1] — 2026-06-25
 
 ### Fixed

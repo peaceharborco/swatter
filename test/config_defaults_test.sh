@@ -4,6 +4,7 @@ set -uo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "${HERE}/.." && pwd)"
 source "${ROOT}/lib/common.sh"
+source "${ROOT}/lib/origin_lock.sh"   # for _ol_mode default guard
 PASS=0; FAIL=0
 check() { local name="$1" got="$2" want="$3"
   if [[ "$got" == "$want" ]]; then PASS=$((PASS+1));
@@ -27,6 +28,10 @@ check abl-conf-default   "${ABUSEIPDB_BLOCKLIST_CONFIDENCE}" "90"
 # abuseipdb_blocklist is OPT-IN: must NOT be in the default list.
 check abl-optin "$(case " ${INTEL_PROVIDERS} " in *' abuseipdb_blocklist '*) echo in;; *) echo out;; esac)" "out"
 check direct-backend-default "${DIRECT_BACKEND}" "csf"
+# origin-lock ships inert: with ORIGIN_LOCK unset the resolved mode must be "off"
+# (guards the "present but not armed unless the operator runs apply" claim).
+unset ORIGIN_LOCK 2>/dev/null || true
+check origin-lock-default     "$(_ol_mode)" "off"
 check alert-repeat-default   "${ALERT_REPEAT_TTL}" "21600"
 check abuse-report-default   "${ABUSEIPDB_REPORT}" "false"
 check abuse-report-ttl       "${ABUSEIPDB_REPORT_TTL}" "900"
