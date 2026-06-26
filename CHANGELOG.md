@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+### Documentation
+- **README "Nightly digest" section synced with v2.2.0** — documents the opt-in
+  origin-lock digest plane (`ORIGIN_LOCK_DIGEST` / `ORIGIN_LOCK_LOG`), notes the
+  structured HTML report, and replaces the stale "set the cron hour" manual-edit
+  framing with config-driven, DST-aware scheduling (`REPORT_CRON` /
+  `REPORT_CRON_TZ`).
 
 ## [2.2.0] — 2026-06-25
 
