@@ -398,9 +398,11 @@ on the receiving hosts to keep ban lists in sync across a fleet.
 
 ---
 
-## Nightly digest — swat errors *and* bad actors
+## Nightly digest — swat errors, bad actors *and* bypass attempts
 
-`swatter report` emails one nightly digest covering both planes of server health:
+`swatter report` emails one nightly digest, delivered as a structured HTML
+report (verdict line → stat tiles → per-plane tables), covering up to three
+planes of server health:
 
 - **Bad actors** — blocks taken (perm/temp), grouped by offense type, bad-path
   category, and channel (CSF vs Cloudflare), plus allowlist exemptions to review.
@@ -408,11 +410,19 @@ on the receiving hosts to keep ban lists in sync across a fleet.
   PHP-FPM, per-site PHP, and MySQL over the same window, with known high-volume
   noise filtered and the rest grouped by signature. Point it at logs directly, or
   reuse an existing consolidated error log.
+- **Origin-lock** *(opt-in, `ORIGIN_LOCK_DIGEST`, default `auto`)* — when the
+  window contains `ORIGIN-LOCK:` syslog hits, a dedicated plane shows the
+  direct-to-origin drop count, unique source IPs, the `:80`/`:443` split, and
+  top sources tagged attacker/legit. `auto` shows it only when there are hits, so
+  it stays invisible for operators who don't run the lock; `ORIGIN_LOCK_LOG`
+  selects the syslog source.
 
 It stays silent on a genuinely quiet window. Delivery is pluggable —
 `sendmail` (default), **SendGrid**, or **Brevo** — so hosts whose IP isn't an
 authorized sender for the From domain can still deliver. The installer schedules
-it nightly; set the cron hour to your timezone.
+it via `REPORT_CRON` (default `0 4` — 4 AM) and `REPORT_CRON_TZ` (an IANA zone
+like `America/Los_Angeles`; empty = server/UTC), baked into `/etc/cron.d/swatter`
+with a `CRON_TZ` header so the send time doesn't drift across DST.
 
 ```bash
 swatter report --test          # force-send now, to verify delivery
