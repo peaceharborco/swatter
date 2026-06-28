@@ -174,7 +174,7 @@ repo.
 
 | Channel | What to set | Where to sign up |
 |---|---|---|
-| SendGrid email | `ALERT_EMAIL` (recipient) + `SENDGRID_KEY_FILE` (shared with the nightly report mailer) | sendgrid.com — free tier, 100 emails/day. Create an API key with **Mail Send** permission only. |
+| Email (SendGrid / Brevo) | `ALERT_EMAIL` (recipient) — sent via the nightly report mailer, so it follows `REPORT_METHOD` + that method's key file | sendgrid.com (free 100/day) or brevo.com (free 300/day). Create an API key with **Mail Send** permission only. |
 | Twilio SMS | `ALERT_SMS_TO`, `TWILIO_SID`, `TWILIO_FROM`, `TWILIO_TOKEN_FILE` | console.twilio.com — free trial credits. Copy Account SID and Auth Token from the dashboard; write the Auth Token to a `0600` file and set `TWILIO_TOKEN_FILE`. |
 | Webhook (Slack, Discord, PagerDuty, …) | `ALERT_WEBHOOK_URL`, `ALERT_WEBHOOK_FORMAT` | Slack: **App directory → Incoming Webhooks**. Discord: channel **Settings → Integrations → Webhooks**. Set `ALERT_WEBHOOK_FORMAT` to `slack`, `discord`, or `raw-json`; `auto` sniffs the URL. |
 
@@ -418,8 +418,9 @@ planes of server health:
   selects the syslog source.
 
 It stays silent on a genuinely quiet window. Delivery is pluggable —
-`sendmail` (default), **SendGrid**, or **Brevo** — so hosts whose IP isn't an
-authorized sender for the From domain can still deliver. The installer schedules
+`sendmail` (default), **SendGrid** (free tier 100/day), or **Brevo** (free tier
+300/day) — so hosts whose IP isn't an authorized sender for the From domain can
+still deliver via a free transactional-email account. The installer schedules
 it via `REPORT_CRON` (default `0 4` — 4 AM) and `REPORT_CRON_TZ` (an IANA zone
 like `America/Los_Angeles`; empty = server/UTC), baked into `/etc/cron.d/swatter`
 with a `CRON_TZ` header so the send time doesn't drift across DST.
@@ -434,19 +435,24 @@ swatter report --print         # print the digest to stdout, send nothing
 
 All the knobs live in `/etc/swatter/swatter.conf`:
 
-1. Set `REPORT_EMAIL` (empty disables the digest) and `REPORT_FROM`.
+1. Set `REPORT_EMAIL` (recipient; empty disables the digest) and `REPORT_FROM`
+   (sender address). These two are all you normally set — `REPORT_FROM_NAME`
+   defaults to `Swatter (<this host's FQDN>)` and the subject is generated per
+   report, so you rarely touch either.
 2. Pick `REPORT_METHOD`. `sendmail` needs nothing else. `sendgrid` and `brevo`
    need `curl` + `jq` plus an API key — keep it in a root-only file and point
    the config at it:
 
    ```bash
-   install -m 600 /dev/null /etc/swatter/sendgrid.key
+   install -m 600 /dev/null /etc/swatter/sendgrid.key   # or .../brevo.key
    vi /etc/swatter/sendgrid.key        # paste the API key, nothing else
    ```
 
-   Then in `swatter.conf`: `REPORT_METHOD="sendgrid"` +
-   `SENDGRID_KEY_FILE="/etc/swatter/sendgrid.key"`, or
-   `REPORT_METHOD="brevo"` + `BREVO_KEY_FILE="/etc/swatter/brevo.key"`.
+   Then in `swatter.conf`, either:
+   - **SendGrid** (free 100/day): `REPORT_METHOD="sendgrid"` +
+     `SENDGRID_KEY_FILE="/etc/swatter/sendgrid.key"`, or
+   - **Brevo** (free 300/day): `REPORT_METHOD="brevo"` +
+     `BREVO_KEY_FILE="/etc/swatter/brevo.key"`.
 3. Verify delivery with `swatter report --test`.
 
 ## Safety first

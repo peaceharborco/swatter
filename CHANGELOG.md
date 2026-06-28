@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`REPORT_FROM_NAME` defaults to `Swatter (<host FQDN>)`** — the From-header
+  display name now self-labels per server out of the box (templated from
+  `hostname -f`), so a multi-box fleet is distinguishable in the inbox with no
+  per-host edit. Override in `swatter.conf` to pin a fixed name.
+
 ### Documentation
+- **Brevo promoted as a first-class free email backend alongside SendGrid** —
+  README report + alerting docs and `swatter.example.conf` now call out both free
+  tiers (SendGrid 100/day, Brevo 300/day) and clarify that `sendgrid`/`brevo`
+  installs normally only set `REPORT_EMAIL` + `REPORT_FROM` (the From name and
+  subject are defaulted). Alert email is documented as riding `REPORT_METHOD`, so
+  it works with Brevo too. (Brevo delivery itself shipped earlier; this surfaces
+  it.)
 - **README "Nightly digest" section synced with v2.2.0** — documents the opt-in
   origin-lock digest plane (`ORIGIN_LOCK_DIGEST` / `ORIGIN_LOCK_LOG`), notes the
   structured HTML report, and replaces the stale "set the cron hour" manual-edit

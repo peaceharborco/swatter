@@ -141,7 +141,10 @@ NOTIFY_EMAIL=""
 REPORT_EMAIL=""
 REPORT_WINDOW="24h"
 REPORT_FROM="swatter@localhost"
-REPORT_FROM_NAME="Swatter"
+# Display name on the From header. Templated with the server's FQDN so a multi-box
+# fleet self-labels (e.g. "Swatter (cds1.example.com)") with no per-host edit. The
+# subject line is computed per-report (see _report_subject) — not configurable.
+REPORT_FROM_NAME="Swatter ($(hostname -f 2>/dev/null || hostname))"
 REPORT_METHOD="sendmail"          # sendmail | sendgrid | brevo
 SENDGRID_KEY_FILE=""
 BREVO_API_KEY=""
