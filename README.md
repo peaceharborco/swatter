@@ -39,10 +39,11 @@ Swatter is built around this. For every offender it decides:
   live TCP socket to your web ports from a non-Cloudflare peer — even behind a
   valid `Host` header, since a proxied request always arrives from a CF edge)
   → block at **CSF**. Safe: the socket really is the attacker.
-- **Via Cloudflare** (came through the proxy) → a zone-scoped **Cloudflare IP
-  Access Rule** via API, a **managed challenge** by default — so a false
-  positive means a human solves a challenge, not a lockout. The CSF plane is
-  never touched.
+- **Via Cloudflare** (came through the proxy) → a **Cloudflare IP Access Rule**
+  via API, a **managed challenge** by default — so a false positive means a
+  human solves a challenge, not a lockout. The CSF plane is never touched. The
+  rule lands per `CF_SCOPE`: `zone` (the single zone hit) or `account` (every
+  account at once, so a vhost-rotating scanner can't roam — see below).
 - **Ambiguous** → defaults to the Cloudflare plane (the safe one).
 
 Cloudflare's own ranges are a hardcoded **never-block** set, re-checked
@@ -525,13 +526,27 @@ daily. After upgrading, run `swatter refresh-feeds` so the new feeds download.
 ### Enabling the Cloudflare plane
 
 To block proxied attackers at Cloudflare (not just CSF-direct ones), Swatter
-needs a token per CF account scoped to **only** `Firewall Services: Edit` (zone
-IP Access Rules — a different product from the WAF Rulesets, so it never collides
-with your existing WAF automation). It blocks each attacker in the specific zone
-they hit, using your domain→account map.
+needs a token per CF account (IP Access Rules — a different product from the WAF
+Rulesets, so it never collides with your existing WAF automation). Where the
+rule lands is set by **`CF_SCOPE`**:
 
-1. In the Cloudflare dashboard, create an API token per account with the single
-   permission *Zone → Firewall Services → Edit* over that account's zones.
+- **`zone`** (default) — blocks each attacker in the specific zone they hit,
+  using your domain→account map. Token needs only `Firewall Services: Edit`.
+  Smallest blast radius, but a scanner that rotates target vhosts is only
+  challenged on the first zone it touches: once Swatter's per-IP ledger marks the
+  IP handled, it stops creating rules, so the IP roams free across every other
+  zone on the account.
+- **`account`** — blocks the attacker on **every account at once**, so the block
+  scope matches the per-IP ledger and a vhost-rotating scanner is shut out
+  everywhere. No target vhost is required, so it also covers raw-IP / no-`Host`
+  offenders. Token additionally needs `Account Firewall Access Rules: Edit`. This
+  is the recommended scope when Swatter is your main line of defense; a token
+  lacking account scope makes account blocks fail and retry each run (logged with
+  a scope hint) so the misconfig surfaces, rather than silently skipping.
+
+1. In the Cloudflare dashboard, create an API token per account: *Zone →
+   Firewall Services → Edit* over that account's zones (and, for
+   `CF_SCOPE=account`, also *Account → Account Firewall Access Rules → Edit*).
 2. Build a root-only creds file (`account<TAB>token`, one line per account) and a
    `cf-domains.conf`-style domain list, then deploy both from your workstation —
    no secret is committed and only the minimal token lands on the server:
