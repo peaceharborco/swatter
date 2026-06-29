@@ -69,7 +69,7 @@ CSFPRE_EOF
     # Rewrite (or append) the managed block, leaving any operator content intact.
     local tmp
     tmp="$(mktemp)" || { echo "  (mktemp failed; skipping csfpre wiring)" >&2; return 0; }
-    trap 'rm -f "${tmp}"' RETURN
+    trap 'rm -f "${tmp:-}"' RETURN
 
     # Strip a prior managed block (between the markers), keep everything else.
     awk -v b="${ORIGIN_LOCK_BEGIN}" -v e="${ORIGIN_LOCK_END}" '

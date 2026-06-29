@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`install.sh remote` no longer exits non-zero on a clean install.** The
+  origin-lock csfpre wiring set `trap 'rm -f "${tmp}"' RETURN` referencing a
+  `local tmp`; under `set -euo pipefail` the RETURN trap fired with `tmp` out of
+  scope (`tmp: unbound variable`) *after* all install work had completed —
+  cosmetic, but it made every remote deploy exit non-zero and could mask real
+  failures / break CI exit-code checks. Guarded the expansion (`${tmp:-}`).
+
 ### Changed
 - **`REPORT_FROM_NAME` defaults to `Swatter (<host FQDN>)`** — the From-header
   display name now self-labels per server out of the box (templated from
