@@ -105,6 +105,13 @@ CF_MODE="auto"
 # Safe default: a false positive solves a challenge instead of being locked out.
 # Must match the documented default in swatter.example.conf.
 CF_ACTION="managed_challenge"
+# Where a Cloudflare-plane rule lands. "zone" (default, backward-compatible) is
+# smallest-blast-radius and needs only a zone-scoped token, but a scanner that
+# rotates target vhosts is only challenged on the first zone it hit. "account"
+# rules every CF account in the creds file at once (needs an account-scoped
+# token) so the block matches Swatter's per-IP ledger. Must match the documented
+# default in swatter.example.conf.
+CF_SCOPE="zone"
 CF_RULE_PREFIX="swatter"
 CF_CREDS_FILE="/etc/swatter/cloudflare.creds"
 CF_DOMAINS_MAP="/etc/swatter/cf-domains.map"

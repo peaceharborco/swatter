@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`CF_SCOPE=account` — block proxied attackers across every Cloudflare account
+  at once.** The Cloudflare plane can now create **account-scoped** IP Access
+  Rules (`/accounts/{id}/firewall/access_rules/rules`) on every account in
+  `CF_CREDS_FILE`, instead of only a zone-scoped rule on the single zone the
+  attacker hit. This closes a roaming gap in the default `zone` scope: because
+  Swatter's per-IP ledger marks an IP "handled" after the first block, a scanner
+  that **rotated target vhosts** was only ever challenged on the first zone it
+  touched and roamed free across every other zone on the account. Account scope
+  makes the block scope match the ledger, needs no target vhost (so it also
+  covers raw-IP / no-`Host` offenders), and is the recommended setting when
+  Swatter is the main line of defense. Default stays `zone` (backward
+  compatible). Account scope needs a token with `Account Firewall Access Rules:
+  Edit`; a token lacking account scope makes account blocks fail and retry each
+  run (logged with a scope hint) rather than silently skipping — only an empty
+  creds file is `skipped-config`. A **partial** block (some accounts succeed,
+  some fail) is reported as failed so the per-IP ledger does not mark the IP
+  handled and the next run retries every account (succeeded ones idempotently
+  dup-OK), keeping the roaming gap closed. Account ids per token are resolved via
+  the API (paginated) and cached in `$STATE_DIR/cf-accounts.tsv` (ids only, no
+  secrets); the cache is invalidated when `CF_CREDS_FILE` is newer.
+- `cf-rules.tsv` gains an explicit **scope** column (`ip<TAB>scope<TAB>scope_id<TAB>rule<TAB>expiry`).
+  The sweep/unblock/list readers parse both the new 5-field rows and legacy
+  4-field zone rows, so rules written by an older Swatter keep sweeping through
+  their natural expiry.
+
 ### Fixed
 - **`install.sh remote` no longer exits non-zero on a clean install.** The
   origin-lock csfpre wiring set `trap 'rm -f "${tmp}"' RETURN` referencing a

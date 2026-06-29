@@ -65,6 +65,67 @@ swatter_cf_block 1.2.3.4 3600 r x.com; check api-dup-ok "$?" "0"
 _CF_API_RESP='{"success":false,"errors":[{"message":"boom"}]}'
 swatter_cf_block 1.2.3.4 3600 r x.com; check api-error-failed "$?" "1"
 
+# ---- CF_SCOPE=account contract -------------------------------------------
+# Account scope rules every account at once; the vhost is irrelevant, so the
+# zone-path NOVHOST/CONFIG-by-domain gates do not apply. Account resolution is
+# stubbed so we drive _CF_TOKEN_OF_ACCTID directly.
+CF_SCOPE="account"
+declare -A _CF_TOKEN_OF_ACCTID
+_cf_load_accounts() { [[ "${#_CF_TOKEN_OF_ACCTID[@]}" -gt 0 ]]; }
+SWATTER_MODE="enforce"
+
+# A) genuinely no creds (empty token map) -> CONFIG(3): deterministic config gap.
+declare -A _CF_TOKEN_SAVE; for k in "${!_CF_TOKEN[@]}"; do _CF_TOKEN_SAVE[$k]="${_CF_TOKEN[$k]}"; done
+_CF_TOKEN=(); _CF_TOKEN_OF_ACCTID=()
+swatter_cf_block 1.2.3.4 3600 r ""; check acct-nocreds-config "$?" "$SWATTER_RC_CONFIG"
+for k in "${!_CF_TOKEN_SAVE[@]}"; do _CF_TOKEN[$k]="${_CF_TOKEN_SAVE[$k]}"; done
+
+# B) creds present but 0 accounts resolve (API down / token lacks account read)
+#    -> retryable failure(1), NOT config — a blip must not permanently skip.
+_CF_TOKEN_OF_ACCTID=()
+swatter_cf_block 1.2.3.4 3600 r ""; check acct-resolvefail-failed "$?" "1"
+
+# two accounts resolve from here on.
+_CF_TOKEN_OF_ACCTID[acct1]="tok1"; _CF_TOKEN_OF_ACCTID[acct2]="tok2"
+
+# C) account scope needs NO vhost -> empty vhost still acts (dry-run here) -> 0.
+SWATTER_MODE="report"
+swatter_cf_block 1.2.3.4 3600 r ""; check acct-novhost-ok "$?" "0"
+
+# D) enforce, missing jq -> genuine failure (1).
+SWATTER_MODE="enforce"; SWATTER_HAVE_JQ=0
+swatter_cf_block 1.2.3.4 3600 r ""; check acct-nojq-failed "$?" "1"
+SWATTER_HAVE_JQ=1
+
+# E) every account POST succeeds -> 0.
+_CF_API_RESP='{"success":true,"result":{"id":"rule1"}}'
+swatter_cf_block 1.2.3.4 3600 r ""; check acct-ok "$?" "0"
+
+# F) duplicate on every account -> treated as success (0).
+_CF_API_RESP='{"success":false,"errors":[{"message":"firewallaccessrules.api.duplicate_of_existing already exists"}]}'
+swatter_cf_block 1.2.3.4 3600 r ""; check acct-dup-ok "$?" "0"
+
+# G) every account errors -> failure (1).
+_CF_API_RESP='{"success":false,"errors":[{"message":"boom"}]}'
+swatter_cf_block 1.2.3.4 3600 r ""; check acct-allfail-failed "$?" "1"
+
+# H) PARTIAL success (acct1 ok, acct2 errors) -> failure(1): the ledger must NOT
+#    mark the IP handled, so the next run retries every account (succeeded ones
+#    dup-OK). Returning 0 here would re-open the roaming gap on the failed account.
+_cf_api() { case "$3" in */accounts/acct1/*) printf '%s' '{"success":true,"result":{"id":"r1"}}';; *) printf '%s' '{"success":false,"errors":[{"message":"boom"}]}';; esac; }
+swatter_cf_block 1.2.3.4 3600 r ""; check acct-partial-failed "$?" "1"
+_cf_api() { printf '%s' "${_CF_API_RESP:-}"; }   # restore default stub
+CF_SCOPE="zone"
+
+# ---- cf-rules.tsv backward-compat parse ----------------------------------
+# A legacy 4-field zone row (written by an older Swatter) must still parse so it
+# keeps sweeping/unblocking; the new 5-field scoped row carries explicit scope.
+_cf_parse_ref "$(printf '9.9.9.9\tZONEID\tRULEID\t123')" \
+  && check parse-legacy-zone "${_CFR_SCOPE}/${_CFR_SID}/${_CFR_RID}/${_CFR_EXP}" "zone/ZONEID/RULEID/123"
+_cf_parse_ref "$(printf '9.9.9.9\taccount\tACCTID\tRULEID\t456')" \
+  && check parse-scoped-account "${_CFR_SCOPE}/${_CFR_SID}/${_CFR_RID}/${_CFR_EXP}" "account/ACCTID/RULEID/456"
+_cf_parse_ref "" ; check parse-blank-rejected "$?" "1"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
