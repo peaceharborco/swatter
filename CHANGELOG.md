@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-06-30
+
 ### Added
 - **`CF_SCOPE=account` — block proxied attackers across every Cloudflare account
   at once.** The Cloudflare plane can now create **account-scoped** IP Access
