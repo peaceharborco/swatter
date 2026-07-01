@@ -1,165 +1,121 @@
-# Origin-lock persistence & repo⇄live reconciliation — Implementation Plan
+# Origin-lock repo⇄live reconciliation (single-carrier csfpre) — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
-> **This plan is written for Grok adversarial review BEFORE any production firewall change** (standing decision #2 from the 2026-06-30 incident handoff). Save Grok's review as `2026-07-01-origin-lock-persistence-reconciliation-review-grok.md`, fold blockers, THEN execute. Repo-only tasks (1, 4, 5, 6) may proceed without waiting on Grok; every task that mutates the prod firewall (2, 3) is gated on it.
+> **REVISION 2 (2026-07-01).** Rev 1's dual-carrier "Option C" (managed csfpre hook + systemd oneshot/timer safety-net) was **rejected** by Grok adversarial review (`…-review-grok.md`) AND invalidated by measurement: a prod survival matrix proved the csfpre lock **survives `csf -r`, `csf -ra`, and `systemctl restart lfd`** with zero drops. So **csfpre is a reliable single carrier on this host** — there is no persistence problem to engineer around. This revision drops systemd entirely and reduces the work to **drift + hygiene**. Re-review with Grok before the prod tasks (standing decision #2).
 
-**Goal:** Make origin-lock persistence deterministic under CSF `FASTSTART=1`/`LF_IPSET=1`, and collapse the repo⇄live drift to a single owner (the repo-managed hook), retiring the untracked hand static csfpre block.
+**Goal:** Make the repo own the live origin-lock: retire the untracked hand static csfpre block and enforce via the repo-managed csfpre hook (single owner = repo), on the Task-0-fixed lib, with the version stamp corrected.
 
-**Architecture:** Origin-lock is an L3 iptables/CSF firewall wholly owned by Swatter (NOT a Cloudflare zone rule — the "CF changes go through terminal-scripts" rule does not apply). Today the live enforcer is a 56-line *hand-written* static block in `/etc/csf/csfpre.sh` that inlines its own `ipset`/`iptables` and never calls the Swatter lib. We replace it with the repo's **managed csfpre hook** (`swatter origin-lock apply --hook=csf`) for correct ordering during `csf -r`, and add a **systemd oneshot + timer** safety-net that re-arms via the standalone path after lfd restarts / FASTSTART races that bypass csfpre. Single owner = the repo.
+**Architecture:** Origin-lock is an L3 iptables/CSF firewall wholly owned by Swatter (NOT a Cloudflare zone rule). The **single persistence carrier is `/etc/csf/csfpre.sh`**, which CSF re-sources on every `csf -r`/`csf -ra`/lfd-restart (measured durable). The managed block calls `swatter origin-lock apply --hook=csf`, which appends (`-A`) CF-ACCEPT → ACME → LOG → DROP onto the chain CSF has just flushed — correct order, no teardown-first path, reads `ORIGIN_LOCK` from `/etc/swatter/swatter.conf`. **No systemd unit, no timer, no dual carrier.**
 
-**Tech Stack:** bash (POSIX-ish, must run on macOS bash 3.2 for tests and on RHEL/cPanel bash for prod), CSF v16.20 (cPanel), iptables-legacy + ipset, systemd.
+**Tech Stack:** bash (macOS bash 3.2 for tests; RHEL/cPanel bash on prod), CSF v16.20 (cPanel), iptables-legacy + ipset.
 
 ## Global Constraints
 
-- **Prod host:** `cds1.peaceharborhosting.com`, origin IP `67.225.133.76`, SSH alias `peaceharbor` (login user `root`). CSF `v16.20 (cPanel)`, `FASTSTART="1"`, `LF_IPSET="1"`.
-- **Deploy convention:** surgical `scp` of individual libs to `/usr/local/lib/swatter/` and hooks — **never** run `install.sh` remotely on prod. Match existing deploy-script patterns.
-- **Fail-open guard is sacred:** an empty / under-min CF range list must install NOTHING (never a bare DROP that blackholes the origin). Preserve `_ol_ranges_healthy`.
-- **Ordering invariant (top→bottom INPUT):** `lo/allow accepts → CF-ACCEPT → ACME-ACCEPT → LOG → DROP`, and the whole block must sit **above** CSF's blanket `ctstate NEW --dport 80/443 ACCEPT` (live rules #31/#34) so the DROP fires first.
-- **ACME carve-out:** `/.well-known/` accept on :80 must remain (cPanel AutoSSL / Let's Encrypt HTTP-01), and the carve-out is the whole `/.well-known/` path, not just `acme-challenge` (per memory `swatter-origin-lock-cpanel-cf`).
-- **No client-safety regressions:** managed_challenge / block posture for real traffic is unaffected; this is origin-lock only.
-- **Tests must stay green on macOS bash 3.2** (no array-of-arrays, guard empty-array `set -u` expansions, no `mapfile`).
-- **Public repo:** `apps/swatter` is public — commit identity `Peace Harbor Studios <142285318+peaceharborco@users.noreply.github.com>`, no secrets/hostnames beyond what's already public in docs.
+- **Prod host:** `cds1.peaceharborhosting.com`, origin `67.225.133.76`, SSH alias `peaceharbor` (root). CSF `v16.20`, `FASTSTART="1"`, `LF_IPSET="1"` — **csfpre lock measured to survive all reload paths** (see Ground truth).
+- **Deploy convention:** surgical `scp` of individual libs/hooks; **never** run `install.sh` remotely. Edit `/etc/csf/csfpre.sh` in place (preserve mode `0700`, owner `root:root`).
+- **Whole-box blast radius:** any `csf -r`/`csf -ra`/lfd restart rebuilds the firewall for **every** customer site + WHMCS. Run attended, low-traffic window. Auto-mode blocks these unprompted — expect to run them via `!` or explicit approval.
+- **Fail-open is sacred:** empty/under-min CF ranges install NOTHING; the csfpre managed block is guarded (`[ -x swatter ] && … || true`) so a broken binary fails OPEN, never a DROP without its preceding CF-ACCEPT.
+- **Ordering invariant (top→bottom):** `CF-ACCEPT → ACME → LOG → DROP`, all above CSF's blanket `ctstate NEW --dport 80/443 ACCEPT`.
+- **ACME carve-out:** whole `/.well-known/` on :80 stays (cPanel AutoSSL).
+- **Rollback = restore the live csfpre backup**, NOT git (the hand static block was never in the repo). Back up `/etc/csf/csfpre.sh` to `csfpre.sh.bak-<UTC>` before every edit (match the existing `.bak-20260619-184214` pattern).
+- **Public repo** `apps/swatter`: commit identity `Peace Harbor Studios <142285318+peaceharborco@users.noreply.github.com>`.
+
+## Ground truth (verified live 2026-07-01)
+
+- **Survival matrix (measured):** snapshot `ipset cf_origin4` entries + INPUT CF-ACCEPT/LOG/DROP counts before/after `csf -r`, `csf -ra`, `systemctl restart lfd`, then restore `csf -r`. Result: **15 / 1 / 1 / 1 throughout — zero drops.** csfpre is durable here; the handoff §4 "always wiped" premise is refuted.
+- **Live enforcer = hand static csfpre block** (56 lines, `MODE="DROP"`, LOG `10/min`, inline `ipset`/`iptables`, does NOT call the lib). Repo-managed hook is absent; `/etc/swatter/swatter.conf` has no `ORIGIN_LOCK` line (→ off). No systemd unit.
+- Live INPUT: `#16 ACME → #17 CF-ACCEPT(cf_origin4,15) → #18 LOG(10/min) → #19 DROP`, above CSF blanket `#31/#34`. CF site 200, direct-origin blocked.
+- Deployed lib = 587 lines (pre Task-0); `swatter --version` prints stale `2.2.0`.
 
 ---
 
-## Ground truth (verified live 2026-07-01, read-only)
+## Task 0 — DONE (committed + pushed): standalone apply ordering + teardown fixes
 
-- **Live INPUT (enforcing, correct order):** `#16 ACME(:80 /.well-known/) → #17 CF-ACCEPT(cf_origin4, 15 ranges) → #18 LOG(ORIGIN-LOCK:, 10/min) → #19 DROP(80,443)`; CSF blanket accepts at `#31/#34` sit **below** the DROP. Direct-to-origin from an off-CF IP times out (blocked); `kootenaichurch.org` via CF = 200. **Origin is protected right now.**
-- **Enforcer = hand static block** `/etc/csf/csfpre.sh` (56 lines, `MODE="DROP"`, `LOGPREFIX="ORIGIN-LOCK: "`, LOG `--limit 10/min`, self-contained inline `ipset`/`iptables` — does **not** call the lib). The repo-managed csfpre block was previously stripped by `swatter origin-lock disable`.
-- **`/etc/swatter/swatter.conf` has no `ORIGIN_LOCK` line** → resolves `off` → the managed hook, if present, would no-op.
-- **No systemd unit** (`swatter-origin-lock.service` "could not be found").
-- **Deployed lib** `/usr/local/lib/swatter/origin_lock.sh` = 587 lines (matches HEAD), but `swatter --version` prints stale **2.2.0**.
-- **§4 correction:** the static csfpre block is currently **surviving** reloads — so "FASTSTART always wipes csfpre" is **not** reliably true. Persistence is **intermittent/nondeterministic** (the handoff observed a wipe; today it is intact). The plan must (a) empirically characterize what survives which reload, and (b) add a deterministic safety-net so the answer stops mattering.
+Committed on branch `fix/origin-lock-standalone-ordering` (GitHub+GitLab): teardown-first standalone apply, quoted LOG-rule `-D`, looped preamble `-D`, + `test/origin_lock_transition_test.sh`. All 30 suites green. **Not yet deployed to prod** (Task 2 Step 1). Note: the live static block never calls the lib, so this fix only affects the *managed* hook / standalone / disable paths — i.e. everything we switch TO in this plan.
 
 ---
 
-## Task 0 (DONE — commit pending): standalone apply ordering + LOG-teardown fix
+## Task 1 — DONE (commit `1b9de30`): install.sh retires a legacy hand static origin-lock block
 
-Already implemented this session via TDD; needs commit. Reproduces & fixes the §5 outage bug and root-causes the §4 "lingering LOG" anomaly.
+So a (re)install never doubles up, and so the retire logic used on prod (Task 2) is tested code, not an ad-hoc `sed`.
 
-**Files:**
-- Modify: `lib/origin_lock.sh` (standalone teardown-first in `swatter_origin_lock_apply`; quoted `--log-prefix` delete loop in `_ol_teardown_family`)
-- Create: `test/origin_lock_transition_test.sh` (chain-model regression: `log→drop` keeps CF-ACCEPT and LOG above DROP)
+**Files:** Modify `install/install.sh` (add `_ol_retire_legacy_static`); Test `test/install_origin_lock_test.sh` (new).
 
-**Interfaces:**
-- Produces: `swatter_origin_lock_apply <hook>` now tears down its own rules first when `hook != csf` (csf hook path unchanged — flushed by `csf -r`). `_ol_teardown_family` now reliably removes the LOG rule.
+**Interfaces:** Produces `_ol_retire_legacy_static <csfpre_path>` — backs up the file to `<path>.bak-<UTC>` (caller passes stamp via `SWATTER_NOW_STAMP` to stay deterministic for tests), then **comments out** (prefix `#RETIRED# `) any line matching an origin-lock signature (`cf_origin4`, `ORIGIN-LOCK`, `--match-set cf_origin`, or a `-j DROP` on `--dports 80,443`) that sits **outside** the managed `>>> … <<<` markers. Idempotent; never touches the managed block; never deletes (reversible).
 
-- [ ] **Step 1: Verify green** — Run: `for t in test/*_test.sh; do bash "$t" >/dev/null || echo "FAIL $t"; done; echo done`  Expected: `done` with no FAIL lines (30 suites).
-- [ ] **Step 2: Commit on a branch** (do not commit to `main`; branch off `docs/cf-block-failure-spec` which carries the handoff)
+- [ ] **Step 1: Write the failing test** — fixture csfpre with a hand static block (no markers) + a managed block; assert after retire: managed block intact, static `iptables … cf_origin4 … ACCEPT`/`… -j DROP` lines are `#RETIRED# `-prefixed, a `.bak-<stamp>` exists, and a second call is a no-op.
+- [ ] **Step 2: Run → FAIL** (`_ol_retire_legacy_static: not found`).
+- [ ] **Step 3: Implement** `_ol_retire_legacy_static` (awk; signature match outside markers; backup first; comment not delete).
+- [ ] **Step 4: Run → PASS.**
+- [ ] **Step 5: Full suite** — `for t in test/*_test.sh; do bash "$t" >/dev/null || echo FAIL $t; done` → no FAIL.
+- [ ] **Step 6: Commit** — `feat(install): retire (comment-out, backed-up) legacy hand static origin-lock block`.
 
-```bash
-git checkout docs/cf-block-failure-spec 2>/dev/null || git checkout -b origin-lock-persistence-reconcile
-git checkout -b fix/origin-lock-standalone-ordering
-git add lib/origin_lock.sh test/origin_lock_transition_test.sh docs/superpowers/plans/2026-07-01-origin-lock-persistence-reconciliation.md
-git commit -m "fix(origin-lock): teardown-first standalone apply + reliable LOG-rule teardown
+## Task 2 — DONE (commit `1b9de30`): digest no longer depends on the static `MODE=` line
 
-Standalone apply mis-ordered on a log->drop transition: the new DROP -I-prepended
-to INPUT pos 1, above the CF-ACCEPT -> total origin outage (2026-06-30 incident §5).
-Tear the module's own rules down first so the rebuild lands on a clean, correctly
-ordered chain (csf hook path unchanged — csf -r flushes it).
+Grok Major: `swatter_origin_lock_status`/digest greps `^MODE=` from the hand static block (`lib/origin_lock.sh:580`) — goes stale/empty once the static block is retired.
 
-Also: _ol_teardown_family consumed its delete patterns unquoted, word-splitting the
-trailing space off the LOG --log-prefix so -D never matched — the 'only the appended
-LOG survived' anomaly (§4). Delete the LOG rule with a quoted prefix.
+**Files:** Modify `lib/origin_lock.sh` (`OL_MODE` resolution ~`:580`); Test: extend `test/origin_lock_test.sh` or `report` test.
 
-Regression: test/origin_lock_transition_test.sh models the INPUT chain and asserts
-CF-ACCEPT and LOG stay above DROP after a log->drop transition."
-```
+- [ ] **Step 1: Failing test** — with no static `MODE=` line present and `ORIGIN_LOCK=drop` in conf, assert digest `OL_MODE == drop` (currently would fall to `?`/empty on the grep path).
+- [ ] **Step 2: Run → FAIL.**
+- [ ] **Step 3: Implement** — resolve mode from `_ol_mode` (conf) first; use the csfpre `^MODE=` grep only as a legacy fallback.
+- [ ] **Step 4: Run → PASS; full suite green.**
+- [ ] **Step 5: Commit.**
 
----
+## Task 3 (PROD, GATED on Grok re-review): deploy fixed lib + switch static → managed hook
 
-## Task 1 (repo-only): install.sh retires a legacy hand static origin-lock block
+Single carrier throughout. The static block keeps enforcing until the managed hook is proven, so the origin is never unprotected.
 
-So a fresh/again install never ends up doubled (managed hook + hand static block), and so `install.sh` can adopt an existing hand-block host cleanly.
+- [ ] **Step 1 (PROD): deploy the Task-0 lib.** `scp lib/origin_lock.sh peaceharbor:/usr/local/lib/swatter/origin_lock.sh`; set `root:root 0644`. No firewall change yet (nothing calls it until the managed hook exists / conf armed).
+- [ ] **Step 2 (PROD): real-iptables LOG-space validation** (Grok Major — the trailing-space `-D` fix is only proven in a model fake). On prod: `iptables -A INPUT -p tcp -m multiport --dports 80,443 -m limit --limit 5/min -j LOG --log-prefix "ORIGIN-LOCK: TEST "` then confirm `iptables -D INPUT … --log-prefix "ORIGIN-LOCK: TEST "` (quoted, trailing space) **removes it** on this iptables-legacy. If `-D` fails to match, STOP — the LOG-teardown fix does not hold on real iptables-legacy and must be reworked before relying on `disable`/off-teardown. (Use a throwaway `TEST ` prefix so it never collides with the live rule.)
+- [ ] **Step 3 (PROD): arm the managed hook in the conf, DROP mode.** The origin-lock DROP posture is already battle-tested on this box (memory: enforce since 2026-06-19); the managed hook builds the *same* rules from the *same* `cloudflare.cidr`, so no separate LOG soak is needed — but keep the static block in place as the live enforcer during this step. Back up csfpre. Add the managed block to `/etc/csf/csfpre.sh` (exact content below), set `ORIGIN_LOCK=drop` in `/etc/swatter/swatter.conf`, `csf -r`.
 
-**Files:**
-- Modify: `install/install.sh` (origin-lock persistence install section, ~`:30-95`)
-- Test: `test/install_origin_lock_test.sh` (new) or extend `test/persist_test.sh`
+  Managed block (verbatim, matches `install.sh:_install_origin_lock_csfpre`):
+  ```sh
+  # >>> swatter origin-lock (managed) >>>
+  # Re-apply the Cloudflare-only web-port lock ahead of CSF's chains.
+  # GUARDED: a missing/broken swatter binary fails OPEN (no rule added),
+  # never leaving a DROP without its preceding Cloudflare ACCEPT.
+  if [ -x /usr/local/bin/swatter ]; then
+      /usr/local/bin/swatter origin-lock apply --hook=csf --yes || true
+  fi
+  # <<< swatter origin-lock (managed) <<<
+  ```
+  **`--yes` is mandatory** (else DROP silently no-ops at `csf -r` — return 3 swallowed by `|| true`; fixed in commit `1b9de30`). **Also verify `SWATTER_MODE="enforce"` is set** in `/etc/swatter/swatter.conf` first — otherwise `apply` dry-runs and installs nothing (`lib/origin_lock.sh:296`). Prod already runs enforce (memory `swatter-prod-posture`), but confirm before relying on the managed hook.
+- [ ] **Step 4 (PROD): verify managed rules are correct + ordered** (with static still present — expect duplicate-but-harmless CF-ACCEPT/LOG/DROP from both owners). `iptables -L INPUT --line-numbers -n`: confirm a managed CF-ACCEPT sits above a managed DROP, LOG above DROP, and the whole set above CSF's blanket accept. `ipset list cf_origin4` = 15. Direct-origin still blocked; CF site 200.
+- [ ] **Step 5 (PROD): retire the static block** using the tested function (not ad-hoc sed). `install.sh` isn't deployed to prod, so scp it to a temp path and source it source-only:
+  ```sh
+  scp install/install.sh peaceharbor:/tmp/swatter-install.sh
+  ssh peaceharbor 'set -e
+    . /tmp/swatter-install.sh --source-only
+    SWATTER_OL_CSFPRE=/etc/csf/csfpre.sh _ol_retire_legacy_static /etc/csf/csfpre.sh
+    sh -n /etc/csf/csfpre.sh && echo "csfpre parses OK" || { echo "BROKEN — restoring"; cp /etc/csf/csfpre.sh.bak-* /etc/csf/csfpre.sh; exit 1; }
+    rm -f /tmp/swatter-install.sh'
+  ```
+  `_ol_retire_legacy_static` (commit `1b9de30`) backs csfpre up itself and wraps the hand block in an inert `: <<'MARKER'` here-doc, leaving the managed block active. **Only `csf -r` after `sh -n` passes** — never reload a broken csfpre.
+- [ ] **Step 6 (PROD): verify single-owner enforcement.** Exactly ONE CF-ACCEPT/ACME/LOG/DROP set, correct order, above CSF blanket. `curl` CF site → 200; `curl --resolve peaceharborhosting.com:443:67.225.133.76 …` → timeout; `ORIGIN-LOCK:` LOG still records direct hits. Re-run the survival matrix once (managed-only) to confirm durability. **Rollback if anything regresses:** `cp /etc/csf/csfpre.sh.bak-<UTC> /etc/csf/csfpre.sh && csf -r` (restores the static block).
 
-**Interfaces:**
-- Consumes: existing marker constants `# >>> swatter origin-lock (managed) >>>` / `<<<`.
-- Produces: `_ol_retire_legacy_static <csfpre_path>` — detects a hand static block (heuristic: a `cf_origin4` / `ORIGIN-LOCK:` body **outside** the managed markers) and comments it out or removes it, idempotently, preserving file perms.
+## Task 4 (PROD, GATED): fix stale `--version` stamp
 
-- [ ] **Step 1: Write the failing test** — a csfpre fixture containing BOTH a hand static block (no markers) and nothing else; assert `_ol_retire_legacy_static` removes/neutralizes the static `iptables ... cf_origin4 ... -j DROP` lines and leaves a single managed marker block after install.
+- [ ] **Step 1:** Diagnose (`cat /usr/local/lib/swatter/VERSION 2>/dev/null; swatter --version` → `2.2.0`; compare to `bin/swatter`/HEAD). Per memory `swatter-version-bump`, a version *change* is a real release (bump `SWATTER_VERSION` + tag + GitHub/GitLab release); if only the deployed stamp is stale, redeploy the correct VERSION artifact surgically.
+- [ ] **Step 2:** `ssh peaceharbor 'swatter --version'` matches HEAD.
 
-```bash
-# test/install_origin_lock_test.sh (sketch — fill with real fixture)
-tmp=$(mktemp -d); pre="$tmp/csfpre.sh"
-cat > "$pre" <<'EOF'
-#!/bin/sh
-SET4="cf_origin4"
-ipset create "$SET4" hash:net family inet -exist
-iptables -I INPUT -p tcp -m multiport --dports 80,443 -m set --match-set "$SET4" src -j ACCEPT
-iptables -A INPUT -p tcp -m multiport --dports 80,443 -j DROP
-EOF
-_ol_retire_legacy_static "$pre"
-grep -q 'swatter origin-lock (managed)' "$pre" && ! grep -qE '^iptables .*cf_origin4.* -j ACCEPT' "$pre"
-```
+## Task 5 (repo-only): docs + CHANGELOG
 
-- [ ] **Step 2: Run test to verify it fails** — Run: `bash test/install_origin_lock_test.sh`  Expected: FAIL (`_ol_retire_legacy_static: command not found`).
-- [ ] **Step 3: Implement `_ol_retire_legacy_static`** in `install/install.sh` (awk-based, mark the retired block with `# retired-by-swatter (legacy static origin-lock)` rather than silent deletion; no-op when only the managed block exists).
-- [ ] **Step 4: Run test to verify it passes.**
-- [ ] **Step 5: Run full suite** — Run: `for t in test/*_test.sh; do bash "$t" >/dev/null || echo FAIL $t; done`  Expected: no FAIL.
-- [ ] **Step 6: Commit** — `git commit -am "feat(install): retire legacy hand static origin-lock block on (re)install"`
+- [ ] Update `CHANGELOG.md` (Unreleased): standalone-apply ordering fix, LOG/preamble teardown fixes, install.sh legacy-retire, digest mode source, and — importantly — the **corrected persistence model** (csfpre is durable here; single carrier; NO systemd). Update README origin-lock section to the single-carrier model and remove any "FASTSTART wipes it / needs systemd" language. Commit.
 
----
+## Task 6 (repo-only): update memory + retire the handoff's wrong premise
 
-## Task 2 (PROD, GATED on Grok + Task 0/1 deployed): deterministic persistence
+- [ ] Update `swatter-origin-lock-persistence-incident` (already reflects the survival-matrix refutation) and cross-link from `swatter-direct-origin-gap`. Note in the branch handoff (or a short addendum) that §4's root cause was refuted by measurement so a future reader doesn't re-engineer systemd.
 
-**Decision to ratify with Grok — persistence design.** Recommendation: **Option C (managed csfpre hook + systemd timer safety-net).** Alternatives documented so Grok can push back.
+## Task 7 (final): Grok re-review of THIS revision, then execute Tasks 3/4
 
-| Option | Mechanism | Pro | Con |
-|---|---|---|---|
-| **A. systemd only** | oneshot `swatter-origin-lock.service` + timer every 5 min, `After=csf.service lfd.service` | reload-agnostic; deterministic | brief teardown-first window each fire; rules land via `-I` (top of INPUT) — ordering vs csf rules needs care |
-| **B. csf-native ipset** | register `cf_origin4` with csf so FASTSTART preserves it | uses csf's own machinery | csf has no "drop-all-except-set on ports" primitive; awkward/unsupported |
-| **C. hook + systemd (recommended)** | managed csfpre hook = primary (correct order during `csf -r`); systemd oneshot+timer = re-arm after lfd/FASTSTART races | belt-and-suspenders; single repo owner; survives every reload path | two carriers to keep consistent; must prove they don't duplicate/mis-order |
-
-**Files (repo side, prerequisite of the prod step):**
-- Verify/adjust: `install/swatter-origin-lock.service` and `install/install.sh:_install_origin_lock_systemd` (add `After=csf.service lfd.service`, `Wants=network-online.target`; oneshot `ExecStart=/usr/local/bin/swatter origin-lock apply --yes`).
-- Create: `install/swatter-origin-lock.timer` (`OnBootSec=2min`, `OnUnitActiveSec=5min`, `Persistent=true`).
-- Test: extend `test/persist_test.sh` — unit/timer content assertions (After= ordering, oneshot, apply invocation).
-
-- [ ] **Step 1 (repo, TDD): timer/unit content test** — assert the generated `.service` has `After=csf.service lfd.service` and `Type=oneshot`, and the `.timer` has `OnUnitActiveSec=5min`. Run → FAIL → implement generator → PASS → commit.
-- [ ] **Step 2 (PROD diagnostic — read-only, run FIRST): characterize reload survival.** On prod, with the CURRENT static block in place, record `iptables -L INPUT --line-numbers -n | grep -nE 'cf_origin4|ORIGIN-LOCK|DROP'` and `ipset list cf_origin4 | grep entries` before/after each of: `csf -r`, `csf -ra`, `systemctl restart lfd`, and (scheduled) a reboot. **This is the empirical answer to §4.** Capture to the handoff evidence log. Do NOT proceed to Step 3 until survival matrix is known.
-- [ ] **Step 3 (PROD, GATED): deploy fixed lib + managed hook in LOG mode.** `scp lib/origin_lock.sh` (Task 0) to `/usr/local/lib/swatter/`. Install the managed csfpre hook (idempotent markers) and set `ORIGIN_LOCK=log` in `/etc/swatter/swatter.conf`. `csf -r`. Verify the managed hook's LOG rules appear and the hand static block is still present (do NOT remove it yet — belt-and-suspenders during validation). Sanity: CF sites 200, direct-origin still blocked (by the static DROP).
-- [ ] **Step 4 (PROD, GATED): install systemd oneshot + timer.** `scp` unit+timer, `systemctl daemon-reload`, `systemctl enable --now swatter-origin-lock.timer`. Confirm `systemctl list-timers | grep swatter` and that a manual `systemctl start swatter-origin-lock.service` re-arms without outage (watch `iptables -L INPUT -n --line-numbers` before/after: CF-ACCEPT line# < DROP line#).
-- [ ] **Step 5 (PROD, GATED): flip managed hook to DROP, retire static block.** Set `ORIGIN_LOCK=drop`; `csf -r`; verify the managed DROP is present and correctly ordered. THEN run `_ol_retire_legacy_static` (Task 1) against `/etc/csf/csfpre.sh` to neutralize the hand block; `csf -r`; verify single-owner enforcement: exactly one CF-ACCEPT/LOG/DROP set, CF-ACCEPT above DROP, DROP above CSF's blanket accept. Re-run the Step-2 survival matrix to confirm the systemd safety-net re-arms after lfd restart.
-- [ ] **Step 6 (PROD verify):** `curl` CF site → 200; `curl --resolve peaceharborhosting.com:443:67.225.133.76` → timeout; confirm `ORIGIN-LOCK:` LOG still records direct hits. Roll-back note: `swatter origin-lock disable` + re-add the static block from git history if anything regresses.
-
----
-
-## Task 3 (PROD, GATED): fix stale `--version` stamp
-
-**Files:** Modify: whatever `version-stamp` / `SWATTER_VERSION` mechanism drives `swatter --version` (verify `bin/swatter` reads `SWATTER_VERSION`); redeploy the version file/lib surgically.
-
-- [ ] **Step 1:** Identify why prod prints `2.2.0` while libs are HEAD (stale `VERSION` file or unstamped deploy). Run: `ssh peaceharbor 'cat /usr/local/lib/swatter/VERSION 2>/dev/null; swatter --version'`.
-- [ ] **Step 2:** Re-stamp to the current release (per memory `swatter-version-bump`: this is a real release action — bump `SWATTER_VERSION`, tag, GitHub+GitLab release if the version changes; if only the prod stamp is stale, redeploy the correct VERSION artifact).
-- [ ] **Step 3:** Verify `ssh peaceharbor 'swatter --version'` matches HEAD.
-
----
-
-## Task 4 (repo-only): docs + CHANGELOG + README
-
-- [ ] **Step 1:** Update `CHANGELOG.md` (Unreleased): the standalone-apply ordering fix, the LOG-teardown fix, install.sh legacy-retire, and the systemd persistence safety-net.
-- [ ] **Step 2:** Update README/origin-lock docs to describe the real deployment model on CSF hosts: **managed csfpre hook (primary) + systemd timer (re-arm)**, and that the hand static block is retired.
-- [ ] **Step 3:** Commit.
-
----
-
-## Task 5 (repo-only): update memory
-
-- [ ] Update `swatter-direct-origin-gap.md` and `swatter-origin-lock-cpanel-cf.md`: (a) §4 anomaly root-caused (trailing-space teardown mismatch → LOG lingered); (b) FASTSTART wipe is intermittent, not absolute; (c) new persistence model (hook + systemd timer); (d) live enforcer was the untracked hand static block until reconciliation.
-
----
-
-## Task 6 (final): Grok adversarial review of THIS plan
-
-- [ ] Submit this document to Grok; save as `docs/superpowers/specs/2026-07-01-origin-lock-persistence-reconciliation-review-grok.md`. Fold blockers (esp. Task 2 ordering-interaction between the csf-hook append and the systemd standalone `-I` re-arm, and the teardown-first window on a live enforcing chain). Only then execute Tasks 2/3.
+- [ ] Run `/grok docs/superpowers/plans/2026-07-01-origin-lock-persistence-reconciliation.md`; save/refresh `…-review-grok.md`. Confirm the single-carrier design clears the Rev-1 blockers (no systemd/standalone-teardown-on-timer, rollback-from-backup, retire tested, LOG-space validated on prod, digest fixed). Fold any new blockers. Only then execute the prod tasks, attended.
 
 ---
 
 ## Self-review notes
 
-- **Spec coverage vs handoff §7:** (1) §5 fix → Task 0 ✓; (2) persistence → Task 2 ✓; (3) arm hook + retire static → Task 2 Step 5 ✓; (4) install.sh legacy detect → Task 1 ✓; (5) version stamp → Task 3 ✓; (6) docs/memory → Tasks 4/5 ✓; (7) Grok review → Task 6 ✓.
-- **Key open risk for Grok:** do the managed csf-hook (`-A` on flushed chain) and the systemd standalone re-arm (`-I`, teardown-first) ever coexist in a way that duplicates rules or lands the DROP above CF-ACCEPT / below CSF's accept? The teardown-first fix (Task 0) makes repeated standalone applies safe, but the interaction with csf's own restart timing is the thing to prove on the LOG-mode gate (Task 2 Step 3) before DROP.
+- **Rev-1 Grok blockers, dispositioned:** dual-carrier coexistence → **removed** (no systemd); teardown-first on 5-min timer → **removed** (no timer; the managed hook uses `-A` append, not teardown-first); systemd `--yes`/`After=` → **removed** (no unit); rollback "from git" → **fixed** (csfpre backup, Global Constraints + Task 3 Step 6); retire heuristic fragile/untested → **Task 1** (tested, backup-first, comment-not-delete); LOG-space fake-only → **Task 3 Step 2** (real-iptables prod validation, gated STOP); digest `^MODE=` stale → **Task 2**; preamble single-shot `-D` → **already fixed in Task 0**.
+- **Open question for Grok:** Task 3 Step 3 arms managed straight to DROP (no LOG soak) on the argument that the managed hook reproduces the already-proven lock from the same `cloudflare.cidr`, with the static block still enforcing as the safety net. Is the brief duplicate-owner window (both static + managed DROP present between Step 3 and Step 5) acceptable, or should the static block be retired in the SAME `csf -r` that arms the managed hook (one owner at all times, but no belt-and-suspenders)? Grok to weigh.
