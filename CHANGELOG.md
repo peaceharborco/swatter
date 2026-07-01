@@ -8,11 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- **Report email footer + clearer operator commands.** Added a footer credit —
-  `🪰 Swatter · a Peace Harbor Studios project · GitHub` (links to
-  studios.peaceharbor.com and the public repo) to both the HTML and text bodies.
-  Reworded the CLI help line so it explains itself: `swatter why <ip> — why an IP
-  was flagged · swatter unblock <ip> — lift a block`.
+- **Report email redesigned as a triage report card.** The HTML email now leads
+  with a **severity grade (A–F)** and a plain-language recommendation of whether to
+  act, so the reader knows in one glance how bad it is and what to do. Each section
+  (Bad Actors, Origin-Lock, Server Errors) gains a **generated one-line summary**
+  of *who/what and how it was handled*, not just counts. The recommendation can
+  name an operator's triage command via the new `REPORT_TRIAGE_HINT` config
+  (shown as type-this text, never a link; blank by default so the public build
+  suggests nothing bespoke). Grade thresholds are tunable
+  (`REPORT_GRADE_C_ERRORS`, `REPORT_GRADE_D_ERRORS`); blocks never escalate the
+  grade (they mean Swatter is working). Server-error wording changed from
+  "Genuine" to **Non-Fatal** vs Fatal. Labels are Title Case; the footer credit
+  (`🪰 Swatter · a Peace Harbor Studios project · GitHub`) and the self-explaining
+  CLI help line (`swatter why <ip> — why an IP was flagged`) carry through both the
+  HTML and text bodies.
 
 ### Fixed
 - **Report sender name now shows the server, not just "Swatter".** The default
