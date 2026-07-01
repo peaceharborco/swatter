@@ -419,4 +419,10 @@ swatter_report() {
 
     local html; html="$(_report_render_html "$body")"
     _report_send "$subject" "$body" "$html"
+
+    # Second channel: SMS on a severe grade (D/F by default). Fail-soft — never
+    # blocks the email. --test forces a [TEST] SMS so Twilio setup can be verified.
+    if declare -F swatter_alert_on_grade >/dev/null; then
+        if (( test_mode )); then swatter_alert_on_grade --test; else swatter_alert_on_grade; fi
+    fi
 }
