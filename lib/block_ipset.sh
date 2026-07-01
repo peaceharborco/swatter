@@ -49,12 +49,14 @@ swatter_ipset_temp() {
     if [[ "${SWATTER_MODE}" != "enforce" ]]; then
         log_info "[dry-run] ipset add ${ip} timeout ${ttl} (${reason})"; return 0
     fi
-    [[ "${SWATTER_HAVE_IPSET}" -eq 1 ]] || { log_error "ipset not found; cannot temp-deny ${ip}"; return 1; }
+    [[ "${SWATTER_HAVE_IPSET}" -eq 1 ]] || { SWATTER_LAST_BACKEND_ERR="ipset not found"; log_error "ipset not found; cannot temp-deny ${ip}"; return 1; }
     set="$(_ipset_set_for "$ip")"
-    if ipset add "$set" "$ip" timeout "$ttl" -exist 2>/dev/null; then
+    local _ierr
+    if _ierr="$(ipset add "$set" "$ip" timeout "$ttl" -exist 2>&1 >/dev/null)"; then
         SWATTER_IPSET_DENIES_THIS_RUN=$(( SWATTER_IPSET_DENIES_THIS_RUN + 1 ))
         log_info "ipset temp-deny ${ip} for ${ttl}s (${reason})"; return 0
     fi
+    SWATTER_LAST_BACKEND_ERR="ipset add failed${_ierr:+: $(printf '%s' "$_ierr" | tr '\n' ' ' | cut -c1-160)}"
     log_error "ipset add ${ip} failed"; return 1
 }
 
@@ -66,13 +68,15 @@ swatter_ipset_perm() {
     if [[ "${SWATTER_MODE}" != "enforce" ]]; then
         log_info "[dry-run] ipset add ${ip} timeout 0 (${reason})"; return 0
     fi
-    [[ "${SWATTER_HAVE_IPSET}" -eq 1 ]] || { log_error "ipset not found; cannot perm-deny ${ip}"; return 1; }
+    [[ "${SWATTER_HAVE_IPSET}" -eq 1 ]] || { SWATTER_LAST_BACKEND_ERR="ipset not found"; log_error "ipset not found; cannot perm-deny ${ip}"; return 1; }
     set="$(_ipset_set_for "$ip")"
-    if ipset add "$set" "$ip" timeout 0 -exist 2>/dev/null; then
+    local _ierr
+    if _ierr="$(ipset add "$set" "$ip" timeout 0 -exist 2>&1 >/dev/null)"; then
         SWATTER_IPSET_DENIES_THIS_RUN=$(( SWATTER_IPSET_DENIES_THIS_RUN + 1 ))
         _ipset_save
         log_info "ipset PERM-deny ${ip} (${reason})"; return 0
     fi
+    SWATTER_LAST_BACKEND_ERR="ipset add failed${_ierr:+: $(printf '%s' "$_ierr" | tr '\n' ' ' | cut -c1-160)}"
     log_error "ipset add ${ip} failed"; return 1
 }
 

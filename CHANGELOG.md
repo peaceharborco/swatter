@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Direct-plane (CSF/ipset) block failures now record their cause too.** Extends
+  the v2.4.1 CF diagnosability to the direct plane: `swatter_csf_temp/perm` and
+  `swatter_ipset_temp/perm` capture the command's stderr (or "csf/ipset not found")
+  into `SWATTER_LAST_BACKEND_ERR` on failure, so a `failed` CSF/ipset decision
+  carries `evidence.backend_err` just like a CF one. Same command, same effect,
+  exit code preserved — the safety-critical block path is unchanged, only stderr
+  is captured instead of discarded.
+
 ## [2.4.1] - 2026-07-01
 
 ### Added

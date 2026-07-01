@@ -35,9 +35,18 @@ swatter_csf_perm 9.9.9.9 r; check cap-perm-rc "$?" "$SWATTER_RC_CAP"
 swatter_csf_temp 9.9.9.8 3600 r; check cap-temp-rc "$?" "$SWATTER_RC_CAP"
 [[ -s "$CALLS" ]] && check cap-nocall "called" "uncalled" || check cap-nocall "uncalled" "uncalled"
 
-# missing csf binary -> genuine failure (1), distinct from the cap.
-SWATTER_CSF_DENIES_THIS_RUN=0; SWATTER_HAVE_CSF=0
+# missing csf binary -> genuine failure (1), distinct from the cap, WITH a cause.
+SWATTER_CSF_DENIES_THIS_RUN=0; SWATTER_HAVE_CSF=0; SWATTER_LAST_BACKEND_ERR=""
 swatter_csf_perm 1.2.3.4 r; check nocsf-rc "$?" "1"
+check nocsf-cause "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'csf binary not found')" "1"
+
+# csf COMMAND failure -> cause captured from stderr (diagnosability).
+SWATTER_HAVE_CSF=1; SWATTER_CSF_DENIES_THIS_RUN=0; SWATTER_LAST_BACKEND_ERR=""
+csf() { echo "csf: could not add to deny list" >&2; return 1; }
+swatter_csf_temp 1.2.3.4 3600 r; check csffail-rc "$?" "1"
+check csffail-cause  "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'csf -td failed')" "1"
+check csffail-stderr "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'could not add to deny list')" "1"
+csf() { echo "csf $*" >> "$CALLS"; return 0; }   # restore
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
