@@ -45,9 +45,20 @@ swatter_abuseipdb_report() {
     rule="$(printf '%s' "$ev" | sed -n 's/.*"decisive_rule":"\([^"]*\)".*/\1/p')"
     cats="$(_abuseipdb_categories "$rule")"
     comment="Swatter: ${reason}"   # short, no log contents / PII
-    ( curl --max-time 5 -fsS -X POST "${ABUSEIPDB_REPORT_URL}" \
-        -H "Key: ${ABUSEIPDB_KEY}" -H "Accept: application/json" \
+    # API key via -K config file, never argv (visible in `ps` on a shared box).
+    # Created synchronously; the background subshell removes it after the POST.
+    local cfg
+    cfg="$(swatter_curl_cfg "header = \"Key: ${ABUSEIPDB_KEY}\"")" || { rm -f "$marker"; return 0; }
+    # On failure: log the cause and REMOVE the dedup marker so the next confirmed
+    # block retries — a revoked key must not silently mute reporting per-IP for
+    # the whole TTL with zero operator visibility.
+    ( _abuse_err="$(curl --max-time 5 -fsS -X POST "${ABUSEIPDB_REPORT_URL}" \
+        -K "$cfg" -H "Accept: application/json" \
         --data-urlencode "ip=${ip}" --data-urlencode "categories=${cats}" \
-        --data-urlencode "comment=${comment}" >/dev/null 2>&1 || true ) &
+        --data-urlencode "comment=${comment}" 2>&1 >/dev/null)" || {
+          rm -f "$marker" 2>/dev/null
+          log_warn "abuseipdb report ${ip} failed${_abuse_err:+: $(printf '%s' "${_abuse_err//${ABUSEIPDB_KEY}/***}" | tr '\n' ' ' | cut -c1-160)} (marker cleared for retry)"
+      }
+      rm -f "$cfg" ) &
     return 0
 }

@@ -44,14 +44,22 @@ swatter_intel_init() {
 }
 
 # Refresh every list feed: call provider_<p>_refresh for each configured provider
-# that defines one (per-IP providers define none and are skipped).
+# that defines one (per-IP providers define none and are skipped). Partial
+# failures warn (stale lists still score); ALL refresh-capable feeds failing
+# returns 1 so refresh-feeds cron can alert instead of reporting exit 0.
 swatter_intel_refresh_all() {
-    local p
+    local p tried=0 failed=0
     for p in ${INTEL_PROVIDERS}; do
         if declare -F "provider_${p}_refresh" >/dev/null; then
-            provider_"${p}"_refresh || true
+            tried=$(( tried + 1 ))
+            provider_"${p}"_refresh || failed=$(( failed + 1 ))
         fi
     done
+    if (( failed > 0 )); then
+        log_warn "intel refresh: ${failed}/${tried} feed(s) failed (stale lists remain in use)"
+        (( failed == tried )) && return 1
+    fi
+    return 0
 }
 
 # Has intel at all? (used to decide whether to fold W_REPUTATION into the score)

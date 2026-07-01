@@ -46,6 +46,15 @@ swatter_notify "fail closed" "denies disabled" "fail_closed"; settle
 : > "$MAILED"; swatter_notify "manual test" "x"; settle; swatter_notify "manual test" "x"; settle
 check unkeyed-always "$(wc -l < "$MAILED" | tr -d ' ')" "2"
 
+# Channel failure logs a bounded CAUSE (curl's stderr), not a bare "failed".
+curl() { echo "curl: (22) The requested URL returned error: 403" >&2; return 22; }
+ERR="$STATE_DIR/err"
+_notify_sms "s" "b" 2> "$ERR"
+grep -q '403' "$ERR" && PASS=$((PASS+1)) || { echo "FAIL sms-fail-cause"; FAIL=$((FAIL+1)); }
+: > "$ERR"
+_notify_webhook "s" "b" 2> "$ERR"
+grep -q '403' "$ERR" && PASS=$((PASS+1)) || { echo "FAIL webhook-fail-cause"; FAIL=$((FAIL+1)); }
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

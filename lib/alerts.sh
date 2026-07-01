@@ -30,18 +30,25 @@ _alert_sms_twilio() {
     local token; token="$(cat "${TWILIO_TOKEN_FILE}")"
     # TWILIO_FROM may be a phone number (+1…) or a Messaging Service SID (MG…).
     local fromkey="From"; [[ "${TWILIO_FROM}" == MG* ]] && fromkey="MessagingServiceSid"
-    local code
-    code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' \
-        -u "${TWILIO_SID}:${token}" \
+    # SID:token via -K config file, never argv (visible in `ps` on a shared box).
+    local cfg resp code
+    cfg="$(swatter_curl_cfg "user = \"${TWILIO_SID}:${token}\"")" || { log_error "alerts: cannot create curl config"; return 1; }
+    # Keep the response BODY: on failure it carries Twilio's actionable cause
+    # (auth error, unverified number, ...) that a bare "HTTP 401" hides.
+    resp="$(curl -sS --max-time 15 -w '\n%{http_code}' \
+        -K "$cfg" \
         --data-urlencode "${fromkey}=${TWILIO_FROM}" \
         --data-urlencode "To=${to}" \
         --data-urlencode "Body=${body}" \
-        "https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json" 2>/dev/null)"
+        "https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json" 2>&1)"
+    rm -f "$cfg"
+    code="${resp##*$'\n'}"; local rbody="${resp%"${code}"}"; rbody="${rbody%$'\n'}"
     if [[ "$code" =~ ^2 ]]; then
         log_info "alerts: SMS sent to ${to} via Twilio (${code})"
         return 0
     fi
-    log_error "alerts: Twilio SMS failed (HTTP ${code:-000})"
+    rbody="${rbody//${token}/***}"
+    log_error "alerts: Twilio SMS failed (HTTP ${code:-000})${rbody:+: $(printf '%s' "$rbody" | tr '\n' ' ' | cut -c1-200)}"
     return 1
 }
 

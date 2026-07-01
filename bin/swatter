@@ -142,14 +142,23 @@ cmd_unblock() {
     swatter_validate_ip_or_cidr "$ip"
     [[ "${2:-}" == "--perm-allow" ]] && perm_allow=1
     swatter_store_init
-    swatter_block_direct_unblock "$ip"
-    swatter_cf_unblock "$ip"
+    # A backend failure must surface: nonzero exit + cause, never a false
+    # "unblocked" while a deny/CF rule is still live. The ledger is still
+    # cleared (perm flag off) so a later retry isn't blocked by stale state.
+    local unblock_failed=0
+    SWATTER_LAST_BACKEND_ERR=""
+    swatter_block_direct_unblock "$ip" || unblock_failed=1
+    swatter_cf_unblock "$ip" || unblock_failed=1
     swatter_store_unblock "$ip"
     if (( perm_allow )); then
         cmd_allow "$ip" "perm-allow after unblock"
         if [[ "${SWATTER_HAVE_CSF}" -eq 1 && "${SWATTER_MODE}" == "enforce" ]]; then
             csf -a "$ip" "swatter allowlist" >/dev/null 2>&1 || true
         fi
+    fi
+    if (( unblock_failed )); then
+        echo "unblock ${ip} INCOMPLETE — a backend failed${SWATTER_LAST_BACKEND_ERR:+ (${SWATTER_LAST_BACKEND_ERR})}; blocks may still be live" >&2
+        exit 1
     fi
     echo "unblocked ${ip}"
 }
@@ -200,28 +209,37 @@ cmd_report() {
 
 cmd_refresh_feeds() {
     swatter_init_dirs
+    local rc=0
     # Cloudflare ranges (always — they gate the never-block set).
     if [[ "${SWATTER_HAVE_CURL}" -eq 1 ]]; then
         local cf4 cf6 tmp; tmp="$(mktemp)"
         cf4="$(curl --max-time 20 -fsS https://www.cloudflare.com/ips-v4 2>/dev/null)"
         cf6="$(curl --max-time 20 -fsS https://www.cloudflare.com/ips-v6 2>/dev/null)"
-        if [[ -n "$cf4" ]]; then
+        if [[ -z "$cf4" ]]; then
+            log_warn "cloudflare range download failed (keeping existing ${CLOUDFLARE_IPS_FILE})"
+            rc=1
+        elif ! printf '%s\n%s\n' "$cf4" "$cf6" | swatter_cidr_list_ok; then
+            # A 200 with a non-CIDR body (captive portal / intercepting proxy /
+            # error page) must NEVER replace the file that gates the never-block
+            # set — a poisoned list could let a CF edge be CSF-denied.
+            log_error "cloudflare range download INVALID (non-CIDR body) — keeping existing ${CLOUDFLARE_IPS_FILE}"
+            rc=1
+        else
             { printf '%s\n' "$cf4"; printf '%s\n' "$cf6"; } > "$tmp"
             install -m 0644 "$tmp" "${CLOUDFLARE_IPS_FILE}" 2>/dev/null || cp "$tmp" "${CLOUDFLARE_IPS_FILE}"
             log_info "cloudflare ranges refreshed -> ${CLOUDFLARE_IPS_FILE}"
-        else
-            log_warn "cloudflare range download failed"
         fi
         rm -f "$tmp"
     fi
-    # Intel feeds.
+    # Intel feeds. All-feeds-failed propagates so cron can alert.
     swatter_intel_init
-    swatter_intel_refresh_all
+    swatter_intel_refresh_all || rc=1
 
     # Re-run Cloudflare posture detection now that ranges are fresh. Only matters
     # for CF_MODE=auto, but caching it always keeps `status`/`test-config`
     # informative regardless of mode.
     swatter_detect_cf >/dev/null
+    return "$rc"
 }
 
 cmd_test_config() {

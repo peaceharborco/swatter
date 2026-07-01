@@ -61,13 +61,23 @@ swatter_csf_perm() {
     log_error "csf -d ${ip} failed"; return 1
 }
 
-# swatter_csf_unblock <ip> : remove temp and permanent denies.
+# swatter_csf_unblock <ip> : remove temp and permanent denies. A failed removal
+# must NOT report success — the deny may still be live and the operator would
+# walk away believing the IP is clear (the unblock twin of block diagnosability).
 swatter_csf_unblock() {
     local ip="$1"
     if [[ "${SWATTER_HAVE_CSF}" -ne 1 ]]; then
         log_warn "csf not found; nothing to unblock for ${ip}"; return 0
     fi
-    csf -tr "$ip" >/dev/null 2>&1 || true     # remove temp
-    csf -dr "$ip" >/dev/null 2>&1 || true     # remove permanent
+    # csf -tr/-dr exit 0 for "not in list", so a nonzero rc here is a genuine
+    # command failure worth surfacing, not an unblock of a never-blocked IP.
+    local _e _cerr="" rc=0
+    _e="$(csf -tr "$ip" 2>&1 >/dev/null)" || { rc=1; _cerr="$_e"; }     # remove temp
+    _e="$(csf -dr "$ip" 2>&1 >/dev/null)" || { rc=1; _cerr="${_cerr:-$_e}"; }   # remove permanent
+    if (( rc )); then
+        SWATTER_LAST_BACKEND_ERR="csf unblock failed${_cerr:+: $(printf '%s' "$_cerr" | tr '\n' ' ' | cut -c1-160)}"
+        log_error "csf unblock ${ip} FAILED — deny may still be live (${SWATTER_LAST_BACKEND_ERR})"
+        return 1
+    fi
     log_info "csf unblock ${ip} (temp+perm removed)"
 }

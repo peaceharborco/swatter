@@ -59,6 +59,14 @@ rec4="$(tail -1 "$LOG_DIR/decisions.jsonl")"
 check direct-channel        "$(printf '%s' "$rec4" | jq -r '.channel')" "csf"
 check direct-cause-recorded "$(printf '%s' "$rec4" | jq -r '.evidence.backend_err')" "csf -td failed: deny list full"
 
+# The audit trail itself must not fail silently: an unwritable decisions.jsonl
+# (disk full / perms) logs an ERROR — blocks landing on the firewall with no
+# record would silently break caps, escalation, and every /server-logs count.
+LOG_DIR_SAVE="$LOG_DIR"; LOG_DIR="/nonexistent-swatter-audit-dir"
+auderr="$(_swatter_audit 1.2.3.4 90 temp csf 3600 r '{}' 0 2>&1)"
+case "$auderr" in *"audit write FAILED"*) PASS=$((PASS+1));; *) echo "FAIL audit-fail-loud"; FAIL=$((FAIL+1));; esac
+LOG_DIR="$LOG_DIR_SAVE"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

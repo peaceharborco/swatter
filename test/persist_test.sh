@@ -23,6 +23,18 @@ swatter_store_sighting_add 1.2.3.4 55 3600
 swatter_store_sighting_add 1.2.3.4 60 3600
 check same-bucket-dedup "$(swatter_store_sighting_buckets 1.2.3.4 3)" "1"
 
+# sqlite errors must SURFACE (bounded warn on stderr, rc propagated) instead of
+# vanishing into 2>/dev/null — a locked/unwritable DB silently diverging the
+# ledger from the firewall is undiagnosable. stdout stays clean for parsers.
+_sqlerr="$STATE_DIR/sqlerr"
+STATE_DIR_SAVE="$STATE_DIR"; STATE_DIR="/nonexistent-swatter-db-dir"
+out="$(_sql "SELECT 1;" 2>"$_sqlerr")"; rc=$?
+STATE_DIR="$STATE_DIR_SAVE"
+check sql-fail-rc "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check sql-fail-stdout-clean "$out" ""
+grep -q "sqlite error" "$_sqlerr" && PASS=$((PASS+1)) || { echo "FAIL sql-fail-warn"; FAIL=$((FAIL+1)); }
+check sql-ok-stdout "$(_sql "SELECT 42;" 2>/dev/null)" "42"
+
 # Inject 5 older distinct buckets directly, all within 3 days -> 6 total.
 db="$STATE_DIR/swatter.db"
 now=$(swatter_now)

@@ -282,6 +282,28 @@ if ! grep -qF 'swatter origin-lock apply --hook=csf' "$CSFPRE_FIXTURE" \
 if [[ ! -f "$UNIT_FIXTURE" ]]; then PASS=$((PASS+1)); else echo "FAIL disable-removes-unit"; FAIL=$((FAIL+1)); fi
 SWATTER_OL_CSFPRE="$TMP/csfpre.none"; SWATTER_OL_UNIT="$TMP/unit.none"
 
+# ===========================================================================
+# 15. PARTIAL apply failure -> loud INCOMPLETE error, rc 1, fail-open teardown.
+#     A swallowed mid-apply iptables error can leave a half-built chain (worst
+#     case DROP without its CF-ACCEPT = total origin outage) while the log says
+#     "origin-lock applied". The op errors must be counted+surfaced and the
+#     rules torn back down (fail-open spine) instead of claiming success.
+# ===========================================================================
+: > "$CALLS"
+ORIGIN_LOCK="drop"
+iptables() { echo "iptables $*" >> "$CALLS"
+    [[ "$1" == "-D" ]] && return 1
+    [[ "$1" == "-C" ]] && return 1
+    case "$*" in *"-j DROP"*) echo "iptables: Resource temporarily unavailable" >&2; return 4;; esac
+    return 0; }
+cmd_origin_lock apply --hook=csf --yes 2>"$TMP/olerr"; rc=$?
+check partial-rc "$([[ "$rc" -ne 0 ]] && echo nz || echo z)" "nz"
+grep -q "INCOMPLETE" "$TMP/olerr" && PASS=$((PASS+1)) || { echo "FAIL partial-incomplete-logged"; FAIL=$((FAIL+1)); }
+grep -q "Resource temporarily unavailable" "$TMP/olerr" && PASS=$((PASS+1)) || { echo "FAIL partial-cause"; FAIL=$((FAIL+1)); }
+has partial-failopen-teardown "iptables -D INPUT"
+iptables() { echo "iptables $*" >> "$CALLS"; [[ "$1" == "-C" ]] && return "${IPT_CHECK_RC:-1}"; return 0; }
+ORIGIN_LOCK="log"
+
 # --- origin-lock digest section ---------------------------------------------
 OLD_STATE="$STATE_DIR"
 DIG="$(mktemp -d "${TMPDIR:-/tmp}/swatter-oldig.XXXXXX")"; STATE_DIR="$DIG"

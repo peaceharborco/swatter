@@ -60,6 +60,25 @@ INTEL_PROVIDERS="aaa bbb ccc"
 swatter_intel_refresh_all
 check refresh-all "$RAN" "aaa bbb "
 
+# refresh_all aggregates: partial failure warns but rc 0 (stale lists still
+# usable); ALL refresh-capable feeds failing -> rc 1 so cron can alert.
+provider_f1_refresh() { return 1; }
+provider_f2_refresh() { return 1; }
+provider_okk_refresh() { return 0; }
+INTEL_PROVIDERS="f1 okk"
+swatter_intel_refresh_all 2>/dev/null; check refresh-partial-rc "$?" "0"
+INTEL_PROVIDERS="f1 f2"
+swatter_intel_refresh_all 2>/dev/null; check refresh-allfail-rc "$?" "1"
+
+# ipsum refresh must never install an EMPTY 200 body over a populated feed.
+source "${ROOT}/lib/providers/ipsum.sh"
+SWATTER_HAVE_CURL=1
+mkdir -p "$STATE_DIR/feeds"; printf '9.9.9.9\n' > "$STATE_DIR/feeds/ipsum.txt"
+curl() { local prev="" a out=""; for a in "$@"; do [[ "$prev" == "-o" ]] && out="$a"; prev="$a"; done; : > "$out"; return 0; }
+provider_ipsum_refresh 2>/dev/null; check ipsum-empty-rc "$?" "1"
+check ipsum-empty-kept "$(cat "$STATE_DIR/feeds/ipsum.txt")" "9.9.9.9"
+unset -f curl
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

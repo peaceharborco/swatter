@@ -32,11 +32,19 @@ _mailer_brevo() {
         htmlContent:(if $html=="" then null else $html end),
         textContent:$body
     } | with_entries(select(.value != null))')"
-    code="$(curl -sS --max-time 15 -X POST "https://api.brevo.com/v3/smtp/email" \
-        -H "api-key: ${key}" -H "Content-Type: application/json" -H "Accept: application/json" \
-        --data "$payload" -o /dev/null -w '%{http_code}')"
+    # API key via -K config file, never argv (visible in `ps` on a shared box).
+    local cfg resp
+    cfg="$(swatter_curl_cfg "header = \"api-key: ${key}\"")" || { log_error "brevo: cannot create curl config"; return 1; }
+    # Keep the response BODY: on failure it carries the actionable cause (bad
+    # key, unverified sender, ...) that a bare "HTTP 401" hides.
+    resp="$(curl -sS --max-time 15 -X POST "https://api.brevo.com/v3/smtp/email" \
+        -K "$cfg" -H "Content-Type: application/json" -H "Accept: application/json" \
+        --data "$payload" -w '\n%{http_code}' 2>&1)"
+    rm -f "$cfg"
+    code="${resp##*$'\n'}"; local body="${resp%"${code}"}"; body="${body%$'\n'}"
     if [[ "$code" == "201" || "$code" == "202" ]]; then log_info "report sent to ${to} via Brevo (${code})"; return 0; fi
-    log_error "Brevo send failed (HTTP ${code})"; return 1
+    body="${body//${key}/***}"
+    log_error "Brevo send failed (HTTP ${code:-000})${body:+: $(printf '%s' "$body" | tr '\n' ' ' | cut -c1-200)}"; return 1
 }
 
 _mailer_sendmail() {
@@ -79,9 +87,17 @@ _mailer_sendgrid() {
         subject:$subj,
         content:( [{type:"text/plain",value:$body}] + (if $html=="" then [] else [{type:"text/html",value:$html}] end) )
     }')"
-    code="$(curl -sS --max-time 15 -X POST "https://api.sendgrid.com/v3/mail/send" \
-        -H "Authorization: Bearer ${key}" -H "Content-Type: application/json" \
-        --data "$payload" -o /dev/null -w '%{http_code}')"
+    # API key via -K config file, never argv (visible in `ps` on a shared box).
+    local cfg resp
+    cfg="$(swatter_curl_cfg "header = \"Authorization: Bearer ${key}\"")" || { log_error "sendgrid: cannot create curl config"; return 1; }
+    # Keep the response BODY: on failure it carries the actionable cause (bad
+    # key, unverified sender, ...) that a bare "HTTP 403" hides.
+    resp="$(curl -sS --max-time 15 -X POST "https://api.sendgrid.com/v3/mail/send" \
+        -K "$cfg" -H "Content-Type: application/json" \
+        --data "$payload" -w '\n%{http_code}' 2>&1)"
+    rm -f "$cfg"
+    code="${resp##*$'\n'}"; local body="${resp%"${code}"}"; body="${body%$'\n'}"
     if [[ "$code" == "202" ]]; then log_info "report sent to ${to} via SendGrid (202)"; return 0; fi
-    log_error "SendGrid send failed (HTTP ${code})"; return 1
+    body="${body//${key}/***}"
+    log_error "SendGrid send failed (HTTP ${code:-000})${body:+: $(printf '%s' "$body" | tr '\n' ' ' | cut -c1-200)}"; return 1
 }

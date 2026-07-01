@@ -38,10 +38,13 @@ swatter_ipset_perm 5.6.7.8 r; has perm "ipset add swatter4 5.6.7.8 timeout 0 -ex
 has perm-save-v4 "ipset save swatter4"
 has perm-save-v6 "ipset save swatter6"
 grep -qF "ipset save" "$CALLS" && ! grep -qE 'ipset save$' "$CALLS" && PASS=$((PASS+1)) || { echo "FAIL save-not-bare"; FAIL=$((FAIL+1)); }
-# unblock -> del from both sets.
-: > "$CALLS"; swatter_ipset_unblock 5.6.7.8
+# unblock -> del from the family-matching set only (a cross-family del is a
+# guaranteed parse error on real ipset, which would now read as a false failure).
+: > "$CALLS"; swatter_ipset_unblock 5.6.7.8; check unb-v4-rc "$?" "0"
 has unb-v4 "ipset del swatter4 5.6.7.8 -exist"
-has unb-v6 "ipset del swatter6 5.6.7.8 -exist"
+grep -qF "ipset del swatter6 5.6.7.8" "$CALLS" && { echo "FAIL unb-v4-not-v6"; FAIL=$((FAIL+1)); } || PASS=$((PASS+1))
+: > "$CALLS"; swatter_ipset_unblock 2001:db8::1; check unb-v6-rc "$?" "0"
+has unb-v6 "ipset del swatter6 2001:db8::1 -exist"
 
 # dry-run: no ipset add.
 : > "$CALLS"; SWATTER_MODE="report"
@@ -52,6 +55,24 @@ SWATTER_MODE="enforce"
 # cap: once SWATTER_IPSET_DENIES_THIS_RUN hits MAX, returns 2.
 SWATTER_IPSET_DENIES_THIS_RUN=10
 swatter_ipset_perm 8.8.8.8 r; check cap-rc "$?" "2"
+
+# ipset COMMAND failure -> rc 1 + cause captured from stderr (mirrors the CSF
+# twin's diagnosability contract; score.sh records it on the failed decision).
+ipset() { echo "ipset v7: Kernel error received: No buffer space available" >&2; return 1; }
+SWATTER_IPSET_DENIES_THIS_RUN=0; SWATTER_LAST_BACKEND_ERR=""
+swatter_ipset_temp 1.2.3.9 60 r 2>/dev/null; check addfail-temp-rc "$?" "1"
+check addfail-temp-cause  "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'ipset add failed')" "1"
+check addfail-temp-stderr "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'No buffer space')" "1"
+SWATTER_LAST_BACKEND_ERR=""
+swatter_ipset_perm 1.2.3.9 r 2>/dev/null; check addfail-perm-rc "$?" "1"
+check addfail-perm-cause "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'ipset add failed')" "1"
+# UNBLOCK failure -> rc 1 + cause (a failed del must not report success).
+SWATTER_LAST_BACKEND_ERR=""
+swatter_ipset_unblock 5.6.7.8 2>/dev/null; check unbfail-rc "$?" "1"
+check unbfail-cause  "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'ipset del failed')" "1"
+check unbfail-stderr "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'No buffer space')" "1"
+# restore the recording mock.
+ipset() { if [[ "$1" == "save" ]]; then echo "ipset $*" >> "$CALLS"; echo "create $2 hash:ip"; else echo "ipset $*" >> "$CALLS"; fi; return 0; }
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"

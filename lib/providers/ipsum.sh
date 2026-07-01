@@ -12,12 +12,14 @@ IPSUM_FEED_URL="https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.tx
 provider_ipsum_refresh() {
     local out="${STATE_DIR}/feeds/ipsum.txt"
     [[ "${SWATTER_HAVE_CURL}" -eq 1 ]] || { log_warn "ipsum refresh needs curl"; return 1; }
-    if curl --max-time 30 -fsS "${IPSUM_FEED_URL}" -o "${out}.tmp" 2>/dev/null; then
+    # -s guard mirrors listfeeds.sh: an empty 200 body must not clobber a
+    # populated feed with nothing.
+    if curl --max-time 30 -fsS "${IPSUM_FEED_URL}" -o "${out}.tmp" 2>/dev/null && [[ -s "${out}.tmp" ]]; then
         mv "${out}.tmp" "$out"
         log_info "ipsum feed refreshed ($(wc -l < "$out" 2>/dev/null) entries)"
     else
         rm -f "${out}.tmp" 2>/dev/null
-        log_warn "ipsum feed download failed"; return 1
+        log_warn "ipsum feed download failed or empty"; return 1
     fi
 }
 

@@ -7,10 +7,10 @@
 # blocked at the Cloudflare WAF, never at CSF. Only offenders we can prove hit
 # the origin DIRECTLY (raw IP / cPanel service ports) are CSF-denied.
 #
-# classify() returns one of: DIRECT | VIA_CF | BOTH
+# classify() returns one of: DIRECT | VIA_CF
 #   DIRECT -> CSF deny is safe (the socket is the attacker)
-#   VIA_CF -> Cloudflare-plane only (the socket is a CF edge)
-#   BOTH   -> direct evidence AND proxied evidence; act on both planes
+#   VIA_CF -> Cloudflare-plane only (the socket is a CF edge); this is also the
+#             ambiguous/no-direct-evidence default (the safe plane)
 #
 # Portability: on a box NOT behind Cloudflare, every offender is DIRECT, so
 # Swatter works as a plain CSF auto-blocker with zero Cloudflare config.

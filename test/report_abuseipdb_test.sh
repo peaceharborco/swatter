@@ -43,6 +43,17 @@ EV2='{"decisive_rule":"honeypot","honeypot":1}'
 swatter_abuseipdb_report 9.9.9.9 "$EV2" "trap"; wait 2>/dev/null
 grep -q "categories=21,19" "$POSTS" && PASS=$((PASS+1)) || { echo "FAIL cats-honeypot"; FAIL=$((FAIL+1)); }
 
+# POST failure -> cause logged + dedup marker REMOVED so the next confirmed
+# block retries (a revoked key must not silently mute reporting per-IP for the
+# whole TTL with zero operator visibility).
+curl() { echo "curl: (22) The requested URL returned error: 401" >&2; return 22; }
+swatter_abuseipdb_report 7.7.7.7 "$EV" "brute" 2> "$STATE_DIR/err"
+[[ -f "$STATE_DIR/reported/7.7.7.7" ]] && PASS=$((PASS+1)) || { echo "FAIL fail-marker-sync"; FAIL=$((FAIL+1)); }
+wait 2>/dev/null
+[[ ! -f "$STATE_DIR/reported/7.7.7.7" ]] && PASS=$((PASS+1)) || { echo "FAIL fail-marker-removed"; FAIL=$((FAIL+1)); }
+grep -q "401" "$STATE_DIR/err" && PASS=$((PASS+1)) || { echo "FAIL fail-cause-logged"; FAIL=$((FAIL+1)); }
+curl() { printf '%s\n' "$*" >> "$POSTS"; return 0; }   # restore
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

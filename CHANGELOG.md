@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **Secrets no longer ride in curl argv.** The CF bearer token, SendGrid/Brevo
+  API keys, Twilio SID:token, and the AbuseIPDB key were passed as `-H`/`-u`
+  command-line arguments — world-readable in `/proc/<pid>/cmdline`, so on a
+  shared box any local user running `ps` during a scan could capture them. All
+  credentialed curl calls now pass secrets via a mode-0600 config file
+  (`curl -K`), created per call and removed immediately after
+  (`swatter_curl_cfg` in lib/common.sh). Pinned by test/curl_secrets_test.sh.
+
+### Fixed
+- **Unblock failures are no longer silent (both planes).** `swatter unblock`
+  previously printed "unblocked" and exited 0 even when every backend removal
+  failed — worst case, `swatter_cf_unblock` dropped the IP's `cf-rules.tsv`
+  refs even when the CF API delete FAILED, orphaning a live Cloudflare rule
+  with no handle left to ever remove it. Now: a failed CF delete keeps the ref
+  (retry + expiry sweep still own it) and logs the cause; CSF (`csf -tr/-dr`)
+  and ipset (`ipset del`) unblocks capture stderr and fail loudly; ipset
+  unblock dels only the family-matching set (the cross-family del was a
+  guaranteed parse error); and `swatter unblock` exits nonzero with an
+  "INCOMPLETE" message when any backend failed.
+- **Cloudflare range refresh validates before installing.** `refresh-feeds`
+  wrote ANY non-empty download straight to `cloudflare.cidr` — a 200 with an
+  HTML error page (captive portal / intercepting proxy) would poison the file
+  that gates the never-block set. Every line must now parse as an IP/CIDR
+  (`swatter_cidr_list_ok`) or the existing file is kept and the command exits
+  nonzero. `refresh-feeds` also propagates failure (CF download failed, or ALL
+  intel feeds failed) as a nonzero exit so cron can alert, and the ipsum feed
+  refuses to overwrite a populated list with an empty 200 body (mirrors the
+  listfeeds `-s` guard).
+- **Origin-lock partial applies fail loud and fail open.** iptables/ipset
+  errors during `origin-lock apply` were discarded (`2>/dev/null`), so a
+  mid-apply failure could leave a half-built chain — worst case a DROP whose
+  CF-ACCEPT never landed (total origin outage) — while the log claimed
+  "origin-lock applied". Every firewall op is now error-counted; on any
+  failure the apply logs "INCOMPLETE" with the first captured stderr, tears
+  its rules back down (fail-open spine), and returns 1.
+- **Outbound send failures now log the response body.** Brevo/SendGrid
+  (lib/mailer.sh), Twilio (lib/alerts.sh, lib/notify.sh), and webhooks logged
+  only the HTTP code (`-o /dev/null`), hiding the provider's actionable cause
+  ("invalid api key", "unverified sender", ...). The body/stderr is now
+  captured into the error line, bounded and key/token-redacted.
+- **AbuseIPDB report failures are visible and retryable.** The backgrounded
+  POST swallowed all errors while the synchronously-written dedup marker
+  suppressed retries — a revoked key silenced reporting per-IP for the whole
+  TTL with zero trace. A failed POST now logs the cause and removes the
+  marker so the next confirmed block retries.
+- **Ledger writes are no longer fire-and-forget.** A failed `decisions.jsonl`
+  append now logs an ERROR (blocks landing on the firewall with no audit
+  record silently broke caps, repeat-escalation, and `/server-logs` counts),
+  and sqlite errors (locked/corrupt/unwritable DB) log a bounded warning with
+  the real sqlite stderr instead of vanishing into `2>/dev/null`. The block
+  path itself is never aborted by either.
+
 ### Added
 - **Direct-plane (CSF/ipset) block failures now record their cause too.** Extends
   the v2.4.1 CF diagnosability to the direct plane: `swatter_csf_temp/perm` and

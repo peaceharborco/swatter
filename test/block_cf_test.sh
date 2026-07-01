@@ -43,14 +43,16 @@ _CF_TOKEN[acctA]="tok"
 SWATTER_MODE="report"
 swatter_cf_block 1.2.3.4 3600 r x.com; check dryrun-ok "$?" "0"
 
-# 5) enforce, missing jq/curl -> genuine failure (1).
+# 5) enforce, missing jq/curl -> genuine failure (1) WITH a cause.
 SWATTER_MODE="enforce"; SWATTER_HAVE_JQ=0
 swatter_cf_block 1.2.3.4 3600 r x.com; check nojq-failed "$?" "1"
+check nojq-cause "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'jq/curl unavailable')" "1"
 SWATTER_HAVE_JQ=1
 
-# 6) zone resolve fails -> genuine failure (1).
+# 6) zone resolve fails -> genuine failure (1) WITH a cause.
 _cf_zone_id() { return 1; }
 swatter_cf_block 1.2.3.4 3600 r x.com; check zonefail-failed "$?" "1"
+check zonefail-cause "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'zone unresolved')" "1"
 _cf_zone_id() { printf 'zone123'; return 0; }
 
 # 7) API says success -> 0.
@@ -140,6 +142,21 @@ _cf_parse_ref "$(printf '9.9.9.9\tZONEID\tRULEID\t123')" \
 _cf_parse_ref "$(printf '9.9.9.9\taccount\tACCTID\tRULEID\t456')" \
   && check parse-scoped-account "${_CFR_SCOPE}/${_CFR_SID}/${_CFR_RID}/${_CFR_EXP}" "account/ACCTID/RULEID/456"
 _cf_parse_ref "" ; check parse-blank-rejected "$?" "1"
+
+# ---- unblock: a failed delete must KEEP the ref and fail loudly -----------
+# Dropping the ref on a failed API delete orphans a live CF rule with no handle
+# left to remove it (unblock retry + expiry sweep both work off cf-rules.tsv).
+refs="${STATE_DIR}/cf-rules.tsv"
+printf '9.9.9.9\tzone\tZID\tR1\t123\n8.8.8.8\tzone\tZID\tR2\t456\n' > "$refs"
+_cf_delete_ref() { return 1; }
+swatter_cf_unblock 9.9.9.9 2>/dev/null; check cfunb-fail-rc "$?" "1"
+check cfunb-fail-ref-kept  "$(grep -c $'^9.9.9.9\t' "$refs")" "1"
+check cfunb-fail-other-kept "$(grep -c $'^8.8.8.8\t' "$refs")" "1"
+# ...and a successful delete removes ONLY this IP's refs (rc 0).
+_cf_delete_ref() { return 0; }
+swatter_cf_unblock 9.9.9.9; check cfunb-ok-rc "$?" "0"
+check cfunb-ok-ref-gone   "$(grep -c $'^9.9.9.9\t' "$refs")" "0"
+check cfunb-ok-other-kept "$(grep -c $'^8.8.8.8\t' "$refs")" "1"
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
