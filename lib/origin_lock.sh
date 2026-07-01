@@ -189,10 +189,15 @@ _ol_preamble_family() {
 _ol_teardown_family() {
     local ipt="$1" set="$2" ports
     ports="$(_ol_ports)"
+    # NOTE: the LOG rule is deleted separately below. Its --log-prefix carries a
+    # trailing space ("ORIGIN-LOCK: "), and -D must match the installed prefix
+    # byte-for-byte. These rule specs are consumed UNQUOTED (word-split into argv),
+    # which collapses a trailing space — so a LOG entry here would never match, and
+    # the rule would linger forever (this is the "only the appended LOG survived"
+    # anomaly from the 2026-06-30 incident §4). It gets its own quoted delete loop.
     local rules=(
         "-p tcp -m multiport --dports ${ports} -m set --match-set ${set} src -j ACCEPT"
         "-p tcp --dport 80 -m string --string /.well-known/ --algo bm -j ACCEPT"
-        "-p tcp -m multiport --dports ${ports} -m limit --limit 5/min -j LOG --log-prefix ORIGIN-LOCK: "
         "-p tcp -m multiport --dports ${ports} -j DROP"
         "-i lo -p tcp -m multiport --dports ${ports} -j ACCEPT"
     )
@@ -207,6 +212,13 @@ _ol_teardown_family() {
             tries=$(( tries + 1 ))
         done
     done
+    # LOG rule — quoted --log-prefix so the trailing space is preserved and the -D
+    # matches what _ol_emit_log installed (see NOTE above).
+    tries=0
+    while (( tries < 20 )) && "$ipt" -D INPUT -p tcp -m multiport --dports "$ports" \
+            -m limit --limit 5/min -j LOG --log-prefix "ORIGIN-LOCK: " 2>/dev/null; do
+        tries=$(( tries + 1 ))
+    done
     # Also drop any -s allow/monitoring preamble accepts.
     local cidr f
     for f in "${OPERATOR_ALLOW_FILE:-}" "${MONITORING_RANGES_FILE:-}"; do
@@ -216,7 +228,14 @@ _ol_teardown_family() {
             [[ -z "$cidr" ]] && continue
             if [[ "$ipt" == "ip6tables" && "$cidr" != *:* ]]; then continue; fi
             if [[ "$ipt" == "iptables"  && "$cidr" == *:* ]]; then continue; fi
-            "$ipt" -D INPUT -s "$cidr" -p tcp -m multiport --dports "$ports" -j ACCEPT 2>/dev/null || true
+            # Loop -D like the core rules above: teardown-first standalone apply
+            # re-adds these every run, so a single -D would let duplicates from
+            # older applies accumulate. Delete until none remain (capped).
+            local ptries=0
+            while (( ptries < 20 )) && \
+                "$ipt" -D INPUT -s "$cidr" -p tcp -m multiport --dports "$ports" -j ACCEPT 2>/dev/null; do
+                ptries=$(( ptries + 1 ))
+            done
         done < "$f"
     done
 }
@@ -292,6 +311,20 @@ swatter_origin_lock_apply() {
     # Fail-open gate.
     if ! _ol_ranges_healthy; then
         return 1
+    fi
+
+    # Standalone teardown-first. The csf hook runs on a chain that `csf -r` has just
+    # flushed, so a plain append lays rules down in a clean, correctly-ordered chain.
+    # The standalone path has NO such flush: on a mode transition (e.g. log -> drop)
+    # the CF/ACME/LOG accepts already exist, their `-C` guards match, and ONLY the new
+    # DROP gets `-I`-prepended — to position 1, ABOVE the CF-ACCEPT — which drops ALL
+    # web traffic including Cloudflare (total origin outage; see 2026-06-30 incident
+    # §5). Tearing down our own rules first (keeping the ipset) guarantees the rebuild
+    # below always starts from a clean chain, so the reverse-emit ordering holds.
+    # (Non-atomic: a sub-second window between teardown and the first DROP insert
+    # exists; the durable atomic-apply belongs to the persistence redesign.)
+    if [[ "$hook" != "csf" ]]; then
+        swatter_origin_lock_teardown no
     fi
 
     # Build the v4 set + rules.
@@ -551,8 +584,17 @@ swatter_originlock_section() {
 
     OL_P80=$(printf '%s\n' "$hits"  | grep -oE 'DPT=80\b'  | grep -c . || true)
     OL_P443=$(printf '%s\n' "$hits" | grep -oE 'DPT=443\b' | grep -c . || true)
-    OL_MODE="$(grep -m1 '^MODE=' "${SWATTER_OL_CSFPRE:-/etc/csf/csfpre.sh}" 2>/dev/null | sed 's/.*=//; s/"//g; s/ .*//' || true)"
-    [[ -n "$OL_MODE" ]] || OL_MODE="$( [[ "$(_ol_mode)" == off ]] && echo "?" || echo "$(_ol_mode)" )"
+    # Effective mode: the conf ORIGIN_LOCK (what the repo-managed csfpre hook
+    # enforces) is authoritative. Only when conf says off do we fall back to a
+    # legacy HAND static block's own MODE= (that block enforces without reading
+    # conf) — so the digest stays correct BOTH before and after the static->managed
+    # reconciliation, instead of trusting a stale/retired static artifact.
+    OL_MODE="$(_ol_mode)"
+    if [[ "$OL_MODE" == off ]]; then
+        local _ol_legacy
+        _ol_legacy="$(grep -m1 '^MODE=' "${SWATTER_OL_CSFPRE:-/etc/csf/csfpre.sh}" 2>/dev/null | sed 's/.*=//; s/"//g; s/ .*//' | tr '[:upper:]' '[:lower:]' || true)"
+        if [[ -n "$_ol_legacy" ]]; then OL_MODE="${_ol_legacy} (static)"; else OL_MODE="?"; fi
+    fi
 
     local srcs; srcs="$(printf '%s\n' "$hits" | grep -oE 'SRC=[0-9a-fA-F:.]+' | sed 's/SRC=//' | sort | uniq -c | sort -rn)"
     OL_IPS=$(printf '%s\n' "$srcs" | grep -c . || true)
