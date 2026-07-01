@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Nightly report now honors `REPORT_CRON_TZ` (DST-aware) and records every send.**
+  The report cron is rendered into its own `/etc/cron.d/swatter-report` instead of
+  being appended to the shared `/etc/cron.d/swatter`. `CRON_TZ` applies to all jobs
+  that follow it in a cron file, so keeping the report in the shared file risked
+  shifting the 5-min scan; a dedicated file scopes the timezone to the report alone
+  (e.g. `America/Los_Angeles` → 4am Pacific, DST-adjusted). The report line now
+  redirects to `/var/log/swatter/report.log`, so a failed send is logged rather
+  than silently discarded by cron's `MAILTO=""`.
+
 ## [2.3.1] - 2026-07-01
 
 ### Fixed
