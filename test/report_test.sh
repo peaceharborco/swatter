@@ -61,6 +61,15 @@ check html-verdict  "$(printf '%s' "$html" | grep -c 'verdict-green')" "1"
 check html-bad      "$(printf '%s' "$html" | grep -c '🛡️ Bad Actors')" "1"
 check html-origin   "$(printf '%s' "$html" | grep -c '🔒 Origin-Lock')" "1"
 check html-no-pre   "$(printf '%s' "$html" | grep -c '<pre')" "0"
+# Footer: branding credit + links, and the clearer operator-command help line.
+check html-footer-phs   "$(printf '%s' "$html" | grep -c 'Peace Harbor Studios')" "1"
+check html-footer-phlink "$(printf '%s' "$html" | grep -c 'studios.peaceharbor.com')" "1"
+check html-footer-gh    "$(printf '%s' "$html" | grep -c 'github.com/peaceharborco/swatter')" "1"
+check html-help-clear   "$(printf '%s' "$html" | grep -c 'why an IP was flagged')" "1"
+# Text body carries the same footer.
+tbody="$(swatter_report_build 24h)"
+check text-footer-phs   "$(printf '%s' "$tbody" | grep -c 'a Peace Harbor Studios project')" "1"
+check text-footer-gh    "$(printf '%s' "$tbody" | grep -c 'github.com/peaceharborco/swatter')" "1"
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Report email footer + clearer operator commands.** Added a footer credit —
+  `🪰 Swatter · a Peace Harbor Studios project · GitHub` (links to
+  studios.peaceharbor.com and the public repo) to both the HTML and text bodies.
+  Reworded the CLI help line so it explains itself: `swatter why <ip> — why an IP
+  was flagged · swatter unblock <ip> — lift a block`.
+
 ### Fixed
 - **Report sender name now shows the server, not just "Swatter".** The default
   `REPORT_FROM_NAME` used parentheses — `Swatter (host.fqdn)` — but RFC 5322 treats

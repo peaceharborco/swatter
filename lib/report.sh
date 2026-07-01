@@ -93,7 +93,13 @@ swatter_report_build() {
 
     echo
     echo "------------------------------------------------------------------"
-    echo "Full evidence:  swatter why <ip>      Abuse log: ${log}"
+    echo "On the server:"
+    echo "  swatter why <ip>      — see why an IP was flagged"
+    echo "  swatter unblock <ip>  — lift a block"
+    echo "Abuse log: ${log}"
+    echo
+    echo "Swatter · a Peace Harbor Studios project — https://studios.peaceharbor.com"
+    echo "GitHub: https://github.com/peaceharborco/swatter"
 }
 
 # The abuse (bad-actor) digest body.
@@ -244,7 +250,8 @@ _report_render_html() {
         printf '</div>'
     fi
 
-    printf '<div style="padding:14px 18px 16px;color:#959da5;font-size:11px"><code>swatter why &lt;ip&gt;</code> for evidence · <code>swatter unblock &lt;ip&gt;</code> to reverse</div>'
+    printf '<div style="padding:14px 18px 4px;color:#959da5;font-size:11px">On the server: <code>swatter why &lt;ip&gt;</code> — why an IP was flagged · <code>swatter unblock &lt;ip&gt;</code> — lift a block</div>'
+    printf '<div style="padding:10px 18px 16px;border-top:1px solid #eaecef;color:#8b949e;font-size:11px;text-align:center">🪰 Swatter · a <a href="https://studios.peaceharbor.com" style="color:#C48A2E;text-decoration:none;font-weight:600">Peace Harbor Studios</a> project · <a href="https://github.com/peaceharborco/swatter" style="color:#C48A2E;text-decoration:none">GitHub</a></div>'
     printf '</div>'
 }
 
