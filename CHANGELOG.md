@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Report sender name now shows the server, not just "Swatter".** The default
+  `REPORT_FROM_NAME` used parentheses — `Swatter (host.fqdn)` — but RFC 5322 treats
+  `(...)` in a From header as a comment that mail clients strip, so the sender
+  displayed as bare "Swatter". Switched to brackets: `Swatter [host.fqdn]`, which
+  display verbatim. A config-defaults test guards against parens regressing.
 - **Nightly report now honors `REPORT_CRON_TZ` (DST-aware) and records every send.**
   The report cron is rendered into its own `/etc/cron.d/swatter-report` instead of
   being appended to the shared `/etc/cron.d/swatter`. `CRON_TZ` applies to all jobs

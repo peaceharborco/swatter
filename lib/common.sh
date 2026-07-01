@@ -149,9 +149,12 @@ REPORT_EMAIL=""
 REPORT_WINDOW="24h"
 REPORT_FROM="swatter@localhost"
 # Display name on the From header. Templated with the server's FQDN so a multi-box
-# fleet self-labels (e.g. "Swatter (cds1.example.com)") with no per-host edit. The
+# fleet self-labels (e.g. "Swatter [cds1.example.com]") with no per-host edit. The
 # subject line is computed per-report (see _report_subject) — not configurable.
-REPORT_FROM_NAME="Swatter ($(hostname -f 2>/dev/null || hostname))"
+# NOTE: brackets, not parentheses — in an email From header RFC 5322 treats "(...)"
+# as a COMMENT that clients strip, so "Swatter (host)" would display as just
+# "Swatter". Brackets are not comment delimiters and display verbatim.
+REPORT_FROM_NAME="Swatter [$(hostname -f 2>/dev/null || hostname)]"
 REPORT_METHOD="sendmail"          # sendmail | sendgrid | brevo
 SENDGRID_KEY_FILE=""
 BREVO_API_KEY=""
