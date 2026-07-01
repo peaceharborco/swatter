@@ -39,12 +39,17 @@ _notify_sms() {
     [[ -n "${ALERT_SMS_TO:-}" && -n "${TWILIO_SID:-}" && -n "${TWILIO_FROM:-}" && -n "${TWILIO_TOKEN_FILE:-}" ]] || return 0
     [[ "${SWATTER_HAVE_CURL}" -eq 1 && -r "${TWILIO_TOKEN_FILE}" ]] || return 0
     local token; token="$(cat "${TWILIO_TOKEN_FILE}" 2>/dev/null)"; [[ -n "$token" ]] || return 0
-    curl --max-time 8 -fsS -X POST \
-        -u "${TWILIO_SID}:${token}" \
+    # SID:token via -K config file, never argv (visible in `ps` on a shared box).
+    local cfg
+    cfg="$(swatter_curl_cfg "user = \"${TWILIO_SID}:${token}\"")" || { log_warn "notify: cannot create curl config"; return 0; }
+    local err
+    err="$(curl --max-time 8 -fsS -X POST \
+        -K "$cfg" \
         --data-urlencode "From=${TWILIO_FROM}" --data-urlencode "To=${ALERT_SMS_TO}" \
         --data-urlencode "Body=swatter: $1" \
-        "https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json" >/dev/null 2>&1 \
-        || log_warn "notify: twilio sms failed"
+        "https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json" 2>&1 >/dev/null)" \
+        || log_warn "notify: twilio sms failed${err:+: $(printf '%s' "${err//${token}/***}" | tr '\n' ' ' | cut -c1-160)}"
+    rm -f "$cfg"
 }
 
 _notify_webhook() {
@@ -74,8 +79,9 @@ _notify_webhook() {
             *)       payload="$(printf '{"host":"%s","subject":"%s","body":"%s"}' "$(_notify_jesc "$host")" "$(_notify_jesc "$1")" "$(_notify_jesc "$2")")" ;;
         esac
     fi
-    curl --max-time 8 -fsS -H "Content-Type: application/json" -d "$payload" "${ALERT_WEBHOOK_URL}" >/dev/null 2>&1 \
-        || log_warn "notify: webhook post failed"
+    local err
+    err="$(curl --max-time 8 -fsS -H "Content-Type: application/json" -d "$payload" "${ALERT_WEBHOOK_URL}" 2>&1 >/dev/null)" \
+        || log_warn "notify: webhook post failed${err:+: $(printf '%s' "$err" | tr '\n' ' ' | cut -c1-160)}"
 }
 
 swatter_notify() {

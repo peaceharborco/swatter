@@ -270,6 +270,21 @@ swatter_validate_ip_or_cidr() {
     swatter_is_valid_ip_or_cidr "$ip" || die "not an IP or CIDR: ${ip}"
 }
 
+# Validate a downloaded range list (stdin): at least one line, and EVERY
+# non-blank line a valid IP/CIDR. Guards feed installs against a 200 whose body
+# is an HTML error page / captive portal — critical for cloudflare.cidr, which
+# gates the never-block set (a poisoned file could let a CF edge be CSF-denied).
+swatter_cidr_list_ok() {
+    local line n=0
+    while IFS= read -r line; do
+        line="${line%$'\r'}"; line="${line//[[:space:]]/}"
+        [[ -z "$line" ]] && continue
+        swatter_is_valid_ip_or_cidr "$line" || return 1
+        n=$(( n + 1 ))
+    done
+    (( n > 0 ))
+}
+
 # ---------------------------------------------------------------------------
 # Dependency checks. Hard deps abort; optional deps just disable a feature.
 # ---------------------------------------------------------------------------
@@ -359,3 +374,20 @@ swatter_acquire_lock() {
 
 # now_epoch is captured once per process and reused everywhere.
 swatter_now() { printf '%s' "${SWATTER_NOW_EPOCH:-$(date -u +%s)}"; }
+
+# ---------------------------------------------------------------------------
+# Secret-safe curl. Credential-bearing options (header = "...", user = "...")
+# go into a 0600 config file consumed via `curl -K <file>`, never into argv:
+# /proc/<pid>/cmdline is world-readable, so on a shared box any local user
+# running `ps` during a scan would see the raw bearer token / API key.
+# Echoes the file path; the CALLER must rm -f it right after the curl returns.
+# Values must not contain double-quotes (tokens/keys never do).
+#   cfg="$(swatter_curl_cfg 'header = "Authorization: Bearer TOK"')" || return 1
+# ---------------------------------------------------------------------------
+swatter_curl_cfg() {
+    local f line
+    f="$(mktemp "${TMPDIR:-/tmp}/swatter-curl.XXXXXX")" || return 1
+    chmod 0600 "$f" 2>/dev/null
+    for line in "$@"; do printf '%s\n' "$line" >> "$f"; done
+    printf '%s' "$f"
+}

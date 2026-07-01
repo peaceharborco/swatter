@@ -49,9 +49,12 @@ _swatter_pick_ttl() {
 _swatter_audit() {
     # $1 ip $2 score $3 action $4 channel $5 ttl $6 reason $7 evidence_json $8 reputation
     local f="${LOG_DIR}/decisions.jsonl" now; now="$(swatter_now)"
+    # A failed append must be LOUD (never abort the block path, but never
+    # vanish either): blocks landing on the firewall with no decision record
+    # silently break caps, repeat-escalation, and every /server-logs count.
     printf '{"ts":%s,"iso":"%s","ip":"%s","score":%s,"action":"%s","channel":"%s","ttl":%s,"reason":"%s","reputation":%s,"mode":"%s","evidence":%s}\n' \
         "$now" "$(ts)" "$1" "$2" "$3" "$4" "${5:-0}" "${6//\"/\'}" "${8:-0}" "${SWATTER_MODE}" "$7" \
-        >> "$f" 2>/dev/null || true
+        >> "$f" 2>/dev/null || log_error "audit write FAILED (${f}): decision '${3}' for ${1} NOT recorded"
 }
 
 # Execute a decided block on the right plane. Reads/updates the run-scoped

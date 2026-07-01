@@ -48,6 +48,17 @@ check csffail-cause  "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'c
 check csffail-stderr "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'could not add to deny list')" "1"
 csf() { echo "csf $*" >> "$CALLS"; return 0; }   # restore
 
+# UNBLOCK failure -> rc 1 + cause captured; a failed removal must never report
+# success while the deny is still live (the unblock twin of block diagnosability).
+SWATTER_LAST_BACKEND_ERR=""
+csf() { echo "csf: iptables lock timeout" >&2; return 1; }
+swatter_csf_unblock 1.2.3.4 2>/dev/null; check unbfail-rc "$?" "1"
+check unbfail-cause  "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'csf unblock failed')" "1"
+check unbfail-stderr "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'iptables lock timeout')" "1"
+# UNBLOCK success unchanged -> rc 0.
+csf() { echo "csf $*" >> "$CALLS"; return 0; }   # restore
+swatter_csf_unblock 1.2.3.4; check unbok-rc "$?" "0"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

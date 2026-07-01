@@ -80,11 +80,19 @@ swatter_ipset_perm() {
     log_error "ipset add ${ip} failed"; return 1
 }
 
+# A failed del must NOT report success (deny may still be live). Del only from
+# the family-matching set: -exist silences "not a member" but NOT the parse
+# error a cross-family del always raises, which would read as a false failure.
 swatter_ipset_unblock() {
-    local ip="$1"
+    local ip="$1" set
     [[ "${SWATTER_HAVE_IPSET}" -eq 1 ]] || { log_warn "ipset not found; nothing to unblock for ${ip}"; return 0; }
-    ipset del "${SWATTER_IPSET_V4}" "$ip" -exist 2>/dev/null || true
-    ipset del "${SWATTER_IPSET_V6}" "$ip" -exist 2>/dev/null || true
+    set="$(_ipset_set_for "$ip")"
+    local _ierr
+    if ! _ierr="$(ipset del "$set" "$ip" -exist 2>&1 >/dev/null)"; then
+        SWATTER_LAST_BACKEND_ERR="ipset del failed${_ierr:+: $(printf '%s' "$_ierr" | tr '\n' ' ' | cut -c1-160)}"
+        log_error "ipset unblock ${ip} FAILED — entry may still be live (${SWATTER_LAST_BACKEND_ERR})"
+        return 1
+    fi
     _ipset_save
-    log_info "ipset unblock ${ip} (v4+v6 sets)"
+    log_info "ipset unblock ${ip} (${set})"
 }

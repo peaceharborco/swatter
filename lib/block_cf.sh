@@ -138,10 +138,16 @@ _cf_account_for_vhost() {
 _cf_api() {
     # _cf_api <token> <method> <path> [json-body]
     local token="$1" method="$2" path="$3" body="${4:-}"
-    local args=(-sS -X "$method" "${CF_API}${path}"
-        -H "Authorization: Bearer ${token}" -H "Content-Type: application/json")
+    # Bearer token via -K config file, never argv (visible in `ps` on a shared box).
+    local cfg rc
+    cfg="$(swatter_curl_cfg "header = \"Authorization: Bearer ${token}\"")" || return 1
+    local args=(-sS -X "$method" "${CF_API}${path}" -K "$cfg"
+        -H "Content-Type: application/json")
     [[ -n "$body" ]] && args+=(--data "$body")
     curl --max-time 10 "${args[@]}" 2>/dev/null
+    rc=$?
+    rm -f "$cfg"
+    return "$rc"
 }
 
 # Resolve + cache a zone id for a domain (per-account token). Cache file keyed by
@@ -363,24 +369,36 @@ _cf_delete_ref() {
 }
 
 # swatter_cf_unblock <ip>: remove every Swatter-created access rule for this IP,
-# using the recorded (scope,scope_id,rule) refs.
+# using the recorded (scope,scope_id,rule) refs. A ref whose API delete FAILED is
+# kept and the unblock returns 1: dropping it would orphan a live CF rule with no
+# handle left to ever remove it (retry and the expiry sweep both work off this
+# file), while the operator walks away believing the IP is clear.
 swatter_cf_unblock() {
-    local ip="$1" refs="${STATE_DIR}/cf-rules.tsv"
+    local ip="$1" refs="${STATE_DIR}/cf-rules.tsv" rc=0
     swatter_cf_manages_plane || return 0
     [[ -f "$refs" ]] || return 0
     _cf_load
+    local keep
+    keep="$(mktemp "${TMPDIR:-/tmp}/swatter-cfrules.XXXXXX")" \
+        || { log_error "cloudflare unblock ${ip}: mktemp failed — refs untouched"; return 1; }
     local line _CFR_IP _CFR_SCOPE _CFR_SID _CFR_RID _CFR_EXP
     while IFS= read -r line; do
         _cf_parse_ref "$line" || continue
-        [[ "${_CFR_IP}" == "$ip" ]] || continue
+        if [[ "${_CFR_IP}" != "$ip" ]]; then
+            printf '%s\t%s\t%s\t%s\t%s\n' "${_CFR_IP}" "${_CFR_SCOPE}" "${_CFR_SID}" "${_CFR_RID}" "${_CFR_EXP}" >> "$keep"
+            continue
+        fi
         if _cf_delete_ref "${_CFR_SCOPE}" "${_CFR_SID}" "${_CFR_RID}"; then
             log_info "cloudflare unblock ${ip} (${_CFR_SCOPE} ${_CFR_SID}, rule ${_CFR_RID})"
+        else
+            printf '%s\t%s\t%s\t%s\t%s\n' "${_CFR_IP}" "${_CFR_SCOPE}" "${_CFR_SID}" "${_CFR_RID}" "${_CFR_EXP}" >> "$keep"
+            log_error "cloudflare unblock ${ip} FAILED (${_CFR_SCOPE} ${_CFR_SID}, rule ${_CFR_RID}) — rule may still be live; ref kept for retry/sweep"
+            rc=1
         fi
     done < "$refs"
-    # Drop this IP's refs. grep -v exits 1 when no lines survive (unblocking the
-    # last IP in the file), so the mv must not be gated on its status.
-    grep -v "^${ip}$(printf '\t')" "$refs" > "${refs}.tmp" 2>/dev/null || true
-    mv "${refs}.tmp" "$refs"
+    mv "$keep" "$refs" 2>/dev/null || { rm -f "$keep"; rc=1; }
+    (( rc )) && SWATTER_LAST_BACKEND_ERR="cloudflare rule delete failed (ref kept; retry unblock or wait for the expiry sweep)"
+    return "$rc"
 }
 
 # Sweep expired Swatter access rules (TTL emulation) using recorded refs.

@@ -43,8 +43,16 @@ SQL
     fi
 }
 
-_sql() { sqlite3 "$(_swatter_db)" "$@" 2>/dev/null; }
-_sqlq() { sqlite3 "$(_swatter_db)" "$1" 2>/dev/null; }
+# Run sqlite3 with stderr CAPTURED, not discarded: a locked/corrupt/unwritable
+# DB silently diverging the ledger from the firewall is undiagnosable. Errors
+# log a bounded warn; stdout passes through untouched for parsers; rc propagates.
+_sql() {
+    local err rc
+    { err="$(sqlite3 "$(_swatter_db)" "$@" 2>&1 >&3 3>&-)"; rc=$?; } 3>&1
+    (( rc != 0 )) && log_warn "sqlite error (rc=${rc}): $(printf '%s' "$err" | tr '\n' ' ' | cut -c1-160)"
+    return "$rc"
+}
+_sqlq() { _sql "$1"; }
 
 # Proper escaping for a value that will be placed inside a single-quoted
 # SQLite string literal ( '  -->  '' ). Defense in depth; called with IPs

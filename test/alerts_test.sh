@@ -80,6 +80,16 @@ check twilio-from-number "$(grep -c 'From=+15559999999' "$CURLLOG")" "1"
 : > "$CURLLOG"; TWILIO_FROM="MG0123456789abcdef"; _alert_sms_twilio "+15550001111" "hi"
 check twilio-msgsvc  "$(grep -c 'MessagingServiceSid=MG0123456789abcdef' "$CURLLOG")" "1"
 check twilio-no-from "$(grep -c ' From=MG' "$CURLLOG")" "0"
+
+# 11. Twilio failure logs the response BODY (the actionable cause), bounded and
+#     token-redacted — "HTTP 401" alone is undiagnosable.
+ERR="$TMP/twerr"
+curl() { printf '%s\n' "$*" >> "$CURLLOG"; printf '{"code": 20003, "message": "Authentication Error - invalid username s3cret"}\n401'; }
+TWILIO_FROM="+15559999999"
+_alert_sms_twilio "+15550001111" "hi" 2> "$ERR"; check twilio-fail-rc "$?" "1"
+check twilio-fail-code "$(grep -c 'HTTP 401' "$ERR")" "1"
+check twilio-fail-body "$(grep -c 'Authentication Error' "$ERR")" "1"
+check twilio-fail-redacted "$(grep -c 's3cret' "$ERR")" "0"
 unset -f curl
 
 echo "----------------------------------------"

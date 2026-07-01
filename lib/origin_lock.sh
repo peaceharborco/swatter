@@ -96,28 +96,57 @@ _ol_ranges_healthy() {
     return 0
 }
 
+# Apply-failure accounting. Every firewall mutation during apply is counted so
+# a partial apply fails LOUDLY and fails open (see swatter_origin_lock_apply)
+# instead of logging "applied" over a half-built chain — worst case a DROP
+# whose CF-ACCEPT failed to land, i.e. a total origin outage.
+_OL_APPLY_ERRS=0
+_OL_APPLY_ERR=""
+_ol_err1() { printf '%s' "$1" | tr '\n' ' ' | cut -c1-120; }
+_ol_op_failed() {
+    _OL_APPLY_ERRS=$(( _OL_APPLY_ERRS + 1 ))
+    [[ -z "${_OL_APPLY_ERR}" ]] && _OL_APPLY_ERR="$1"
+}
+
+# Stderr capture goes through a tempfile, NOT $(...): a command substitution
+# would run the firewall call in a subshell, which breaks function-injected
+# test doubles that mutate shell state (and buys nothing in production).
+_OL_ERRF="${TMPDIR:-/tmp}/swatter-ol-err.$$"
+
 # Build/refresh an ipset from a newline CIDR list. hash:net (CIDR-capable),
 # -exist so re-create never errors; entries added with -exist for idempotency.
 _ol_build_set() {
     local set="$1" family="$2" ranges="$3" cidr
-    ipset create "$set" hash:net family "$family" -exist 2>/dev/null
+    ipset create "$set" hash:net family "$family" -exist 2>"${_OL_ERRF}" \
+        || _ol_op_failed "ipset create ${set}: $(_ol_err1 "$(cat "${_OL_ERRF}" 2>/dev/null)")"
     while IFS= read -r cidr; do
         [[ -n "$cidr" ]] || continue
-        ipset add "$set" "$cidr" -exist 2>/dev/null
+        ipset add "$set" "$cidr" -exist 2>"${_OL_ERRF}" \
+            || _ol_op_failed "ipset add ${set} ${cidr}: $(_ol_err1 "$(cat "${_OL_ERRF}" 2>/dev/null)")"
     done <<< "$ranges"
+    rm -f "${_OL_ERRF}"
 }
 
 # Append a rule (csfpre context: the chain is flushed by `csf -r` before each run,
 # so a plain -A never stacks).
 _ol_append() {
     local ipt="$1"; shift
-    "$ipt" -A INPUT "$@" 2>/dev/null
+    if ! "$ipt" -A INPUT "$@" 2>"${_OL_ERRF}"; then
+        _ol_op_failed "${ipt} -A: $(_ol_err1 "$(cat "${_OL_ERRF}" 2>/dev/null)")"
+        rm -f "${_OL_ERRF}"; return 1
+    fi
+    rm -f "${_OL_ERRF}"
 }
 
 # Insert-if-absent (standalone context: no flush, so guard with -C then -I).
 _ol_ensure() {
     local ipt="$1"; shift
-    "$ipt" -C INPUT "$@" 2>/dev/null || "$ipt" -I INPUT "$@" 2>/dev/null
+    "$ipt" -C INPUT "$@" 2>/dev/null && return 0
+    if ! "$ipt" -I INPUT "$@" 2>"${_OL_ERRF}"; then
+        _ol_op_failed "${ipt} -I: $(_ol_err1 "$(cat "${_OL_ERRF}" 2>/dev/null)")"
+        rm -f "${_OL_ERRF}"; return 1
+    fi
+    rm -f "${_OL_ERRF}"
 }
 
 # Per-family rule build. $1=iptables|ip6tables  $2=set  $3=hook(csf|standalone)
@@ -327,6 +356,9 @@ swatter_origin_lock_apply() {
         swatter_origin_lock_teardown no
     fi
 
+    # Fresh failure accounting for THIS apply.
+    _OL_APPLY_ERRS=0; _OL_APPLY_ERR=""
+
     # Build the v4 set + rules.
     _ol_build_set "$(_ol_set4)" inet "${_OL_V4}"
     _ol_rules_family iptables "$(_ol_set4)" "$hook"
@@ -347,6 +379,15 @@ swatter_origin_lock_apply() {
     if [[ "$hook" != "csf" ]]; then
         _ol_preamble_family iptables
         [[ "${SWATTER_HAVE_IP6TABLES:-0}" -eq 1 ]] && _ol_preamble_family ip6tables
+    fi
+
+    # Partial failure -> fail LOUD + fail OPEN: tear our rules back down rather
+    # than leave a half-built chain standing (a DROP whose CF-ACCEPT failed to
+    # land would drop legitimate Cloudflare traffic — total origin outage).
+    if (( _OL_APPLY_ERRS > 0 )); then
+        log_error "origin-lock apply INCOMPLETE: ${_OL_APPLY_ERRS} firewall op(s) failed (first: ${_OL_APPLY_ERR}) — tearing rules back down (fail-open)"
+        swatter_origin_lock_teardown no
+        return 1
     fi
 
     log_info "origin-lock applied (mode=${mode}, hook=${hook}, ports=$(_ol_ports))"
