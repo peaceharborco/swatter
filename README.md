@@ -286,10 +286,15 @@ hole on v6.
 A single idempotent code path (`apply`) serves both worlds; the execution
 context is explicit, never guessed:
 
-- **CSF present.** Install writes one line — `swatter origin-lock apply
-  --hook=csf` — into `/etc/csf/csfpre.sh` (created if absent). `csfpre.sh` runs
-  before CSF builds its chains on every `csf -r`, so the lock re-applies and is
-  ordered ahead of CSF's blanket TCP_IN accept. CSF already supplies loopback,
+- **CSF present.** Install writes one guarded line — `swatter origin-lock apply
+  --hook=csf --yes` — into `/etc/csf/csfpre.sh` (created if absent). `csfpre.sh`
+  runs before CSF builds its chains on every `csf -r`, so the lock re-applies and
+  is ordered ahead of CSF's blanket TCP_IN accept (measured durable across
+  `csf -r`/`csf -ra`/lfd restart under `FASTSTART=1`/`LF_IPSET=1` — csfpre is the
+  sole carrier, no systemd needed). The `--yes` is required: at `csf -r` the hook
+  runs non-interactively, and DROP mode would otherwise abort at the confirm
+  guard and install nothing (setting `ORIGIN_LOCK=drop` is the operator's
+  consent). CSF already supplies loopback,
   established/related, and `csf.allow` accepts above csfpre, so in this context
   `apply` adds **only** the Cloudflare/ACME accept + LOG/DROP (a redundant
   established accept is deliberately avoided — it can leak handshakes under
