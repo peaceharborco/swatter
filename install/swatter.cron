@@ -9,4 +9,6 @@ MAILTO=""
 # Refresh Cloudflare ranges + threat-intel feeds once daily (03:20).
 20 3 * * *  root /usr/local/bin/swatter refresh-feeds
 
-# The nightly report line is appended by install.sh from REPORT_CRON / REPORT_CRON_TZ.
+# The nightly report runs from a SEPARATE file, /etc/cron.d/swatter-report, so its
+# CRON_TZ (REPORT_CRON_TZ, e.g. America/Los_Angeles) scopes to the report only and
+# does not shift the scan/refresh above. install.sh renders it from REPORT_CRON.

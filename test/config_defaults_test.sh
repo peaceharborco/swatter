@@ -23,6 +23,11 @@ check persist-window    "${PERSIST_WINDOW_DAYS}" "3"
 check hosting-nonempty  "$([[ -n "${HOSTING_ASNS_FILE}" ]] && echo yes || echo no)" "yes"
 check intel-has-firehol "$(case " ${INTEL_PROVIDERS} " in *' firehol_level1 '*) echo yes;; *) echo no;; esac)" "yes"
 check intel-has-dshield "$(case " ${INTEL_PROVIDERS} " in *' dshield '*) echo yes;; *) echo no;; esac)" "yes"
+# From-header display name must NOT contain parentheses: RFC 5322 treats "(...)"
+# as a comment that mail clients strip, so "Swatter (host)" shows as just
+# "Swatter". Brackets display verbatim. Guards against regressing to parens.
+check fromname-no-parens "$(case "${REPORT_FROM_NAME}" in *'('*|*')'*) echo bad;; *) echo ok;; esac)" "ok"
+check fromname-brackets  "$(case "${REPORT_FROM_NAME}" in 'Swatter ['*']') echo ok;; *) echo no;; esac)" "ok"
 check intel-has-blde    "$(case " ${INTEL_PROVIDERS} " in *' blocklist_de '*) echo yes;; *) echo no;; esac)" "yes"
 check abl-conf-default   "${ABUSEIPDB_BLOCKLIST_CONFIDENCE}" "90"
 # abuseipdb_blocklist is OPT-IN: must NOT be in the default list.

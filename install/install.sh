@@ -173,13 +173,23 @@ _install_origin_lock_systemd() {
     fi
 }
 
-# Render the final /etc/cron.d/swatter from the template + report schedule config.
-_swatter_render_cron() {
-    local tmpl="$1" report_cron="$2" report_tz="$3"
-    cat "$tmpl"
-    echo
+# Render /etc/cron.d/swatter-report — the nightly report in its OWN cron file.
+# A dedicated file is deliberate: `CRON_TZ` applies to every job that follows it
+# in a cron file, so putting the report's timezone in the shared cron would also
+# shift the 5-min scan / feed refresh. Here it scopes to the report alone, so the
+# schedule tracks REPORT_CRON_TZ (e.g. America/Los_Angeles → 4am Pacific,
+# DST-adjusted) while scan/refresh stay in the system zone. The report line
+# redirects to a log so a failed nightly send is recorded, never silently lost
+# (cron's own output is discarded by MAILTO="").
+_swatter_report_cron_file() {
+    local report_cron="$1" report_tz="$2"
+    echo "# Swatter nightly report — separate cron file so CRON_TZ scopes to the"
+    echo "# report only (a bare CRON_TZ in the shared cron would also shift the scan)."
+    echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    echo 'MAILTO=""'
     [[ -n "$report_tz" ]] && echo "CRON_TZ=${report_tz}"
-    echo "${report_cron} * * * root /usr/local/bin/swatter report"
+    echo
+    echo "${report_cron} * * * root /usr/local/bin/swatter report >> /var/log/swatter/report.log 2>&1"
 }
 
 _install_local() {
@@ -207,9 +217,12 @@ _install_local() {
     fi
 
     install -d -m 0750 /var/lib/swatter /var/log/swatter
-    _swatter_render_cron "${SRC}/install/swatter.cron" "${REPORT_CRON:-0 4}" "${REPORT_CRON_TZ:-}" \
-        > /etc/cron.d/swatter
-    chmod 0644 /etc/cron.d/swatter
+    # Shared cron: scan + feed refresh (system timezone). The report is NOT here —
+    # it lives in its own file so its CRON_TZ doesn't shift these jobs.
+    install -m 0644 "${SRC}/install/swatter.cron" /etc/cron.d/swatter
+    _swatter_report_cron_file "${REPORT_CRON:-0 4}" "${REPORT_CRON_TZ:-}" \
+        > /etc/cron.d/swatter-report
+    chmod 0644 /etc/cron.d/swatter-report
     install -m 0644 "${SRC}"/install/swatter.logrotate /etc/logrotate.d/swatter
 
     echo "fetching Cloudflare ranges + intel feeds ..."

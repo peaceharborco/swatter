@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Report sender name now shows the server, not just "Swatter".** The default
+  `REPORT_FROM_NAME` used parentheses — `Swatter (host.fqdn)` — but RFC 5322 treats
+  `(...)` in a From header as a comment that mail clients strip, so the sender
+  displayed as bare "Swatter". Switched to brackets: `Swatter [host.fqdn]`, which
+  display verbatim. A config-defaults test guards against parens regressing.
+- **Nightly report now honors `REPORT_CRON_TZ` (DST-aware) and records every send.**
+  The report cron is rendered into its own `/etc/cron.d/swatter-report` instead of
+  being appended to the shared `/etc/cron.d/swatter`. `CRON_TZ` applies to all jobs
+  that follow it in a cron file, so keeping the report in the shared file risked
+  shifting the 5-min scan; a dedicated file scopes the timezone to the report alone
+  (e.g. `America/Los_Angeles` → 4am Pacific, DST-adjusted). The report line now
+  redirects to `/var/log/swatter/report.log`, so a failed send is logged rather
+  than silently discarded by cron's `MAILTO=""`.
+
 ## [2.3.1] - 2026-07-01
 
 ### Fixed
