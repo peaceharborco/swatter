@@ -237,10 +237,10 @@ _report_render_html() {
         reco="$(printf '%s' "$reco" | sed "s|${he}|<code style=\"font-family:ui-monospace,Menlo,monospace;background:#f6ecd6;color:#8a5200;padding:2px 7px;border-radius:5px;font-weight:700\">&</code>|g")"
     fi
 
-    printf '<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:640px;margin:0 auto;background:#fff;border:1px solid #e3e7ec;border-radius:14px;overflow:hidden;color:#14171a">'
+    printf '<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:640px;margin:0 auto;background:#fff;border:1px solid #e3e7ec;border-radius:14px;overflow:hidden;color:#1b1f24">'
 
     # Header
-    printf '<table width="100%%" style="border-bottom:1px solid #eef1f4"><tr><td style="padding:14px 22px;font-size:14px;font-weight:700">🪰 Swatter Nightly Report</td><td style="padding:14px 22px;font-size:11px;color:#8a94a0;text-align:right">%s · %s · %s</td></tr></table>' \
+    printf '<table width="100%%" style="border-bottom:1px solid #eef1f4"><tr><td style="padding:14px 22px;font-size:14px;font-weight:700">🪰 Swatter Nightly Report</td><td style="padding:14px 22px;font-size:11px;color:#545d69;text-align:right">%s · %s · %s</td></tr></table>' \
         "$(printf '%s' "$host" | esc)" "${REPORT_WINDOW:-24h}" "$(_tc "${SWATTER_MODE:-report}")"
 
     # Grade hero
@@ -248,25 +248,25 @@ _report_render_html() {
     printf '<div style="width:88px;height:88px;border-radius:16px;background:%s;border:2px solid %s;text-align:center;padding-top:14px;box-sizing:border-box"><div style="font-size:40px;font-weight:800;color:%s;line-height:1">%s</div><div style="font-size:9px;font-weight:700;letter-spacing:1px;color:%s;text-transform:uppercase;margin-top:4px">%s</div></div>' \
         "$gbg" "$gbd" "$gfg" "${RPT_GRADE}" "$gfg" "$(printf '%s' "${RPT_GRADE_WORD}" | esc)"
     printf '</td><td style="padding:22px 22px 8px 18px;vertical-align:top">'
-    printf '<div style="font-size:16px;font-weight:700;color:#14171a">%s</div><div style="font-size:13px;color:#5a6572;margin-top:4px;line-height:1.55">%s</div><div style="font-size:12.5px;color:%s;margin-top:10px;line-height:1.5"><b>&rarr;</b> %s</div>' \
+    printf '<div style="font-size:16px;font-weight:700;color:#1b1f24">%s</div><div style="font-size:13px;color:#545d69;margin-top:4px;line-height:1.55">%s</div><div style="font-size:12.5px;color:%s;margin-top:10px;line-height:1.5"><b>&rarr;</b> %s</div>' \
         "$(printf '%s' "${RPT_GRADE_HEADLINE}" | esc)" "$(printf '%s' "${RPT_GRADE_SUB}" | esc)" "$gfg" "$reco"
     printf '</td></tr></table>'
 
     # Grade legend
-    printf '<div style="padding:0 22px 16px;font-size:10px;color:#b3bcc6;letter-spacing:.3px">A All Clear · B Review · C Investigate · D Act Now · F Fatal / Outage</div>'
+    printf '<div style="padding:0 22px 16px;font-size:10px;color:#545d69;letter-spacing:.3px">A All Clear · B Review · C Investigate · D Act Now · F Fatal / Outage</div>'
 
     # Bad Actors
-    printf '<div style="padding:16px 22px;border-top:1px solid #eef1f4;border-left:3px solid #c0392b"><table width="100%%"><tr><td style="font-size:14px;font-weight:800">🛡️ Bad Actors</td><td style="font-size:22px;font-weight:800;color:#c0392b;text-align:right">%s</td></tr></table><div style="font-size:13px;color:#3d444d;margin-top:5px;line-height:1.55">%s</div><div style="font-size:12px;color:#8a94a0;margin-top:6px">%s Permanent · %s Temporary · %s Via Cloudflare · %s At Server · %s Exempted</div></div>' \
+    printf '<div style="padding:16px 22px;border-top:1px solid #eef1f4;border-left:3px solid #c0392b"><table width="100%%"><tr><td style="font-size:14px;font-weight:800">🛡️ Bad Actors</td><td style="font-size:22px;font-weight:800;color:#c0392b;text-align:right">%s</td></tr></table><div style="font-size:13px;color:#1b1f24;margin-top:5px;line-height:1.55">%s</div><div style="font-size:12px;color:#545d69;margin-top:6px">%s Permanent · %s Temporary · %s Via Cloudflare · %s At Server · %s Exempted</div></div>' \
         "${RPT_ACTED:-0}" "$(_report_summary_actors | esc)" "${RPT_PERM:-0}" "${RPT_TEMP:-0}" "${RPT_CF:-0}" "${RPT_DIRECT:-0}" "${RPT_EXEMPT:-0}"
 
     # Origin-Lock (gated)
     if _ol_digest_should_render "${OL_HITS:-0}"; then
-        printf '<div style="padding:16px 22px;border-top:1px solid #eef1f4;border-left:3px solid #2a6b7c"><table width="100%%"><tr><td style="font-size:14px;font-weight:800">🔒 Origin-Lock <span style="font-size:11px;font-weight:600;color:#9aa4af">· Mode %s</span></td><td style="font-size:22px;font-weight:800;color:#2a6b7c;text-align:right">%s</td></tr></table><div style="font-size:13px;color:#3d444d;margin-top:5px;line-height:1.55">%s</div><div style="font-size:12px;color:#8a94a0;margin-top:6px">%s IPs · :443 %s · :80 %s</div>' \
+        printf '<div style="padding:16px 22px;border-top:1px solid #eef1f4;border-left:3px solid #2a6b7c"><table width="100%%"><tr><td style="font-size:14px;font-weight:800">🔒 Origin-Lock <span style="font-size:11px;font-weight:600;color:#545d69">· Mode %s</span></td><td style="font-size:22px;font-weight:800;color:#2a6b7c;text-align:right">%s</td></tr></table><div style="font-size:13px;color:#1b1f24;margin-top:5px;line-height:1.55">%s</div><div style="font-size:12px;color:#545d69;margin-top:6px">%s IPs · :443 %s · :80 %s</div>' \
             "$(_tc "${OL_MODE}")" "${OL_HITS:-0}" "$(_report_summary_origin | esc)" "${OL_IPS:-0}" "${OL_P443:-0}" "${OL_P80:-0}"
-        printf '<table style="width:100%%;border-collapse:collapse;font-size:12px;margin-top:8px"><thead><tr style="color:#8a94a0;font-size:10px;text-align:left;text-transform:uppercase;letter-spacing:.4px"><th style="padding:4px 6px 4px 0">Source IP</th><th style="padding:4px 6px;text-align:right">Hits</th><th style="padding:4px 0 4px 6px;text-align:right">Verdict</th></tr></thead><tbody>'
+        printf '<table style="width:100%%;border-collapse:collapse;font-size:12px;margin-top:8px"><thead><tr style="color:#545d69;font-size:10px;text-align:left;text-transform:uppercase;letter-spacing:.4px"><th style="padding:4px 6px 4px 0">Source IP</th><th style="padding:4px 6px;text-align:right">Hits</th><th style="padding:4px 0 4px 6px;text-align:right">Verdict</th></tr></thead><tbody>'
         printf '%s' "$OL_TOP_ROWS" | while IFS=$'\t' read -r ip n tag; do
             [[ -n "$ip" ]] || continue
-            local tc="#9aa4af"; [[ "$tag" == attacker* ]] && tc="#c0392b"
+            local tc="#545d69"; [[ "$tag" == attacker* ]] && tc="#c0392b"
             printf '<tr style="border-top:1px solid #eef1f4"><td style="padding:5px 6px 5px 0;font-family:ui-monospace,Menlo,monospace">%s</td><td style="padding:5px 6px;text-align:right;font-variant-numeric:tabular-nums">%s</td><td style="padding:5px 0 5px 6px;text-align:right;color:%s;font-weight:600">%s</td></tr>' \
                 "$(printf '%s' "$ip" | esc)" "$n" "$tc" "$(_tc "$(printf '%s' "$tag" | esc)")"
         done
@@ -276,13 +276,13 @@ _report_render_html() {
     # Server Errors (gated)
     if [[ "${ERROR_DIGEST_ENABLE}" == "true" ]]; then
         local efc="#1f8a4c"; (( ${ERR_FATAL:-0} > 0 )) && efc="#c0392b"
-        printf '<div style="padding:16px 22px;border-top:1px solid #eef1f4;border-left:3px solid #c9d0d8"><table width="100%%"><tr><td style="font-size:14px;font-weight:800">🩺 Server Errors</td><td style="font-size:22px;font-weight:800;color:#5a6572;text-align:right">%s</td></tr></table><div style="font-size:13px;color:#3d444d;margin-top:5px;line-height:1.55">%s</div><div style="font-size:12px;color:#8a94a0;margin-top:6px"><b style="color:#5a6572">%s</b> Non-Fatal · <b style="color:%s">%s</b> Fatal</div></div>' \
+        printf '<div style="padding:16px 22px;border-top:1px solid #eef1f4;border-left:3px solid #c9d0d8"><table width="100%%"><tr><td style="font-size:14px;font-weight:800">🩺 Server Errors</td><td style="font-size:22px;font-weight:800;color:#545d69;text-align:right">%s</td></tr></table><div style="font-size:13px;color:#1b1f24;margin-top:5px;line-height:1.55">%s</div><div style="font-size:12px;color:#545d69;margin-top:6px"><b style="color:#545d69">%s</b> Non-Fatal · <b style="color:%s">%s</b> Fatal</div></div>' \
             "${ERR_GENUINE:-0}" "$(_report_summary_errors | esc)" "${ERR_GENUINE:-0}" "$efc" "${ERR_FATAL:-0}"
     fi
 
     # Footer
-    printf '<div style="padding:16px 22px 6px;color:#8a94a0;font-size:11px;border-top:1px solid #eef1f4">On The Server: <code style="color:#5a6572">swatter why &lt;ip&gt;</code> — <i>Why An IP Was Flagged</i> · <code style="color:#5a6572">swatter unblock &lt;ip&gt;</code> — <i>Lift A Block</i></div>'
-    printf '<div style="padding:10px 22px 16px;color:#8a94a0;font-size:11px;text-align:center">🪰 Swatter · a <a href="https://studios.peaceharbor.com" style="color:#C48A2E;text-decoration:none;font-weight:600">Peace Harbor Studios</a> project · <a href="https://github.com/peaceharborco/swatter" style="color:#C48A2E;text-decoration:none">GitHub</a></div>'
+    printf '<div style="padding:16px 22px 6px;color:#545d69;font-size:11px;border-top:1px solid #eef1f4">On The Server: <code style="color:#545d69">swatter why &lt;ip&gt;</code> — <i>Why An IP Was Flagged</i> · <code style="color:#545d69">swatter unblock &lt;ip&gt;</code> — <i>Lift A Block</i></div>'
+    printf '<div style="padding:10px 22px 16px;color:#545d69;font-size:11px;text-align:center">🪰 Swatter · a <a href="https://studios.peaceharbor.com" style="color:#C48A2E;text-decoration:none;font-weight:600">Peace Harbor Studios</a> project · <a href="https://github.com/peaceharborco/swatter" style="color:#C48A2E;text-decoration:none">GitHub</a></div>'
     printf '</div>'
 }
 
