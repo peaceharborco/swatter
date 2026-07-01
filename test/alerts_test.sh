@@ -70,6 +70,18 @@ swatter_alert_on_grade; check failsoft-rc "$?" "0"; SMS_RC=0
 unset -f swatter_send_sms; source "${ROOT}/lib/alerts.sh"
 ALERT_SMS_METHOD=""; swatter_send_sms "+1555" "hi"; check dispatch-off "$?" "0"
 
+# 10. Twilio sender key: a phone number -> From=, a Messaging Service SID (MG…) ->
+#     MessagingServiceSid=. Stub curl (echo args, return a 2xx code).
+CURLLOG="$TMP/curl"; : > "$CURLLOG"
+curl() { printf '%s\n' "$*" >> "$CURLLOG"; echo "201"; }
+SWATTER_HAVE_CURL=1; TWILIO_SID="ACtest"; TWILIO_TOKEN_FILE="$TMP/tok"; echo "s3cret" > "$TWILIO_TOKEN_FILE"
+TWILIO_FROM="+15559999999"; _alert_sms_twilio "+15550001111" "hi"
+check twilio-from-number "$(grep -c 'From=+15559999999' "$CURLLOG")" "1"
+: > "$CURLLOG"; TWILIO_FROM="MG0123456789abcdef"; _alert_sms_twilio "+15550001111" "hi"
+check twilio-msgsvc  "$(grep -c 'MessagingServiceSid=MG0123456789abcdef' "$CURLLOG")" "1"
+check twilio-no-from "$(grep -c ' From=MG' "$CURLLOG")" "0"
+unset -f curl
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

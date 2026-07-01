@@ -28,10 +28,12 @@ _alert_sms_twilio() {
     [[ -n "${TWILIO_SID:-}" && -n "${TWILIO_FROM:-}" && -r "${TWILIO_TOKEN_FILE:-}" ]] || {
         log_error "alerts: twilio not configured (need TWILIO_SID, TWILIO_FROM, readable TWILIO_TOKEN_FILE)"; return 1; }
     local token; token="$(cat "${TWILIO_TOKEN_FILE}")"
+    # TWILIO_FROM may be a phone number (+1…) or a Messaging Service SID (MG…).
+    local fromkey="From"; [[ "${TWILIO_FROM}" == MG* ]] && fromkey="MessagingServiceSid"
     local code
     code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' \
         -u "${TWILIO_SID}:${token}" \
-        --data-urlencode "From=${TWILIO_FROM}" \
+        --data-urlencode "${fromkey}=${TWILIO_FROM}" \
         --data-urlencode "To=${to}" \
         --data-urlencode "Body=${body}" \
         "https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json" 2>/dev/null)"
