@@ -51,6 +51,14 @@ rec3="$(tail -1 "$LOG_DIR/decisions.jsonl")"
 check csf-channel          "$(printf '%s' "$rec3" | jq -r '.channel')" "csf"
 check cross-plane-no-bleed "$(printf '%s' "$rec3" | jq -r '.evidence.backend_err // "none"')" "none"
 
+# Direct/CSF failure WITH a captured cause is recorded too (channel-agnostic slot).
+swatter_block_direct_temp() { SWATTER_LAST_BACKEND_ERR="csf -td failed: deny list full"; return 1; }
+swatter_classify() { echo "DIRECT"; }; _SW_TOTAL_BLOCKS=0
+_swatter_execute_block 3.3.3.3 temp 3600 91 r '{}' 0 0 "" 1
+rec4="$(tail -1 "$LOG_DIR/decisions.jsonl")"
+check direct-channel        "$(printf '%s' "$rec4" | jq -r '.channel')" "csf"
+check direct-cause-recorded "$(printf '%s' "$rec4" | jq -r '.evidence.backend_err')" "csf -td failed: deny list full"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

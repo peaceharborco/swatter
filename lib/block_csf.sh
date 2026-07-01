@@ -20,13 +20,18 @@ swatter_csf_temp() {
         return 0
     fi
     if [[ "${SWATTER_HAVE_CSF}" -ne 1 ]]; then
+        SWATTER_LAST_BACKEND_ERR="csf binary not found"
         log_error "csf not found; cannot temp-deny ${ip}"; return 1
     fi
-    if csf -td "$ip" "$ttl" -d inout "swatter: ${reason}" >/dev/null 2>&1; then
+    # Capture stderr (discard stdout) so a `failed` decision records WHY, like the
+    # CF path — same command, same effect, exit code preserved.
+    local _cerr
+    if _cerr="$(csf -td "$ip" "$ttl" -d inout "swatter: ${reason}" 2>&1 >/dev/null)"; then
         SWATTER_CSF_DENIES_THIS_RUN=$(( SWATTER_CSF_DENIES_THIS_RUN + 1 ))
         log_info "csf temp-deny ${ip} for ${ttl}s (${reason})"
         return 0
     fi
+    SWATTER_LAST_BACKEND_ERR="csf -td failed${_cerr:+: $(printf '%s' "$_cerr" | tr '\n' ' ' | cut -c1-160)}"
     log_error "csf -td ${ip} failed"; return 1
 }
 
@@ -42,14 +47,17 @@ swatter_csf_perm() {
         return 0
     fi
     if [[ "${SWATTER_HAVE_CSF}" -ne 1 ]]; then
+        SWATTER_LAST_BACKEND_ERR="csf binary not found"
         log_error "csf not found; cannot perm-deny ${ip}"; return 1
     fi
-    # csf -d is permanent; it appends to csf.deny.
-    if csf -d "$ip" "swatter: ${reason}" >/dev/null 2>&1; then
+    # csf -d is permanent; it appends to csf.deny. Capture stderr for diagnosability.
+    local _cerr
+    if _cerr="$(csf -d "$ip" "swatter: ${reason}" 2>&1 >/dev/null)"; then
         SWATTER_CSF_DENIES_THIS_RUN=$(( SWATTER_CSF_DENIES_THIS_RUN + 1 ))
         log_info "csf PERM-deny ${ip} (${reason})"
         return 0
     fi
+    SWATTER_LAST_BACKEND_ERR="csf -d failed${_cerr:+: $(printf '%s' "$_cerr" | tr '\n' ' ' | cut -c1-160)}"
     log_error "csf -d ${ip} failed"; return 1
 }
 
