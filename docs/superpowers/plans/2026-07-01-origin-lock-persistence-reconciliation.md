@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
+> **STATUS: EXECUTED 2026-07-01 (attended).** Prod rollout complete — the repo-managed csfpre hook is the single owner of the live origin-lock (mode drop, cf_origin4=15, cf_origin6=7, DROP above CSF blanket, survives `csf -r`; CF sites 200, direct-origin blocked). Task 0/1/2 committed; Task 3 (deploy lib + `bin/swatter` 2.3.0 + arm managed + retire static) and Task 4 (version stamp) done and verified. LOG `-D` validated on real iptables-legacy. Backups on host: `csfpre.sh.bak-20260701-194615` / `-194839`. **Follow-up:** merge PR #10, cut a 2.3.1 release for the deployed fixes.
+>
 > **REVISION 2 (2026-07-01).** Rev 1's dual-carrier "Option C" (managed csfpre hook + systemd oneshot/timer safety-net) was **rejected** by Grok adversarial review (`…-review-grok.md`) AND invalidated by measurement: a prod survival matrix proved the csfpre lock **survives `csf -r`, `csf -ra`, and `systemctl restart lfd`** with zero drops. So **csfpre is a reliable single carrier on this host** — there is no persistence problem to engineer around. This revision drops systemd entirely and reduces the work to **drift + hygiene**. Re-review with Grok before the prod tasks (standing decision #2).
 
 **Goal:** Make the repo own the live origin-lock: retire the untracked hand static csfpre block and enforce via the repo-managed csfpre hook (single owner = repo), on the Task-0-fixed lib, with the version stamp corrected.
