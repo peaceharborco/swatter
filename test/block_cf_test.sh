@@ -61,9 +61,24 @@ swatter_cf_block 1.2.3.4 3600 r x.com; check api-ok "$?" "0"
 _CF_API_RESP='{"success":false,"errors":[{"message":"firewallaccessrules.api.duplicate_of_existing already exists"}]}'
 swatter_cf_block 1.2.3.4 3600 r x.com; check api-dup-ok "$?" "0"
 
-# 9) API genuine error -> failure (1).
+# 9) API genuine error -> failure (1), and the error is CAPTURED for diagnosability.
 _CF_API_RESP='{"success":false,"errors":[{"message":"boom"}]}'
 swatter_cf_block 1.2.3.4 3600 r x.com; check api-error-failed "$?" "1"
+check backend-err-captured "$([[ -n "${SWATTER_LAST_BACKEND_ERR:-}" ]] && echo set || echo empty)" "set"
+check backend-err-has-msg  "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR}" | grep -c boom)" "1"
+# ...and cleared on the next successful attempt (no cross-IP bleed).
+_CF_API_RESP='{"success":true,"result":{"id":"rule9"}}'
+swatter_cf_block 1.2.3.4 3600 r x.com >/dev/null
+check backend-err-cleared "$([[ -z "${SWATTER_LAST_BACKEND_ERR:-}" ]] && echo empty || echo set)" "empty"
+# SECRET SAFETY: even if an error body echoed the bearer token, it must be redacted
+# out of the captured cause (never reaches decisions.jsonl).
+_CF_TOKEN[acctA]="SUPERSECRETTOKEN12345"
+_CF_API_RESP='{"success":false,"errors":[{"message":"auth failed for token SUPERSECRETTOKEN12345 xyz"}]}'
+swatter_cf_block 1.2.3.4 3600 r x.com >/dev/null
+check backend-err-no-token "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR}" | grep -c SUPERSECRETTOKEN)" "0"
+check backend-err-masked   "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR}" | grep -c '[*][*][*]')" "1"
+_CF_TOKEN[acctA]="tok"
+_CF_API_RESP='{"success":false,"errors":[{"message":"boom"}]}'   # restore for later cases
 
 # ---- CF_SCOPE=account contract -------------------------------------------
 # Account scope rules every account at once; the vhost is irrelevant, so the

@@ -219,9 +219,9 @@ _cf_block_zone() {
         log_info "[dry-run] cloudflare ${CF_ACTION} ${ip} in ${vhost} (acct ${acct}; ${reason})"
         return 0
     fi
-    [[ "${SWATTER_HAVE_JQ}" -eq 1 && "${SWATTER_HAVE_CURL}" -eq 1 ]] || { log_error "CF plane needs jq+curl"; return 1; }
+    [[ "${SWATTER_HAVE_JQ}" -eq 1 && "${SWATTER_HAVE_CURL}" -eq 1 ]] || { SWATTER_LAST_BACKEND_ERR="jq/curl unavailable"; log_error "CF plane needs jq+curl"; return 1; }
 
-    local zid; zid="$(_cf_zone_id "$vhost" "$token")" || { log_warn "CF block ${ip}: could not resolve zone for ${vhost}"; return 1; }
+    local zid; zid="$(_cf_zone_id "$vhost" "$token")" || { SWATTER_LAST_BACKEND_ERR="zone unresolved for ${vhost}"; log_warn "CF block ${ip}: could not resolve zone for ${vhost}"; return 1; }
     local expiry note resp rid
     expiry=$(( $(swatter_now) + ttl ))
     note="${CF_RULE_PREFIX:-swatter}|exp=${expiry}|${reason}"
@@ -233,7 +233,13 @@ _cf_block_zone() {
         log_info "cloudflare ${CF_ACTION} ${ip} in ${vhost} (zone ${zid}, acct ${acct})"
         return 0
     fi
-    log_warn "CF block ${ip} in ${vhost} failed: $(printf '%s' "$resp" | _cf_err_summary)"
+    # Capture the reduced API error so score.sh can record it on the `failed`
+    # decision (makes a block_failed self-diagnosing), not just log it to stderr.
+    SWATTER_LAST_BACKEND_ERR="$(printf '%s' "$resp" | _cf_err_summary)"
+    # Defense-in-depth: never let the bearer token reach decisions.jsonl even if a
+    # (crafted/proxied) error body echoed it. CF real errors don't, but redact anyway.
+    [[ -n "${token:-}" ]] && SWATTER_LAST_BACKEND_ERR="${SWATTER_LAST_BACKEND_ERR//${token}/***}"
+    log_warn "CF block ${ip} in ${vhost} failed: ${SWATTER_LAST_BACKEND_ERR}"
     return 1
 }
 
@@ -265,8 +271,9 @@ _cf_block_account() {
         log_info "[dry-run] cloudflare ${CF_ACTION} ${ip} on all accounts (${reason})"
         return 0
     fi
-    [[ "${SWATTER_HAVE_JQ}" -eq 1 && "${SWATTER_HAVE_CURL}" -eq 1 ]] || { log_error "CF plane needs jq+curl"; return 1; }
+    [[ "${SWATTER_HAVE_JQ}" -eq 1 && "${SWATTER_HAVE_CURL}" -eq 1 ]] || { SWATTER_LAST_BACKEND_ERR="jq/curl unavailable"; log_error "CF plane needs jq+curl"; return 1; }
     _cf_load_accounts || {
+        SWATTER_LAST_BACKEND_ERR="0 CF accounts resolved (API unreachable or token lacks account read)"
         log_warn "CF block ${ip}: 0 CF accounts resolved (API unreachable, or token lacks 'Account Firewall Access Rules: Edit' / account read) — will retry"
         return 1
     }
@@ -283,7 +290,11 @@ _cf_block_account() {
             log_info "cloudflare ${CF_ACTION} ${ip} on account ${aid}"
             ok=$(( ok + 1 ))
         else
-            log_warn "CF block ${ip} on account ${aid} failed: $(printf '%s' "$resp" | _cf_err_summary)"
+            SWATTER_LAST_BACKEND_ERR="$(printf '%s' "$resp" | _cf_err_summary)"
+    # Defense-in-depth: never let the bearer token reach decisions.jsonl even if a
+    # (crafted/proxied) error body echoed it. CF real errors don't, but redact anyway.
+    [[ -n "${token:-}" ]] && SWATTER_LAST_BACKEND_ERR="${SWATTER_LAST_BACKEND_ERR//${token}/***}"
+            log_warn "CF block ${ip} on account ${aid} failed: ${SWATTER_LAST_BACKEND_ERR}"
             fail=$(( fail + 1 ))
         fi
     done
@@ -295,6 +306,9 @@ _cf_block_account() {
 # swatter_cf_block <ip> <ttl> <reason> <vhost> — dispatch on CF_SCOPE.
 swatter_cf_block() {
     local ip="$1" ttl="$2" reason="$3" vhost="${4:-}"
+    # Fresh each attempt so a prior IP's CF error can't attach to this one's
+    # `failed` record (score.sh reads SWATTER_LAST_BACKEND_ERR on the failed branch).
+    SWATTER_LAST_BACKEND_ERR=""
     # Belt over score.sh's routing: only a plane-managing posture may create
     # rules (explicit direct, or auto that detected CF + has creds). Return 1 so a
     # caller bug can't record a block that never happened.

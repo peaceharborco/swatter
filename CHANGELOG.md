@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Cloudflare block failures are now self-diagnosing.** When a CF block fails
+  (`block_failed`), the reduced CF API error is threaded into the decision record
+  as `evidence.backend_err` (with the bearer token redacted), so `/server-logs`
+  reading `decisions.jsonl` shows the cause (e.g. "429 too many requests") inline
+  instead of dead-ending — no cron edit, no waiting for the next burst. Non-API CF
+  failures (zone/account resolution, missing tooling) and jq-less hosts also record
+  a cause. The nightly digest surfaces a "backend-failed: N (top cause) — retried
+  next scan" line; these self-heal on the next scan, so they never escalate the
+  report-card grade. Implements the 2026-06-30 diagnosability spec (Grok-reviewed).
+
 ## [2.4.0] - 2026-07-01
 
 ### Added
