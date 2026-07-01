@@ -51,8 +51,8 @@ _install_origin_lock_persistence() {
 #   - skip cleanly if the binary is absent/non-executable;
 #   so the worst case is "lock not applied this cycle", never a half-built chain.
 _install_origin_lock_csfpre() {
-    local pre=/etc/csf/csfpre.sh
-    install -d -m 0700 /etc/csf
+    local pre="${SWATTER_OL_CSFPRE:-/etc/csf/csfpre.sh}"
+    install -d -m 0700 "$(dirname "$pre")"
 
     if [[ ! -f "${pre}" ]]; then
         # Create a minimal, valid csfpre.sh; CSF sources it, so a shebang +
@@ -84,7 +84,11 @@ CSFPRE_EOF
         echo "# GUARDED: a missing/broken swatter binary fails OPEN (no rule added),"
         echo "# never leaving a DROP without its preceding Cloudflare ACCEPT."
         echo 'if [ -x /usr/local/bin/swatter ]; then'
-        echo '    /usr/local/bin/swatter origin-lock apply --hook=csf || true'
+        # --yes is REQUIRED: this runs non-interactively at `csf -r`, and DROP mode
+        # otherwise aborts (return 3) at the interactive-confirm guard, swallowed by
+        # `|| true` — silently installing NO rules and leaving the origin open.
+        # Setting ORIGIN_LOCK=drop in swatter.conf IS the operator's deliberate consent.
+        echo '    /usr/local/bin/swatter origin-lock apply --hook=csf --yes || true'
         echo 'fi'
         echo "${ORIGIN_LOCK_END}"
     } >> "${tmp}"
@@ -97,6 +101,53 @@ CSFPRE_EOF
 
     # If CSF is already running, the block is live on the next reload — don't
     # force a reload here (it would rebuild the firewall mid-install).
+}
+
+# Neutralize a legacy HAND-WRITTEN static origin-lock block (one predating the
+# managed marker block) so it stops enforcing — WITHOUT breaking csfpre.sh syntax.
+# It wraps the legacy region — from its first origin-lock signature line to just
+# before the managed marker block (or EOF) — in a `: <<'MARKER' … MARKER` here-doc
+# fed to the no-op `:`. The wrapped text becomes inert literal input, so the block
+# never executes and its internal `if/while/…` constructs no longer need to
+# balance (commenting individual matching lines would leave a dangling `then`/`do`
+# and make `csf -r` error). Backs up first; idempotent (no-ops once the wrapper is
+# present). NOTE: any operator content between the static block and the managed
+# block is wrapped too — the backup makes this reversible; retire is deliberate.
+_OL_RETIRE_MARK="SWATTER_RETIRED_ORIGIN_LOCK"
+_ol_retire_legacy_static() {
+    local pre="${1:-${SWATTER_OL_CSFPRE:-/etc/csf/csfpre.sh}}"
+    [[ -f "$pre" ]] || return 0
+    local b="${ORIGIN_LOCK_BEGIN}" e="${ORIGIN_LOCK_END}" mark="${_OL_RETIRE_MARK}"
+
+    grep -qF -- ": <<'${mark}'" "$pre" && return 0   # already retired -> idempotent no-op
+
+    # First active legacy signature line outside the markers; managed-block start
+    # line (if any); total line count.
+    local info
+    info="$(awk -v b="$b" -v e="$e" '
+        $0==b{ if(!mb) mb=NR; inm=1; next } $0==e{inm=0; next} inm{next}
+        !lo && ( ($0 ~ /cf_origin/) || ($0 ~ /ORIGIN-LOCK/) || ($0 ~ /--match-set cf_origin/) ||
+                 (($0 ~ /-j DROP/) && ($0 ~ /dports 80,443/)) ) { lo=NR }
+        END { print (lo?lo:0) " " (mb?mb:0) " " NR }
+    ' "$pre")"
+    local lo="${info%% *}" rest="${info#* }"; local mb="${rest%% *}" last="${rest##* }"
+    [[ "$lo" -gt 0 ]] || return 0                    # no legacy block -> nothing to do
+    local end
+    if [[ "$mb" -gt "$lo" ]]; then end=$(( mb - 1 )); else end="$last"; fi
+
+    local stamp="${SWATTER_NOW_STAMP:-$(date -u +%Y%m%d-%H%M%S)}"
+    cp -p "$pre" "${pre}.bak-${stamp}" || { echo "  (backup failed; aborting retire)" >&2; return 1; }
+
+    local tmp; tmp="$(mktemp)" || return 1
+    local opener=": <<'${mark}'   # legacy static origin-lock retired by swatter"
+    awk -v lo="$lo" -v end="$end" -v opener="$opener" -v mark="$mark" '
+        NR==lo { print opener }
+        { print }
+        NR==end { print mark }
+    ' "$pre" > "$tmp" || { rm -f "$tmp"; return 1; }
+    install -m 0700 "$tmp" "$pre"; rm -f "$tmp"
+    chown root:root "$pre" 2>/dev/null || true
+    echo "retired legacy static origin-lock block (lines ${lo}-${end}) in ${pre}; backup ${pre}.bak-${stamp}"
 }
 
 # Non-CSF path: install + enable the systemd oneshot that re-applies at boot.

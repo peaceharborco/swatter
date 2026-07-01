@@ -584,8 +584,17 @@ swatter_originlock_section() {
 
     OL_P80=$(printf '%s\n' "$hits"  | grep -oE 'DPT=80\b'  | grep -c . || true)
     OL_P443=$(printf '%s\n' "$hits" | grep -oE 'DPT=443\b' | grep -c . || true)
-    OL_MODE="$(grep -m1 '^MODE=' "${SWATTER_OL_CSFPRE:-/etc/csf/csfpre.sh}" 2>/dev/null | sed 's/.*=//; s/"//g; s/ .*//' || true)"
-    [[ -n "$OL_MODE" ]] || OL_MODE="$( [[ "$(_ol_mode)" == off ]] && echo "?" || echo "$(_ol_mode)" )"
+    # Effective mode: the conf ORIGIN_LOCK (what the repo-managed csfpre hook
+    # enforces) is authoritative. Only when conf says off do we fall back to a
+    # legacy HAND static block's own MODE= (that block enforces without reading
+    # conf) — so the digest stays correct BOTH before and after the static->managed
+    # reconciliation, instead of trusting a stale/retired static artifact.
+    OL_MODE="$(_ol_mode)"
+    if [[ "$OL_MODE" == off ]]; then
+        local _ol_legacy
+        _ol_legacy="$(grep -m1 '^MODE=' "${SWATTER_OL_CSFPRE:-/etc/csf/csfpre.sh}" 2>/dev/null | sed 's/.*=//; s/"//g; s/ .*//' | tr '[:upper:]' '[:lower:]' || true)"
+        if [[ -n "$_ol_legacy" ]]; then OL_MODE="${_ol_legacy} (static)"; else OL_MODE="?"; fi
+    fi
 
     local srcs; srcs="$(printf '%s\n' "$hits" | grep -oE 'SRC=[0-9a-fA-F:.]+' | sed 's/SRC=//' | sort | uniq -c | sort -rn)"
     OL_IPS=$(printf '%s\n' "$srcs" | grep -c . || true)

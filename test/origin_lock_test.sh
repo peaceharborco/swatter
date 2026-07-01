@@ -315,6 +315,17 @@ check ol-top-attacker "$(printf '%s\n' "$OL_TOP_ROWS" | awk -F'\t' '$1=="45.135.
 # Prove window filter: the 10-day-old line from 10.10.10.10 must be excluded.
 check ol-window-exclude-oldip "$(printf '%s\n' "$OL_TOP_ROWS" | grep -c '10\.10\.10\.10' || true)" "0"
 check ol-gate-auto-hits "$(_ol_digest_should_render 4 && echo show || echo hide)" "show"
+
+# OL_MODE resolution: conf ORIGIN_LOCK (managed hook) is authoritative; a legacy
+# static MODE= only surfaces when conf is off — so the digest is correct after the
+# static->managed reconciliation, not stuck on a retired static artifact.
+ORIGIN_LOCK="drop"; SWATTER_OL_CSFPRE="$TMP/csfpre.none"
+swatter_originlock_section 24h >/dev/null 2>&1
+check ol-mode-conf-authoritative "$OL_MODE" "drop"
+ORIGIN_LOCK=""; printf 'MODE="DROP"\n' > "$TMP/csfpre.legacy"; SWATTER_OL_CSFPRE="$TMP/csfpre.legacy"
+swatter_originlock_section 24h >/dev/null 2>&1
+check ol-mode-legacy-static "$OL_MODE" "drop (static)"
+ORIGIN_LOCK="log"; SWATTER_OL_CSFPRE="$TMP/csfpre.none"
 ORIGIN_LOCK_DIGEST="auto"
 check ol-gate-auto-zero  "$(_ol_digest_should_render 0 && echo show || echo hide)" "hide"
 ORIGIN_LOCK_DIGEST="on"
