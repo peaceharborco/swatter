@@ -162,7 +162,7 @@ swatter_errors_section() {
     ERR_NOISE=$(( ERR_TOTAL - ERR_GENUINE ))
 
     {
-        echo "Genuine issues: ${ERR_GENUINE}  (FATAL: ${ERR_FATAL});  filtered as known noise: ${ERR_NOISE}"
+        echo "Non-fatal: ${ERR_GENUINE}  ·  Fatal: ${ERR_FATAL}  ·  filtered as known noise: ${ERR_NOISE}"
         echo
         if (( ERR_GENUINE > 0 )); then
             echo "Issue signatures (count x normalized error):"

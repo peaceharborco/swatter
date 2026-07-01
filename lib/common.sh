@@ -159,6 +159,25 @@ REPORT_METHOD="sendmail"          # sendmail | sendgrid | brevo
 SENDGRID_KEY_FILE=""
 BREVO_API_KEY=""
 BREVO_KEY_FILE=""
+# Triage-command hint shown in the recommendation line on a non-clean report
+# (e.g. "/server-logs" for an operator who has that tool). Blank = generic wording
+# ("Review the sections below") so the public default suggests nothing bespoke.
+REPORT_TRIAGE_HINT=""
+# Grade thresholds (report card A–F). Tunable per host. F = any fatal error.
+# Only ELEVATED non-fatal error volume escalates the grade — routine noise and a
+# high block count stay at B (blocks mean Swatter is doing its job, not a problem).
+REPORT_GRADE_D_ERRORS=300         # >= this many non-fatal errors -> D (act now / error flood)
+REPORT_GRADE_C_ERRORS=100         # >= this many non-fatal errors -> C (elevated, investigate)
+
+# SMS alert on a severe report grade — a SECOND channel alongside the email (the
+# email always sends too). OFF by default. Fail-soft: never blocks the report.
+ALERT_SMS_METHOD=""               # "twilio" to enable; "" = off
+ALERT_SMS_GRADES="D F"            # grades that trigger an SMS
+ALERT_SMS_TO=""                   # destination number, E.164 (+15551234567)
+ALERT_SMS_DEDUP_HOURS=6           # suppress a duplicate same-grade text within N hours
+TWILIO_SID=""                     # Twilio Account SID
+TWILIO_TOKEN_FILE=""              # path to a file holding the auth token (mode 0400)
+TWILIO_FROM=""                    # Twilio sender number, E.164
 
 # Server error-log triage section (bundled error digest).
 ERROR_DIGEST_ENABLE="false"
