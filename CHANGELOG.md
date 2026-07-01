@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **SMS alert on a severe report grade (Twilio).** A second channel alongside the
+  email: when the nightly report grades **D or F**, also text the operator. Fully
+  config-driven and **off by default** so the public build alerts nobody. Fail-soft
+  — a Twilio outage or misconfig logs a warning and never blocks the report. The
+  auth token is read from a mode-0400 file (never the conf); `swatter report --test`
+  sends a `[TEST]` text to verify setup; a same-grade dedup window
+  (`ALERT_SMS_DEDUP_HOURS`, default 6h) avoids repeat texts. The sender
+  (`TWILIO_FROM`) may be a phone number or a Messaging Service SID. New config:
+  `ALERT_SMS_METHOD`, `ALERT_SMS_GRADES`, `ALERT_SMS_TO`, `ALERT_SMS_DEDUP_HOURS`,
+  `TWILIO_SID`, `TWILIO_TOKEN_FILE`, `TWILIO_FROM`.
+
 ### Changed
 - **Report email redesigned as a triage report card.** The HTML email now leads
   with a **severity grade (A–F)** and a plain-language recommendation of whether to
