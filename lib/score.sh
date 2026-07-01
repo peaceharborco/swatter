@@ -59,6 +59,7 @@ _swatter_audit() {
 #   _swatter_execute_block <ip> <action> <ttl> <folded> <reason> <ev> <rep> <novhost> <top_vhost> <healthy>
 _swatter_execute_block() {
     local ip="$1" action="$2" ttl="$3" folded="$4" reason="$5" ev="$6" rep="$7" novhost="$8" top_vhost="$9" healthy="${10}"
+    SWATTER_LAST_BACKEND_ERR=""   # per-IP: a backend failure below sets it; no cross-IP bleed
     # never-block, LAST, right before acting.
     local nb
     if nb="$(swatter_is_never_block "$ip")"; then
@@ -122,8 +123,21 @@ _swatter_execute_block() {
         # reached the firewall, and offenders.perm stays 0 so the next run
         # legitimately retries instead of a phantom perm looping every cycle.
         # "failed" is exact-matched out of the block tallies in report.sh.
-        log_warn "block ${ip} (${action}/${channel}) failed (rc=${rc}); recording 'failed' not '${action}'"
-        _swatter_audit "$ip" "$folded" "failed" "$channel" "$ttl" "block_failed action=${action} ${reason}" "$ev" "$rep"
+        # Thread the captured backend error (CF API summary) into the record as a
+        # structured evidence.backend_err so a future /server-logs read shows the
+        # cause inline instead of dead-ending. Bounded + no secret (see _cf_err_summary).
+        local ev_failed="$ev" fail_reason="block_failed action=${action} ${reason}"
+        if [[ -n "${SWATTER_LAST_BACKEND_ERR:-}" ]]; then
+            if [[ "${SWATTER_HAVE_JQ:-0}" -eq 1 ]]; then
+                ev_failed="$(printf '%s' "$ev" | jq -c --arg e "${SWATTER_LAST_BACKEND_ERR}" '. + {backend_err:$e}' 2>/dev/null || printf '%s' "$ev")"
+            else
+                # No jq: the record is written via printf, so keep diagnosability by
+                # threading the cause into the reason string instead of the evidence.
+                fail_reason="${fail_reason} backend_err=${SWATTER_LAST_BACKEND_ERR}"
+            fi
+        fi
+        log_warn "block ${ip} (${action}/${channel}) failed (rc=${rc})${SWATTER_LAST_BACKEND_ERR:+: ${SWATTER_LAST_BACKEND_ERR}}; recording 'failed' not '${action}'"
+        _swatter_audit "$ip" "$folded" "failed" "$channel" "$ttl" "$fail_reason" "$ev_failed" "$rep"
     fi
     return 0
 }

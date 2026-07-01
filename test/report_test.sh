@@ -48,6 +48,16 @@ ERROR_DIGEST_ENABLE="true"; ORIGIN_LOCK_DIGEST="auto"; FAKE_OL=253
 body="$(swatter_report_build 24h)"
 check has-origin-3plane "$(printf '%s' "$body" | grep -c 'Origin-Lock')" "1"
 check has-errors-3plane "$(printf '%s' "$body" | grep -c 'Server Errors')" "1"
+
+# Text digest surfaces backend failures + dominant cause from the decision log.
+: > "$LOG_DIR/decisions.jsonl"; _now=$(date +%s)
+for ip in 9.9.9.9 9.9.9.8; do
+  printf '{"ts":%s,"action":"failed","channel":"cloudflare","score":91,"ip":"%s","reason":"block_failed","evidence":{"backend_err":"cloudflare 429 rate limited"}}\n' "$_now" "$ip" >> "$LOG_DIR/decisions.jsonl"
+done
+ERROR_DIGEST_ENABLE="false"; FAKE_OL=0
+fbody="$(swatter_report_build 24h)"
+check text-backend-failed "$(printf '%s' "$fbody" | grep -c 'backend-failed:')" "1"
+check text-backend-cause  "$(printf '%s' "$fbody" | grep -c 'cloudflare 429 rate limited')" "1"
 rm -rf "$LOG_DIR"
 
 # HTML render: Direction B structure, verdict color, tiles, no <pre> dump.
@@ -73,6 +83,12 @@ check html-footer-phs   "$(printf '%s' "$html" | grep -c 'Peace Harbor Studios')
 check html-footer-phlink "$(printf '%s' "$html" | grep -c 'studios.peaceharbor.com')" "1"
 check html-footer-gh    "$(printf '%s' "$html" | grep -c 'github.com/peaceharborco/swatter')" "1"
 check html-help-clear   "$(printf '%s' "$html" | grep -c 'Why An IP Was Flagged')" "1"
+# Backend-failure surfacing: shows when there are failed CF blocks, hidden at 0.
+check html-no-backend-when-0 "$(printf '%s' "$html" | grep -c 'backend-failed')" "0"
+RPT_FAILED=3 RPT_FAIL_CAUSE="cloudflare 429 rate limited"; html2="$(_report_render_html "")"
+check html-backend-failed "$(printf '%s' "$html2" | grep -c '3 backend-failed')" "1"
+check html-backend-cause  "$(printf '%s' "$html2" | grep -c 'cloudflare 429 rate limited')" "1"
+RPT_FAILED=0 RPT_FAIL_CAUSE=""
 # Text body carries the same footer.
 tbody="$(swatter_report_build 24h)"
 check text-footer-phs   "$(printf '%s' "$tbody" | grep -c 'a Peace Harbor Studios project')" "1"

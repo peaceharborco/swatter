@@ -1,7 +1,8 @@
 # Swatter CF block-failure diagnosability — design
 
 **Date:** 2026-06-30
-**Status:** proposed — triggered by a 2026-06-30 prod investigation (cds1)
+**Status:** BUILT 2026-07-01 (core + Optional B digest line; Optional A retry deferred). Grok-reviewed — see `-review-grok.md`; the secret-redaction blocker + non-API-cause / jq-fallback majors were folded in. CSF/direct-plane `failed` rows still lack a cause (a small follow-up).
+**Original status:** proposed — triggered by a 2026-06-30 prod investigation (cds1)
 **Scope:** Make `failed` (`block_failed`) Cloudflare-channel decisions
 *self-diagnosing from the logs*, so the root cause of a transient CF block
 failure can be read after the fact without re-instrumenting cron. Secondary:

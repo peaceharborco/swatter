@@ -50,7 +50,7 @@ swatter_report_build() {
     cutoff=$(( $(swatter_now) - $(_report_window_secs "$window") ))
     local log="${LOG_DIR}/decisions.jsonl"
 
-    RPT_ACTED=0 RPT_PERM=0 RPT_TEMP=0 RPT_CF=0 RPT_DIRECT=0 RPT_EXEMPT=0 RPT_WATCH=0
+    RPT_ACTED=0 RPT_PERM=0 RPT_TEMP=0 RPT_CF=0 RPT_DIRECT=0 RPT_EXEMPT=0 RPT_WATCH=0 RPT_FAILED=0 RPT_FAIL_CAUSE=""
     ERR_TOTAL=0 ERR_FATAL=0 ERR_GENUINE=0 ERR_NOISE=0
     OL_HITS=0 OL_IPS=0 OL_P80=0 OL_P443=0 OL_MODE="" OL_TOP_ROWS=""
 
@@ -157,6 +157,14 @@ _report_emit_abuse() {
     RPT_OFF1="$(printf '%s\n' "$_offlist" | sed -n 1p)"
     RPT_OFF2="$(printf '%s\n' "$_offlist" | sed -n 2p)"
 
+    # Backend failures (block_failed) + their dominant cause, from the captured
+    # evidence.backend_err. These self-heal (next scan retries), so they inform
+    # but never escalate the grade — just make a silent 41/day legible.
+    RPT_FAILED=$(printf '%s\n' "$recs" | jq -rc 'select(.action=="failed")' | grep -c . || true)
+    RPT_FAIL_CAUSE="$(printf '%s\n' "$recs" \
+        | jq -r 'select(.action=="failed") | .evidence.backend_err // empty' \
+        | sort | uniq -c | sort -rn | sed -E 's/^ *[0-9]+ +//' | sed -n 1p)"
+
     {
         echo "Actions Taken"
         echo "-------------"
@@ -166,6 +174,7 @@ _report_emit_abuse() {
         printf '  %-22s %s\n' "  via Cloudflare:"   "${RPT_CF}"
         printf '  %-22s %s\n' "exempted (allowlist):" "${RPT_EXEMPT}"
         printf '  %-22s %s\n' "watched (no action):" "${RPT_WATCH}"
+        (( RPT_FAILED > 0 )) && printf '  %-22s %s\n' "backend-failed:" "${RPT_FAILED}${RPT_FAIL_CAUSE:+  (top: ${RPT_FAIL_CAUSE})}  — retried next scan"
         echo
 
         echo "By Offense Type"
@@ -256,8 +265,12 @@ _report_render_html() {
     printf '<div style="padding:0 22px 16px;font-size:10px;color:#545d69;letter-spacing:.3px">A All Clear · B Review · C Investigate · D Act Now · F Fatal / Outage</div>'
 
     # Bad Actors
-    printf '<div style="padding:16px 22px;border-top:1px solid #eef1f4;border-left:3px solid #c0392b"><table width="100%%"><tr><td style="font-size:14px;font-weight:800">🛡️ Bad Actors</td><td style="font-size:22px;font-weight:800;color:#c0392b;text-align:right">%s</td></tr></table><div style="font-size:13px;color:#1b1f24;margin-top:5px;line-height:1.55">%s</div><div style="font-size:12px;color:#545d69;margin-top:6px">%s Permanent · %s Temporary · %s Via Cloudflare · %s At Server · %s Exempted</div></div>' \
-        "${RPT_ACTED:-0}" "$(_report_summary_actors | esc)" "${RPT_PERM:-0}" "${RPT_TEMP:-0}" "${RPT_CF:-0}" "${RPT_DIRECT:-0}" "${RPT_EXEMPT:-0}"
+    local bf=""
+    if (( ${RPT_FAILED:-0} > 0 )); then
+        bf=" · <span style=\"color:#B26A00;font-weight:600\">${RPT_FAILED} backend-failed</span>$( [[ -n "${RPT_FAIL_CAUSE:-}" ]] && printf ' <span style="color:#545d69">(top: %s — retried next scan)</span>' "$(printf '%s' "${RPT_FAIL_CAUSE}" | esc)" )"
+    fi
+    printf '<div style="padding:16px 22px;border-top:1px solid #eef1f4;border-left:3px solid #c0392b"><table width="100%%"><tr><td style="font-size:14px;font-weight:800">🛡️ Bad Actors</td><td style="font-size:22px;font-weight:800;color:#c0392b;text-align:right">%s</td></tr></table><div style="font-size:13px;color:#1b1f24;margin-top:5px;line-height:1.55">%s</div><div style="font-size:12px;color:#545d69;margin-top:6px">%s Permanent · %s Temporary · %s Via Cloudflare · %s At Server · %s Exempted%s</div></div>' \
+        "${RPT_ACTED:-0}" "$(_report_summary_actors | esc)" "${RPT_PERM:-0}" "${RPT_TEMP:-0}" "${RPT_CF:-0}" "${RPT_DIRECT:-0}" "${RPT_EXEMPT:-0}" "$bf"
 
     # Origin-Lock (gated)
     if _ol_digest_should_render "${OL_HITS:-0}"; then
