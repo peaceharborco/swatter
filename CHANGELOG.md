@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-07-01
+
+### Fixed
+- **Origin-lock standalone `apply` no longer takes the origin down on a mode
+  transition.** Applying `log` then `drop` left the CF/ACME/LOG accepts in place
+  (their `-C` guards matched) and `-I`-prepended only the new DROP to INPUT
+  position 1 — **above** the Cloudflare-ACCEPT — dropping all web traffic
+  including Cloudflare. Standalone `apply` now tears its own rules down first so
+  the rebuild lands on a clean, correctly ordered chain. The csf-hook path is
+  unchanged (CSF flushes the chain before it runs).
+- **Origin-lock LOG rule is now reliably removable.** `_ol_emit_log` installs
+  `--log-prefix "ORIGIN-LOCK: "` (trailing space) but teardown consumed its delete
+  pattern unquoted, word-splitting the space away so `-D` never matched — the LOG
+  rule lingered across reloads and orphaned on every `disable`. Teardown now
+  deletes it with a quoted prefix. The operator/monitoring allow-accepts are torn
+  down in a loop (was single-shot) so legacy duplicates clear.
+- **Managed csfpre origin-lock hook no longer silently no-ops in DROP mode.** The
+  hook ran `origin-lock apply --hook=csf` without `--yes`; at `csf -r`
+  (non-interactive) DROP mode hit the confirm guard and returned 3, swallowed by
+  `|| true`, installing **zero** rules and leaving the origin open. The hook now
+  passes `--yes` (setting `ORIGIN_LOCK=drop` in the config is the operator's
+  deliberate consent).
+
+### Added
+- **`_ol_retire_legacy_static`** (install.sh) — safely retires a legacy
+  hand-written static origin-lock block by wrapping it in an inert `: <<'MARKER'`
+  here-doc (keeps `csfpre.sh` valid `sh` — commenting individual matching lines
+  would leave a dangling `then`/`do`). Backs up first; idempotent.
+
+### Changed
+- Origin-lock digest resolves the effective mode from the config `ORIGIN_LOCK`
+  (what the managed hook enforces) first, using a legacy static `MODE=` only as a
+  fallback — so reports stay correct after the static→managed reconciliation.
+- Documented the origin-lock persistence model on CSF hosts as **single-carrier
+  csfpre** (measured durable across `csf -r`/`csf -ra`/lfd restart under
+  `FASTSTART=1`/`LF_IPSET=1`); no systemd carrier needed.
+
 ## [2.3.0] - 2026-06-30
 
 ### Added
@@ -277,7 +314,9 @@ plane-correct blocking (CSF for direct-to-origin, Cloudflare IP Access Rules for
 via-proxy), a hardcoded Cloudflare never-block set, and fail-closed behavior when
 the range list is stale.
 
-[Unreleased]: https://github.com/peaceharborco/swatter/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/peaceharborco/swatter/compare/v2.3.1...HEAD
+[2.3.1]: https://github.com/peaceharborco/swatter/compare/v2.3.0...v2.3.1
+[2.3.0]: https://github.com/peaceharborco/swatter/compare/v2.2.0...v2.3.0
 [2.1.0]: https://github.com/peaceharborco/swatter/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/peaceharborco/swatter/compare/v1.2.2...v2.0.0
 [1.2.2]: https://github.com/peaceharborco/swatter/compare/v1.2.1...v1.2.2
