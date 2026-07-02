@@ -13,8 +13,9 @@ REPORT_FROM="swatter@x"; REPORT_FROM_NAME="Swatter"
 SENDGRID_KEY_FILE="$TMP/sg.key"; printf 'SG.testkey\n' > "$SENDGRID_KEY_FILE"
 has() { local n="$1" pat="$2"; if grep -qF "$pat" "$CURL_BODY"; then PASS=$((PASS+1)); else echo "FAIL ${n}: '${pat}' not seen"; FAIL=$((FAIL+1)); fi; }
 
-# Mock curl: record args + stdin (the JSON payload), return HTTP 202.
-curl() { printf 'ARGS: %s\n' "$*" >> "$CURL_BODY"; cat >> "$CURL_BODY" 2>/dev/null; echo "202"; }
+# Mock curl: record args (the JSON payload arrives via --data, an ARG — never
+# stdin; a `cat` here blocks forever on an inherited open stdin). Return 202.
+curl() { printf 'ARGS: %s\n' "$*" >> "$CURL_BODY"; echo "202"; }
 
 REPORT_METHOD="sendgrid"
 swatter_send_email "ops@example.com" "subj-line" "body-line"
