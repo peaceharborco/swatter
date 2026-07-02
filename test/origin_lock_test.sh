@@ -58,14 +58,20 @@ ip6tables(){ echo "ip6tables $*" >> "$CALLS"; [[ "$1" == "-C" ]] && return "${IP
 # 1. apply (log mode, --hook=csf) — CF/ACME accept + LOG, NO established, NO preamble
 # ===========================================================================
 : > "$CALLS"
-cmd_origin_lock apply --hook=csf
+cmd_origin_lock apply --hook=csf 2>"$TMP/applyerr"
 has  csf-set4   "ipset create cf_origin4 hash:net family inet"
 has  csf-set6   "ipset create cf_origin6 hash:net family inet6"
 has  csf-add4   "ipset add cf_origin4 203.0.113.0/24"
 has  csf-add6   "ipset add cf_origin6 2001:db8:1::/48"
 has  csf-acc4   "iptables -A INPUT -p tcp -m multiport --dports 80,443 -m set --match-set cf_origin4 src -j ACCEPT"
 has  csf-acc6   "ip6tables -A INPUT -p tcp -m multiport --dports 80,443 -m set --match-set cf_origin6 src -j ACCEPT"
-has  csf-acme4  "iptables -A INPUT -p tcp --dport 80 -m string --string /.well-known/ --algo bm -j ACCEPT"
+# The /.well-known/ ACME carve-out is RETIRED: an xt_string payload match can
+# never admit a NEW connection (the handshake carries no payload and hits the
+# DROP first) — proven dead on prod 2026-07-01 (rule counter 0 forever while
+# Let's Encrypt validators were SYN-dropped). It must never be emitted.
+hasnt csf-no-acme "well-known"
+# Locking :80 therefore breaks HTTP-01/DCV outright — the apply must say so.
+grep -qiE "HTTP-01|DCV" "$TMP/applyerr" && PASS=$((PASS+1)) || { echo "FAIL csf-port80-dcv-warn"; FAIL=$((FAIL+1)); }
 has  csf-log4   "iptables -A INPUT -p tcp -m multiport --dports 80,443 -m limit --limit 5/min -j LOG --log-prefix ORIGIN-LOCK: "
 has  csf-log6   "ip6tables -A INPUT -p tcp -m multiport --dports 80,443 -m limit --limit 5/min -j LOG --log-prefix ORIGIN-LOCK: "
 hasnt csf-no-drop4 "-j DROP"
@@ -176,21 +182,23 @@ hasnt v6gate-v6-absent  "ip6tables -A INPUT"
 SWATTER_HAVE_IP6TABLES=1
 
 # ===========================================================================
-# 8. ACME toggle off => no ACME accept rule
+# 8. ACME/DCV posture: ports without :80 -> no DCV warning; teardown still
+#    clears the LEGACY /.well-known/ rule an older swatter installed.
 # ===========================================================================
 : > "$CALLS"
-ORIGIN_LOCK_ALLOW_ACME="false"
-cmd_origin_lock apply --hook=csf >/dev/null 2>&1
-hasnt acme-off "well-known"
-ORIGIN_LOCK_ALLOW_ACME="true"
-
-# ACME soft-fail when xt_string missing => warn, no ACME rule, rest still applied
+ORIGIN_LOCK_PORTS="443"
+cmd_origin_lock apply --hook=csf 2>"$TMP/applyerr443"
+grep -qiE "HTTP-01|DCV" "$TMP/applyerr443" && { echo "FAIL ports443-no-dcv-warn"; FAIL=$((FAIL+1)); } || PASS=$((PASS+1))
+has  ports443-acc4 "iptables -A INPUT -p tcp -m multiport --dports 443 -m set --match-set cf_origin4 src -j ACCEPT"
+ORIGIN_LOCK_PORTS="80,443"
+# Default port set is 443 (Option A posture): :80 stays open for HTTP-01/DCV.
+_saved_ports="$ORIGIN_LOCK_PORTS"; unset ORIGIN_LOCK_PORTS
+check ports-default "$(_ol_ports)" "443"
+ORIGIN_LOCK_PORTS="$_saved_ports"
+# Upgraded boxes: disable/teardown must still delete the retired legacy rule.
 : > "$CALLS"
-SWATTER_OL_HAVE_XT_STRING=0
-cmd_origin_lock apply --hook=csf >/dev/null 2>&1
-hasnt acme-xtstring-missing "well-known"
-has   acme-rest-still "iptables -A INPUT -p tcp -m multiport --dports 80,443 -m set --match-set cf_origin4 src -j ACCEPT"
-SWATTER_OL_HAVE_XT_STRING=1
+cmd_origin_lock disable >/dev/null 2>&1
+has legacy-acme-teardown "iptables -D INPUT -p tcp --dport 80 -m string --string /.well-known/ --algo bm -j ACCEPT"
 
 # ===========================================================================
 # 9. idempotent standalone re-apply: -C guard present so -I is conditional
