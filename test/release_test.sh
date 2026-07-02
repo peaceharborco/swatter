@@ -28,6 +28,27 @@ assert_eq "from 0.0.0"             "$(_next_version 0.0.0 minor)"  "0.1.0"
 assert_fail _next_version 1.2.2 sideways      # unknown bump word
 assert_fail _next_version not-a-version patch # malformed current
 
+# The test gate must run each test with stdin CLOSED (</dev/null): a test — or
+# a mock inside one — that reads stdin would otherwise block the release
+# forever when release.sh is driven from a terminal or pipeline (observed
+# 2026-07-01: a curl mock's `cat` hung the v2.5.0 dry-run). The fixture test
+# passes ONLY if its stdin is /dev/null; we drive the gate with /dev/zero so
+# plain inheritance would fail it.
+GATEDIR="$(mktemp -d "${TMPDIR:-/tmp}/swatter-relgate.XXXXXX")"
+trap 'rm -rf "$GATEDIR"' EXIT
+cat > "$GATEDIR/stdin_guard_test.sh" <<'EOF'
+[[ /dev/stdin -ef /dev/null ]] || exit 1
+exit 0
+EOF
+_release_test_gate "$GATEDIR" </dev/zero >/dev/null 2>&1
+assert_eq "gate closes each test's stdin" "$?" "0"
+# ...and a failing test still fails the gate.
+cat > "$GATEDIR/alwaysfail_test.sh" <<'EOF'
+exit 1
+EOF
+_release_test_gate "$GATEDIR" </dev/null >/dev/null 2>&1
+assert_eq "gate propagates test failure" "$?" "1"
+
 echo
 echo "release: ${PASS} passed, ${FAIL} failed"
 [[ "$FAIL" -eq 0 ]]

@@ -50,6 +50,23 @@ _file_version() {
         | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/'
 }
 
+# _release_test_gate [dir] -> run every *_test.sh; rc 0 iff all pass. Each test
+# runs with stdin CLOSED (</dev/null): a test — or a mock inside one — that
+# reads stdin would otherwise block the release forever when this script is
+# driven from a terminal or pipeline (bit the v2.5.0 cut).
+_release_test_gate() {
+    local dir="${1:-test}" t fails=0
+    for t in "$dir"/*_test.sh; do
+        [[ -e "$t" ]] || continue
+        if bash "$t" >/dev/null 2>&1 </dev/null; then
+            printf '    ok   %s\n' "$(basename "$t")"
+        else
+            printf '    FAIL %s\n' "$(basename "$t")"; fails=1
+        fi
+    done
+    (( fails == 0 ))
+}
+
 # _gen_notes <prev-tag> <new-version> -> Markdown release notes on stdout.
 _gen_notes() {
     local prev="$1" new="$2"
@@ -118,16 +135,7 @@ main() {
 
     # Gate on green tests.
     info "running test suite"
-    local t fails=0
-    for t in test/*_test.sh; do
-        [[ -e "$t" ]] || continue
-        if bash "$t" >/dev/null 2>&1; then
-            printf '    ok   %s\n' "$(basename "$t")"
-        else
-            printf '    FAIL %s\n' "$(basename "$t")"; fails=1
-        fi
-    done
-    (( fails == 0 )) || die "tests failing — not releasing"
+    _release_test_gate test || die "tests failing — not releasing"
 
     # Release notes. (Bake the path into the trap NOW — a single-quoted trap would
     # reference $notes at EXIT time, after this local is out of scope: set -u abort.)
