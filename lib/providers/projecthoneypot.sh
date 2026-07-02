@@ -6,6 +6,12 @@
 # (0=search engine, 1=suspicious, 2=harvester, 4=comment spammer). IPv4 only.
 # Type 0 means octet3 is a SEARCH-ENGINE ID, not a threat -> no data. Any DNS
 # failure, NXDOMAIN, or non-127 answer -> no data.
+#
+# SECRET-EXPOSURE NOTE: http:BL's protocol embeds the access key in the QUERIED
+# HOSTNAME, so it is inherently visible in the dig/host argv (`ps`) and in DNS
+# traffic — that is Project Honey Pot's design, not fixable here (unlike the
+# curl call sites, which pass keys via `-K` config files). The key is
+# low-privilege (lookup-only) by the provider's own model.
 
 provider_projecthoneypot() {
     local ip="$1"

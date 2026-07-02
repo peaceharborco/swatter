@@ -27,8 +27,13 @@ provider_greynoise() {
     [[ "${SWATTER_HAVE_CURL}" -eq 1 && "${SWATTER_HAVE_JQ}" -eq 1 ]] || return 1
     _greynoise_quota_ok || { log_debug "greynoise daily quota exhausted"; return 1; }
 
-    local resp; resp="$(curl --max-time 5 -fsS "${GREYNOISE_URL}/${ip}" \
-        -H "key: ${GREYNOISE_KEY}" -H "Accept: application/json" 2>/dev/null)" || return 1
+    # API key via -K config file, never argv (visible in `ps` on a shared box).
+    local cfg resp rc
+    cfg="$(swatter_curl_cfg "header = \"key: ${GREYNOISE_KEY}\"")" || return 1
+    resp="$(curl --max-time 5 -fsS "${GREYNOISE_URL}/${ip}" \
+        -K "$cfg" -H "Accept: application/json" 2>/dev/null)"; rc=$?
+    rm -f "$cfg"
+    (( rc == 0 )) || return 1
     _greynoise_quota_inc
     [[ -n "$resp" ]] || return 1
 

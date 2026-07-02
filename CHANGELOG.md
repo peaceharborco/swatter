@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **Intel-provider API keys moved out of curl argv too.** The v2.5.0 secret
+  hygiene converted the six send/report call sites but missed the intel
+  lookups: AbuseIPDB per-IP check, AbuseIPDB blocklist download, and GreyNoise
+  still passed keys via `-H` (visible in `ps`). All three now use the same
+  `swatter_curl_cfg` `-K` pattern (pinned in test/curl_secrets_test.sh).
+  Project Honey Pot's http:BL key is inherently argv/DNS-visible by that
+  protocol's design (key rides in the queried hostname) — documented in the
+  provider, not fixable.
+- **Origin-lock stderr tempfile is now mktemp-random.** The apply-failure
+  capture file used a pid-predictable `/tmp` name written by root (symlink-
+  attack surface); it is now created once per run via `mktemp` and removed on
+  both apply exit paths.
+
+### Fixed
+- **`refresh-feeds` write failures count as failures.** A validated Cloudflare
+  range download that failed to LAND (unwritable target / disk full) logged
+  nothing and exited 0; it now logs an error, keeps the existing file, and
+  exits nonzero for cron.
+
 ## [2.5.0] - 2026-07-01
 
 ### Changed

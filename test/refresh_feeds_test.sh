@@ -61,6 +61,15 @@ echo fail > "$state/curl_mode"
 run; check fail-rc-nonzero "$([[ $? -ne 0 ]] && echo yes || echo no)" "yes"
 grep -q "104.16.0.0/13" "$state/cloudflare.cidr" && PASS=$((PASS+1)) || { echo "FAIL fail-file-kept"; FAIL=$((FAIL+1)); }
 
+# D) valid download but UNWRITABLE target -> nonzero exit (a validated body
+# that never lands must not read as success to cron).
+echo good > "$state/curl_mode"
+mkdir -p "$state/ro"; touch "$state/ro/cloudflare.cidr"
+chmod 0444 "$state/ro/cloudflare.cidr"; chmod 0555 "$state/ro"
+sed -i.bak "s|^CLOUDFLARE_IPS_FILE=.*|CLOUDFLARE_IPS_FILE=\"$state/ro/cloudflare.cidr\"|" "$SWATTER_CONF"
+run; check write-fail-rc-nonzero "$([[ $? -ne 0 ]] && echo yes || echo no)" "yes"
+chmod 0755 "$state/ro"; mv "$SWATTER_CONF.bak" "$SWATTER_CONF"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

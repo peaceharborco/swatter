@@ -212,7 +212,7 @@ cmd_refresh_feeds() {
     local rc=0
     # Cloudflare ranges (always — they gate the never-block set).
     if [[ "${SWATTER_HAVE_CURL}" -eq 1 ]]; then
-        local cf4 cf6 tmp; tmp="$(mktemp)"
+        local cf4 cf6 tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/swatter-cfranges.XXXXXX")" || { log_error "refresh-feeds: mktemp failed"; return 1; }
         cf4="$(curl --max-time 20 -fsS https://www.cloudflare.com/ips-v4 2>/dev/null)"
         cf6="$(curl --max-time 20 -fsS https://www.cloudflare.com/ips-v6 2>/dev/null)"
         if [[ -z "$cf4" ]]; then
@@ -225,9 +225,15 @@ cmd_refresh_feeds() {
             log_error "cloudflare range download INVALID (non-CIDR body) — keeping existing ${CLOUDFLARE_IPS_FILE}"
             rc=1
         else
-            { printf '%s\n' "$cf4"; printf '%s\n' "$cf6"; } > "$tmp"
-            install -m 0644 "$tmp" "${CLOUDFLARE_IPS_FILE}" 2>/dev/null || cp "$tmp" "${CLOUDFLARE_IPS_FILE}"
-            log_info "cloudflare ranges refreshed -> ${CLOUDFLARE_IPS_FILE}"
+            # A validated body that never lands must not read as success to cron.
+            if { printf '%s\n' "$cf4"; printf '%s\n' "$cf6"; } > "$tmp" 2>/dev/null \
+               && { install -m 0644 "$tmp" "${CLOUDFLARE_IPS_FILE}" 2>/dev/null \
+                    || cp "$tmp" "${CLOUDFLARE_IPS_FILE}" 2>/dev/null; }; then
+                log_info "cloudflare ranges refreshed -> ${CLOUDFLARE_IPS_FILE}"
+            else
+                log_error "cloudflare range WRITE failed (${CLOUDFLARE_IPS_FILE}) — existing file kept"
+                rc=1
+            fi
         fi
         rm -f "$tmp"
     fi
