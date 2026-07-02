@@ -163,7 +163,11 @@ a key only for the providers you want; each is free:
 
 Put keys in your **own** `/etc/swatter/swatter.conf` (root-only, `0600`) — never
 in the repo, never shared. The shipped `swatter.example.conf` has every key set
-to empty by default.
+to empty by default. At runtime, keys never appear on a curl command line
+(where any local user could read them out of `ps`): every credentialed request
+passes its secret through a per-call `0600` config file (`curl -K`). The one
+exception is Project Honey Pot's http:BL, whose protocol embeds the key in the
+DNS query itself — that key is lookup-only by design.
 
 ---
 
@@ -226,8 +230,8 @@ The direct-vs-proxied classifier (above) is **reactive**: it scores a
 direct-to-origin Cloudflare-bypass offender *after* it shows up in the logs,
 which a fast valid-`Host` flood can outrun. **Origin lock is the structural
 complement** — an inline L3 firewall rule that only lets Cloudflare edge ranges
-reach the web ports (`80`/`443`), so bypass traffic is dropped at the socket
-before it ever becomes a log line. The classifier still scores offenders from
+reach the locked web ports (`ORIGIN_LOCK_PORTS`, default `443`), so bypass
+traffic is dropped at the socket before it ever becomes a log line. The classifier still scores offenders from
 logs; the lock closes the door instead of scoring who walked through it. The two
 are independent and conflict-free (different chains, different purpose).
 
@@ -344,7 +348,7 @@ since Cloudflare can't proxy mail protocols.)
 Two ways to restore the HTTP ones:
 
 - **Use their service ports** — `https://<domain>:2083` (cPanel), `:2087` (WHM),
-  `:2096` (webmail). The lock only covers `ORIGIN_LOCK_PORTS` (default `80,443`),
+  `:2096` (webmail). The lock only covers `ORIGIN_LOCK_PORTS` (default `443`),
   so the high ports are unaffected. Best for the admin panels (cPanel/WHM), which
   you generally don't want publicly reachable anyway — restrict them to your own
   IPs in `csf.allow`.
@@ -418,6 +422,8 @@ planes of server health:
 
 - **Bad actors** — blocks taken (perm/temp), grouped by offense type, bad-path
   category, and channel (CSF vs Cloudflare), plus allowlist exemptions to review.
+  Backend failures get their own line (`backend-failed: N (top: <cause>)`) so a
+  silently erroring firewall or API never hides inside the block counts.
 - **Server errors** *(optional, `ERROR_DIGEST_ENABLE`)* — FATAL/ERROR from Apache,
   PHP-FPM, per-site PHP, and MySQL over the same window, with known high-volume
   noise filtered and the rest grouped by signature. Point it at logs directly, or
@@ -486,6 +492,11 @@ All the knobs live in `/etc/swatter/swatter.conf`:
   and working in wp-admin can never be blocked for it.
 - **Full audit + appeal.** `swatter why <ip>` shows exactly what triggered a block;
   `swatter unblock <ip> [--perm-allow]` reverses it on both planes.
+- **Failures are loud, never silent.** A block or unblock that a backend
+  rejects is recorded as such — failed blocks carry the backend's actual error
+  in the decision record (`evidence.backend_err`), and `unblock` exits nonzero
+  with an `INCOMPLETE` message if any plane's removal failed, instead of
+  printing a false "unblocked" while a rule is still live.
 
 ---
 
@@ -631,7 +642,7 @@ error responses), so even the default tuning won't ban an owner for logging in.
 | `swatter unblock <ip> [--perm-allow]` | reverse a block on both planes |
 | `swatter list [temp\|perm\|cf\|allow]` | current blocks / allowlist |
 | `swatter report [WINDOW] [--test\|--print]` | email a digest grouped by offense + action (`--print`: stdout only) |
-| `swatter refresh-feeds` | update Cloudflare ranges + intel feeds |
+| `swatter refresh-feeds` | update Cloudflare ranges + intel feeds (validates the range body; exits nonzero on failure so cron can alert) |
 | `swatter test-config` | validate config and dependencies |
 | `swatter honeypot` | print robots.txt + invisible-anchor snippet for the trap path |
 | `swatter setup-ipset` | create ipset sets + iptables DROP rules (idempotent; use with `DIRECT_BACKEND=ipset`) |
