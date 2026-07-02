@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-07-01
+
 ### Changed
 - **BREAKING-ish: origin-lock defaults to `ORIGIN_LOCK_PORTS="443"` and the
   `ORIGIN_LOCK_ALLOW_ACME` carve-out is retired (ignored).** Production
@@ -449,7 +451,8 @@ plane-correct blocking (CSF for direct-to-origin, Cloudflare IP Access Rules for
 via-proxy), a hardcoded Cloudflare never-block set, and fail-closed behavior when
 the range list is stale.
 
-[Unreleased]: https://github.com/peaceharborco/swatter/compare/v2.4.1...HEAD
+[Unreleased]: https://github.com/peaceharborco/swatter/compare/v2.5.0...HEAD
+[2.5.0]: https://github.com/peaceharborco/swatter/compare/v2.4.1...v2.5.0
 [2.4.1]: https://github.com/peaceharborco/swatter/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/peaceharborco/swatter/compare/v2.3.1...v2.4.0
 [2.3.1]: https://github.com/peaceharborco/swatter/compare/v2.3.0...v2.3.1
