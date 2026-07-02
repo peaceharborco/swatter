@@ -362,8 +362,11 @@ rejects with **HTTP 526**. Fix it without weakening the zone: add a per-hostname
 **Configuration Rule** that sets SSL to **Full** (not strict) for the service-sub
 hostnames, leaving the apex on strict. Cloudflare then accepts the origin's
 hostname cert while still serving a valid edge certificate to visitors.
-Certificate renewal keeps working behind the lock because `ORIGIN_LOCK_ALLOW_ACME`
-permits the whole `/.well-known/` path (see above).
+Certificate renewal keeps working behind the lock because the default
+`ORIGIN_LOCK_PORTS="443"` leaves `:80` — where HTTP DCV lands — unlocked (see
+"Locking `:80` breaks HTTP certificate validation" above), and a proxied
+record's validation traffic arrives via Cloudflare edges the lock already
+accepts.
 
 ---
 
