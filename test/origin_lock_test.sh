@@ -312,6 +312,19 @@ has partial-failopen-teardown "iptables -D INPUT"
 iptables() { echo "iptables $*" >> "$CALLS"; [[ "$1" == "-C" ]] && return "${IPT_CHECK_RC:-1}"; return 0; }
 ORIGIN_LOCK="log"
 
+# ===========================================================================
+# 16. stderr-capture errfile must be mktemp-random (an attacker-predictable
+#     /tmp name written by root is a symlink-attack surface), reused per run.
+# ===========================================================================
+_OL_ERRF=""; _ol_errf_init
+case "$(basename "${_OL_ERRF}")" in
+    swatter-ol-err.??????) [[ "${_OL_ERRF}" != *"swatter-ol-err.$$" ]] && PASS=$((PASS+1)) || { echo "FAIL errf-pid-predictable"; FAIL=$((FAIL+1)); } ;;
+    *) echo "FAIL errf-template: ${_OL_ERRF}"; FAIL=$((FAIL+1)) ;;
+esac
+_errf1="${_OL_ERRF}"; _ol_errf_init
+check errf-reused "${_OL_ERRF}" "${_errf1}"
+rm -f "${_OL_ERRF}"; _OL_ERRF=""
+
 # --- origin-lock digest section ---------------------------------------------
 OLD_STATE="$STATE_DIR"
 DIG="$(mktemp -d "${TMPDIR:-/tmp}/swatter-oldig.XXXXXX")"; STATE_DIR="$DIG"

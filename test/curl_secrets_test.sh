@@ -81,6 +81,32 @@ wait 2>/dev/null
 argv_clean abuseipdb "ABUSESECRET"
 cfg_has abuseipdb 'header = "Key: ABUSESECRET"'
 
+# 7-9) Intel providers — the sibling call sites the first pass missed.
+source "${ROOT}/lib/providers/abuseipdb.sh"
+source "${ROOT}/lib/providers/abuseipdb_blocklist.sh"
+source "${ROOT}/lib/providers/greynoise.sh"
+INTEL_CACHE_TTL=86400; mkdir -p "$TMP/feeds"
+
+# 7) AbuseIPDB per-IP lookup.
+: > "$LOG"; MOCK_STDOUT='{"data":{"abuseConfidenceScore":55}}'
+ABUSEIPDB_DAILY_QUOTA=1000
+provider_abuseipdb 1.2.3.4 >/dev/null 2>&1
+argv_clean abuseipdb-lookup "ABUSESECRET"
+cfg_has abuseipdb-lookup 'header = "Key: ABUSESECRET"'
+
+# 8) AbuseIPDB blocklist feed refresh.
+: > "$LOG"; MOCK_STDOUT='1.2.3.4'
+provider_abuseipdb_blocklist_refresh >/dev/null 2>&1
+argv_clean abuseipdb-blocklist "ABUSESECRET"
+cfg_has abuseipdb-blocklist 'header = "Key: ABUSESECRET"'
+
+# 9) GreyNoise lookup.
+: > "$LOG"; MOCK_STDOUT='{"classification":"malicious","riot":false,"name":"x"}'
+GREYNOISE_KEY="GNSECRET"; GREYNOISE_DAILY_QUOTA=100
+provider_greynoise 1.2.3.4 >/dev/null 2>&1
+argv_clean greynoise "GNSECRET"
+cfg_has greynoise 'header = "key: GNSECRET"'
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

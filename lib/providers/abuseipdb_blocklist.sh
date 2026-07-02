@@ -13,14 +13,18 @@ provider_abuseipdb_blocklist_refresh() {
     local out="${STATE_DIR}/feeds/abuseipdb_blocklist.txt"
     [[ -n "${ABUSEIPDB_KEY:-}" ]] || { log_warn "abuseipdb_blocklist needs ABUSEIPDB_KEY"; return 1; }
     [[ "${SWATTER_HAVE_CURL}" -eq 1 ]] || { log_warn "abuseipdb_blocklist needs curl"; return 1; }
+    # API key via -K config file, never argv (visible in `ps` on a shared box).
+    local cfg
+    cfg="$(swatter_curl_cfg "header = \"Key: ${ABUSEIPDB_KEY}\"")" || { log_warn "abuseipdb_blocklist: cannot create curl config"; return 1; }
     if curl --max-time 30 -fsS -G "${ABUSEIPDB_BLOCKLIST_URL}" \
         --data-urlencode "confidenceMinimum=${ABUSEIPDB_BLOCKLIST_CONFIDENCE:-90}" \
-        -H "Key: ${ABUSEIPDB_KEY}" -H "Accept: text/plain" 2>/dev/null \
+        -K "$cfg" -H "Accept: text/plain" 2>/dev/null \
         | awk '/^[0-9A-Fa-f]/{print $1}' > "${out}.tmp" 2>/dev/null && [[ -s "${out}.tmp" ]]; then
+        rm -f "$cfg"
         mv "${out}.tmp" "$out"
         log_info "abuseipdb_blocklist refreshed ($(wc -l < "$out" 2>/dev/null | tr -d ' ') IPs)"
     else
-        rm -f "${out}.tmp" 2>/dev/null; log_warn "abuseipdb_blocklist download failed"; return 1
+        rm -f "$cfg" "${out}.tmp" 2>/dev/null; log_warn "abuseipdb_blocklist download failed"; return 1
     fi
 }
 

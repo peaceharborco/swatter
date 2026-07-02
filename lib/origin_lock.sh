@@ -110,12 +110,20 @@ _ol_op_failed() {
 # Stderr capture goes through a tempfile, NOT $(...): a command substitution
 # would run the firewall call in a subshell, which breaks function-injected
 # test doubles that mutate shell state (and buys nothing in production).
-_OL_ERRF="${TMPDIR:-/tmp}/swatter-ol-err.$$"
+# Lazily mktemp'd (random name): a pid-predictable /tmp path written by root
+# would be a symlink-attack surface. Init must run in the CURRENT shell (never
+# $(...)) so the path is created once and reused for the whole run.
+_OL_ERRF=""
+_ol_errf_init() {
+    [[ -n "${_OL_ERRF}" ]] && return 0
+    _OL_ERRF="$(mktemp "${TMPDIR:-/tmp}/swatter-ol-err.XXXXXX")" || _OL_ERRF="/dev/null"
+}
 
 # Build/refresh an ipset from a newline CIDR list. hash:net (CIDR-capable),
 # -exist so re-create never errors; entries added with -exist for idempotency.
 _ol_build_set() {
     local set="$1" family="$2" ranges="$3" cidr
+    _ol_errf_init
     ipset create "$set" hash:net family "$family" -exist 2>"${_OL_ERRF}" \
         || _ol_op_failed "ipset create ${set}: $(_ol_err1 "$(cat "${_OL_ERRF}" 2>/dev/null)")"
     while IFS= read -r cidr; do
@@ -123,29 +131,34 @@ _ol_build_set() {
         ipset add "$set" "$cidr" -exist 2>"${_OL_ERRF}" \
             || _ol_op_failed "ipset add ${set} ${cidr}: $(_ol_err1 "$(cat "${_OL_ERRF}" 2>/dev/null)")"
     done <<< "$ranges"
-    rm -f "${_OL_ERRF}"
 }
 
 # Append a rule (csfpre context: the chain is flushed by `csf -r` before each run,
 # so a plain -A never stacks).
 _ol_append() {
     local ipt="$1"; shift
+    _ol_errf_init
     if ! "$ipt" -A INPUT "$@" 2>"${_OL_ERRF}"; then
         _ol_op_failed "${ipt} -A: $(_ol_err1 "$(cat "${_OL_ERRF}" 2>/dev/null)")"
-        rm -f "${_OL_ERRF}"; return 1
+        return 1
     fi
-    rm -f "${_OL_ERRF}"
 }
 
 # Insert-if-absent (standalone context: no flush, so guard with -C then -I).
 _ol_ensure() {
     local ipt="$1"; shift
     "$ipt" -C INPUT "$@" 2>/dev/null && return 0
+    _ol_errf_init
     if ! "$ipt" -I INPUT "$@" 2>"${_OL_ERRF}"; then
         _ol_op_failed "${ipt} -I: $(_ol_err1 "$(cat "${_OL_ERRF}" 2>/dev/null)")"
-        rm -f "${_OL_ERRF}"; return 1
+        return 1
     fi
-    rm -f "${_OL_ERRF}"
+}
+
+# Remove the run's errfile (called from apply's exit paths; /dev/null-safe).
+_ol_errf_cleanup() {
+    [[ -n "${_OL_ERRF}" && "${_OL_ERRF}" != "/dev/null" ]] && rm -f "${_OL_ERRF}"
+    _OL_ERRF=""
 }
 
 # Per-family rule build. $1=iptables|ip6tables  $2=set  $3=hook(csf|standalone)
@@ -381,8 +394,10 @@ swatter_origin_lock_apply() {
     if (( _OL_APPLY_ERRS > 0 )); then
         log_error "origin-lock apply INCOMPLETE: ${_OL_APPLY_ERRS} firewall op(s) failed (first: ${_OL_APPLY_ERR}) — tearing rules back down (fail-open)"
         swatter_origin_lock_teardown no
+        _ol_errf_cleanup
         return 1
     fi
+    _ol_errf_cleanup
 
     log_info "origin-lock applied (mode=${mode}, hook=${hook}, ports=$(_ol_ports))"
     if [[ "$mode" == "log" ]]; then

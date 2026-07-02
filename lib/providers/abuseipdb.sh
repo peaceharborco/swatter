@@ -32,10 +32,14 @@ provider_abuseipdb() {
     [[ "${SWATTER_HAVE_CURL}" -eq 1 && "${SWATTER_HAVE_JQ}" -eq 1 ]] || return 1
     _abuseipdb_quota_ok || { log_debug "abuseipdb daily quota exhausted"; return 1; }
 
-    local resp score
+    # API key via -K config file, never argv (visible in `ps` on a shared box).
+    local cfg resp rc score
+    cfg="$(swatter_curl_cfg "header = \"Key: ${ABUSEIPDB_KEY}\"")" || return 1
     resp="$(curl --max-time 5 -fsS -G "${ABUSEIPDB_URL}" \
         --data-urlencode "ipAddress=${ip}" --data-urlencode "maxAgeInDays=90" \
-        -H "Key: ${ABUSEIPDB_KEY}" -H "Accept: application/json" 2>/dev/null)" || return 1
+        -K "$cfg" -H "Accept: application/json" 2>/dev/null)"; rc=$?
+    rm -f "$cfg"
+    (( rc == 0 )) || return 1
     _abuseipdb_quota_inc
     score="$(printf '%s' "$resp" | jq -r '.data.abuseConfidenceScore // empty' 2>/dev/null)"
     [[ "$score" =~ ^[0-9]+$ ]] || return 1
