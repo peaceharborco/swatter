@@ -5,9 +5,17 @@
 #
 # One idempotent code path (`apply`) builds, in accept-first / drop-last order:
 #   1. ACCEPT Cloudflare edges (ipset src match) -> web ports
-#   2. (opt) ACCEPT /.well-known/ on :80 (HTTP domain-validation: ACME + cPanel DCV)
-#   3. LOG (rate-limited) the remainder, prefix "ORIGIN-LOCK: "
-#   4. (drop mode) DROP the remainder
+#   2. LOG (rate-limited) the remainder, prefix "ORIGIN-LOCK: "
+#   3. (drop mode) DROP the remainder
+#
+# There is deliberately NO /.well-known/ (ACME/DCV) carve-out: an xt_string
+# payload match can never admit a NEW connection — the TCP handshake carries no
+# payload, so a validator's SYN hits the DROP before any matchable packet
+# exists (proven on prod 2026-07-01: the rule's counter stayed 0 while Let's
+# Encrypt validators were SYN-dropped). To keep HTTP-01/AutoSSL DCV working,
+# leave :80 out of ORIGIN_LOCK_PORTS (e.g. "443") or use DNS-01. The retired
+# ORIGIN_LOCK_ALLOW_ACME toggle is ignored; teardown still clears the legacy
+# rule older versions installed.
 #
 # Execution context is explicit, never guessed: the csfpre drop-in calls
 # `apply --hook=csf` (CSF already supplies lo/established/csf.allow accepts above
@@ -19,8 +27,7 @@
 #
 # Fail-open spine: a missing/empty/under-min cloudflare.cidr installs NOTHING
 # (an empty allowlist + DROP would firewall the whole internet). v6 is gated on
-# ip6tables presence (warn-and-skip if absent, never fail). The ACME accept
-# soft-fails with a warning if xt_string is unavailable.
+# ip6tables presence (warn-and-skip if absent, never fail).
 
 # Minimum CF ranges below which we refuse to build (fail-open guard). The real
 # Cloudflare set is ~15 v4 + ~7 v6; anything tiny means a broken/partial file.
@@ -33,17 +40,9 @@
 _ol_set_base() { printf '%s' "${ORIGIN_LOCK_SET:-cf_origin}"; }
 _ol_set4()     { printf '%s4' "$(_ol_set_base)"; }
 _ol_set6()     { printf '%s6' "$(_ol_set_base)"; }
-_ol_ports()    { printf '%s' "${ORIGIN_LOCK_PORTS:-80,443}"; }
+# Default 443 only: locking :80 breaks ACME HTTP-01 / AutoSSL DCV (see header).
+_ol_ports()    { printf '%s' "${ORIGIN_LOCK_PORTS:-443}"; }
 _ol_mode()     { printf '%s' "${ORIGIN_LOCK:-off}"; }
-
-# xt_string availability for the ACME accept. Tests can pin
-# SWATTER_OL_HAVE_XT_STRING; otherwise probe iptables for the string match.
-_ol_have_xt_string() {
-    if [[ -n "${SWATTER_OL_HAVE_XT_STRING:-}" ]]; then
-        [[ "${SWATTER_OL_HAVE_XT_STRING}" -eq 1 ]]; return
-    fi
-    iptables -m string --help >/dev/null 2>&1
-}
 
 # Read the CF ranges file, split into v4 / v6 CIDR lists on stdout via globals.
 # Sets _OL_V4 and _OL_V6 (newline-separated). Returns 1 if the file is missing.
@@ -152,14 +151,14 @@ _ol_ensure() {
 # Per-family rule build. $1=iptables|ip6tables  $2=set  $3=hook(csf|standalone)
 #
 # ORDER INVARIANT — the effective top-to-bottom INPUT chain order for the rules
-# this function lays down MUST be: CF-ACCEPT, ACME-ACCEPT, LOG, DROP (accept-first
-# / drop-last — the fail-open spine). Two builders honor this differently:
+# this function lays down MUST be: CF-ACCEPT, LOG, DROP (accept-first /
+# drop-last — the fail-open spine). Two builders honor this differently:
 #   * csf hook  -> _ol_append (`-A`, append): emit in forward order, the chain is
 #     flushed by `csf -r` before each run so a plain append preserves order.
 #   * standalone -> _ol_ensure (`-I`, prepend to position 1): every insert lands at
 #     the TOP, so emitting forward would REVERSE the chain (DROP would end up above
 #     the ACCEPTs and silently drop legit Cloudflare traffic). We therefore emit in
-#     REVERSE here (DROP, LOG, ACME, CF) so each prepend stacks the final order
+#     REVERSE here (DROP, LOG, CF) so each prepend stacks the final order
 #     right-side-up. The lo/allow preamble is inserted separately, AFTER this, so
 #     those accepts prepend to the very top (above CF-ACCEPT).
 _ol_rules_family() {
@@ -169,28 +168,16 @@ _ol_rules_family() {
     local add reverse
     if [[ "$hook" == "csf" ]]; then add=_ol_append; reverse=0; else add=_ol_ensure; reverse=1; fi
 
-    # Resolve the ACME accept availability once (so the warning fires regardless of
-    # emission order, and at most once per family).
-    local emit_acme=0
-    if [[ "${ORIGIN_LOCK_ALLOW_ACME:-true}" == "true" ]]; then
-        if _ol_have_xt_string; then
-            emit_acme=1
-        else
-            log_warn "origin-lock: xt_string unavailable — skipping /.well-known/ domain-validation accept (set ORIGIN_LOCK_ALLOW_ACME=false or use DNS-01)"
-        fi
-    fi
-
     _ol_emit_cf()   { "$add" "$ipt" -p tcp -m multiport --dports "$ports" -m set --match-set "$set" src -j ACCEPT; }
-    _ol_emit_acme() { (( emit_acme )) && "$add" "$ipt" -p tcp --dport 80 -m string --string "/.well-known/" --algo bm -j ACCEPT; }
     _ol_emit_log()  { "$add" "$ipt" -p tcp -m multiport --dports "$ports" -m limit --limit 5/min -j LOG --log-prefix "ORIGIN-LOCK: "; }
     _ol_emit_drop() { [[ "$mode" == "drop" ]] && "$add" "$ipt" -p tcp -m multiport --dports "$ports" -j DROP; }
 
     if (( reverse )); then
-        # -I prepends: emit bottom-up so the final chain reads CF, ACME, LOG, DROP.
-        _ol_emit_drop; _ol_emit_log; _ol_emit_acme; _ol_emit_cf
+        # -I prepends: emit bottom-up so the final chain reads CF, LOG, DROP.
+        _ol_emit_drop; _ol_emit_log; _ol_emit_cf
     else
         # -A appends: emit top-down.
-        _ol_emit_cf; _ol_emit_acme; _ol_emit_log; _ol_emit_drop
+        _ol_emit_cf; _ol_emit_log; _ol_emit_drop
     fi
 }
 
@@ -341,6 +328,13 @@ swatter_origin_lock_apply() {
     if ! _ol_ranges_healthy; then
         return 1
     fi
+
+    # Locking :80 breaks HTTP-01 / AutoSSL DCV outright — validator IPs are
+    # unpublishable, and no payload-match carve-out can admit a new connection
+    # (the handshake has no payload). Warn every apply so it can't go unnoticed.
+    case ",$(_ol_ports)," in
+        *,80,*) log_warn "origin-lock: ports include :80 — ACME HTTP-01 / AutoSSL DCV validators CANNOT reach the origin, so HTTP certificate renewals on DNS-only hostnames will fail. Set ORIGIN_LOCK_PORTS=\"443\" (recommended) or use DNS-01." ;;
+    esac
 
     # Standalone teardown-first. The csf hook runs on a chain that `csf -r` has just
     # flushed, so a plain append lays rules down in a clean, correctly-ordered chain.

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING-ish: origin-lock defaults to `ORIGIN_LOCK_PORTS="443"` and the
+  `ORIGIN_LOCK_ALLOW_ACME` carve-out is retired (ignored).** Production
+  attribution (2026-07-01) proved the `/.well-known/` xt_string accept can
+  never work: a payload match cannot admit a NEW connection because the TCP
+  handshake carries no payload — the rule's live counter stayed at zero while
+  Let's Encrypt validators were SYN-dropped on `:80` and every gray-cloud
+  hostname's HTTP-01/AutoSSL DCV failed. Since validator IPs are deliberately
+  unpublishable, the only sound postures are `443`-only (`:80` serves just
+  redirects + challenges; content stays locked) or DNS-01. `apply` now warns
+  on any port list that includes 80; teardown still removes the legacy
+  `/.well-known/` rule from boxes an older version configured. Operators who
+  accept broken HTTP renewals can still set `ORIGIN_LOCK_PORTS="80,443"`
+  explicitly.
+
 ### Security
 - **Secrets no longer ride in curl argv.** The CF bearer token, SendGrid/Brevo
   API keys, Twilio SID:token, and the AbuseIPDB key were passed as `-H`/`-u`

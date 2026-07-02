@@ -262,15 +262,21 @@ leave a `DROP` standing without its preceding `ACCEPT`s (fail-open). If
 ranges, `apply` installs **no** restriction at all and logs why — an empty
 allowlist plus `DROP` would firewall the entire internet.
 
-If `ORIGIN_LOCK_ALLOW_ACME` is on (default), the whole `/.well-known/` prefix on
-`:80` is accepted from any source so HTTP domain-validation keeps working behind
-the lock — both ACME HTTP-01 (`/.well-known/acme-challenge/`) and cPanel/Sectigo
-AutoSSL DCV (`/.well-known/pki-validation/`, `/.well-known/cpanel-dcv/`). Narrowing
-this to just `acme-challenge` would let the lock silently break cPanel AutoSSL
-renewals. It soft-fails with a warning if the kernel's `xt_string` match is
-unavailable; disable the toggle or use DNS-01 in that case. (`/.well-known/` is
-public metadata, so allowing it on `:80` is low risk; TLS-ALPN-01 on `:443` is
-still not accommodated.)
+**Locking `:80` breaks HTTP certificate validation — leave it out of
+`ORIGIN_LOCK_PORTS` if you rely on ACME HTTP-01 / cPanel AutoSSL DCV.**
+Earlier versions shipped an `ORIGIN_LOCK_ALLOW_ACME` carve-out that accepted
+packets containing `/.well-known/` on `:80`; it is retired because it **cannot
+work**: an `xt_string` payload match can never admit a *new* connection — the
+TCP handshake carries no payload, so a validator's SYN hits the `DROP` before
+any matchable packet exists (observed in production: the rule's counter stayed
+at zero while Let's Encrypt validators were SYN-dropped and renewals failed).
+Validator source IPs are deliberately unpublishable, so allowlisting is not an
+option either. The supported postures are `ORIGIN_LOCK_PORTS="443"`
+(recommended — `:80` serves only redirects and challenges; content stays
+locked on `:443`) or DNS-01 validation if you must lock both ports. `apply`
+warns on every run whose port list includes `80`. The old toggle is ignored,
+and teardown still removes the legacy rule from boxes an older version
+configured.
 
 ### IPv4 and IPv6
 
