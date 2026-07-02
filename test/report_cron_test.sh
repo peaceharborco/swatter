@@ -29,6 +29,27 @@ check redirect-present-tz "$(printf '%s\n' "$out" | grep -c 'report.log 2>&1')" 
 # lives only in the dedicated file now.
 check tmpl-no-report   "$(grep -c 'swatter report' "${ROOT}/install/swatter.cron")" "0"
 
+# Regression (2026-07-01): install.sh runs in its own shell and never sources
+# swatter.conf, so rendering from "${REPORT_CRON_TZ:-}" read empty env vars and
+# every upgrade regenerated the cron WITHOUT the operator's CRON_TZ (report
+# fired 04:00 UTC = 21:00 PDT). The render must read the LIVE conf file.
+conf="$(mktemp "${TMPDIR:-/tmp}/swatter-conf.XXXXXX")"
+printf 'REPORT_CRON="30 5"\nREPORT_CRON_TZ="America/Los_Angeles"\n' > "$conf"
+out="$(_swatter_report_cron_from_conf "$conf")"
+check conf-tz          "$(printf '%s\n' "$out" | grep -c '^CRON_TZ=America/Los_Angeles')" "1"
+check conf-schedule    "$(printf '%s\n' "$out" | grep -Ec '^30 5 \* \* \* root .*swatter report')" "1"
+rm -f "$conf"
+
+# Conf absent (fresh box edge) -> defaults: 0 4, no CRON_TZ line.
+out="$(_swatter_report_cron_from_conf "/nonexistent/swatter.conf")"
+check conf-missing-default "$(printf '%s\n' "$out" | grep -Ec '^0 4 \* \* \* root .*swatter report')" "1"
+check conf-missing-no-tz   "$(printf '%s\n' "$out" | grep -c '^CRON_TZ=')" "0"
+
+# _install_local must render via the conf-reading path (one-line call so this
+# guard can see it), never from install.sh's own environment again.
+check install-renders-from-conf "$(grep -c '_swatter_report_cron_from_conf /etc/swatter/swatter.conf > /etc/cron.d/swatter-report' "${ROOT}/install/install.sh")" "1"
+check install-no-env-render     "$(grep -c '_swatter_report_cron_file "\${REPORT_CRON' "${ROOT}/install/install.sh")" "0"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

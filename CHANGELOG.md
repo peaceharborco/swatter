@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Installer no longer strips the report timezone on upgrade.** `install.sh`
+  rendered `/etc/cron.d/swatter-report` from its own (empty) environment
+  instead of the live `/etc/swatter/swatter.conf`, so every `install local`
+  regenerated the cron without `CRON_TZ` — and silently ignored a custom
+  `REPORT_CRON`. The v2.5.1 deploy reverted the nightly report to 04:00 UTC
+  (9pm Pacific) this way. The render now subshell-sources the live conf
+  (`_swatter_report_cron_from_conf`, pinned in test/report_cron_test.sh).
+
 ## [2.5.1] - 2026-07-01
 
 ### Security

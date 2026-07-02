@@ -192,6 +192,18 @@ _swatter_report_cron_file() {
     echo "${report_cron} * * * root /usr/local/bin/swatter report >> /var/log/swatter/report.log 2>&1"
 }
 
+# Render the report cron from the LIVE conf. install.sh runs in its own shell
+# and never sources swatter.conf, so reading "${REPORT_CRON_TZ:-}" here would
+# expand empty env vars and silently strip the operator's CRON_TZ on every
+# upgrade (2026-07-01: report reverted to 04:00 UTC = 9pm Pacific). Subshell-
+# source keeps the conf's other settings out of the installer's environment.
+_swatter_report_cron_from_conf() {
+    local conf="${1:-/etc/swatter/swatter.conf}" rcron rtz
+    rcron="$(bash -c 'source "$1" 2>/dev/null; echo "${REPORT_CRON:-0 4}"' _ "$conf" 2>/dev/null || echo "0 4")"
+    rtz="$(bash -c 'source "$1" 2>/dev/null; echo "${REPORT_CRON_TZ:-}"' _ "$conf" 2>/dev/null || true)"
+    _swatter_report_cron_file "${rcron:-0 4}" "$rtz"
+}
+
 _install_local() {
     [[ "$(id -u)" -eq 0 ]] || { echo "install local must run as root" >&2; exit 1; }
 
@@ -220,8 +232,7 @@ _install_local() {
     # Shared cron: scan + feed refresh (system timezone). The report is NOT here —
     # it lives in its own file so its CRON_TZ doesn't shift these jobs.
     install -m 0644 "${SRC}/install/swatter.cron" /etc/cron.d/swatter
-    _swatter_report_cron_file "${REPORT_CRON:-0 4}" "${REPORT_CRON_TZ:-}" \
-        > /etc/cron.d/swatter-report
+    _swatter_report_cron_from_conf /etc/swatter/swatter.conf > /etc/cron.d/swatter-report
     chmod 0644 /etc/cron.d/swatter-report
     install -m 0644 "${SRC}"/install/swatter.logrotate /etc/logrotate.d/swatter
 
