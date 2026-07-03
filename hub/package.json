@@ -1,0 +1,20 @@
+{
+  "name": "swatter-swarm-hub",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.13.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.36.0"
+  },
+  "allowScripts": {
+    "workerd@1.20260317.1": true,
+    "workerd@1.20260701.1": true,
+    "esbuild@0.27.3": true,
+    "esbuild@0.28.1": true
+  }
+}
