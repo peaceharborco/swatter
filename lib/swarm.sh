@@ -104,6 +104,14 @@ swatter_swarm_publish() {
             log_warn "swarm publish REJECTED: this host_id is not enrolled — run: swatter swarm enroll (cursor kept)"
             return 1
         fi
+        # Positive proof required (pre-ship review): a 200 with an empty,
+        # truncated, or garbled body must NOT advance the cursor — only the
+        # hub's own {"enrolled":true} ack counts as delivered.
+        if ! grep -q '"enrolled":true' "$rtmp" 2>/dev/null; then
+            rm -f "$rtmp"
+            log_warn "swarm publish: 200 without an enrolled:true ack (empty/garbled response) — cursor kept"
+            return 1
+        fi
         # Validator-drift visibility (review): the hub silently dropping entries
         # must not be silent HERE. Cursor still advances — hub validation is
         # deterministic, so retrying the same entries can never succeed.
@@ -131,6 +139,10 @@ swatter_swarm_publish() {
 swatter_swarm_sweep() {
     _swarm_enabled || return 0
     [[ "${SWARM_ACTION:-boost}" == "corroborated-block" ]] || return 0
+    # Consume must be ACTIVE (pre-ship review): if the operator removed `swarm`
+    # from INTEL_PROVIDERS (the documented way to stop consuming), lingering
+    # meta must not keep proactively blocking until it ages out.
+    [[ " ${INTEL_PROVIDERS:-} " == *" swarm "* ]] || return 0
     [[ "${SWATTER_HAVE_JQ}" -eq 1 ]] || { log_warn "swarm sweep: corroborated-block requires jq — skipped"; return 0; }
     local meta="${STATE_DIR}/feeds/swarm.meta.json"
     [[ -s "$meta" ]] || { log_info "swarm sweep: no corroboration data (empty feed or meta fetch failed)"; return 0; }
@@ -169,13 +181,18 @@ swatter_swarm_sweep() {
             "$score" 0 "" "$healthy" && n=$(( n + 1 ))
     done < <(jq -r --argjson n "${SWARM_MIN_CORROBORATION:-2}" \
                 '.[] | select((.host_count // 0) >= $n) | [.ip, .host_count] | @tsv' "$meta" 2>/dev/null)
-    (( n > 0 )) && log_info "swarm sweep: ${n} corroborated block(s) applied"
+    # "dispatched", not "applied": _swatter_execute_block returns 0 for every
+    # attempted path incl. skipped-novhost/failed — decisions.jsonl has truth.
+    (( n > 0 )) && log_info "swarm sweep: ${n} corroborated candidate(s) dispatched through the block gate (outcomes in decisions.jsonl)"
     return 0
 }
 # swatter swarm {enroll|status|disable|purge} — lives in the lib (not bin/) so
 # tests can drive it directly, same as cmd_origin_lock.
 cmd_swarm() {
     local action="${1:-status}"; shift || true
+    # Every verb may touch STATE_DIR (host_id, feeds, cursor) and must work as
+    # the FIRST swatter command on a fresh box (pre-ship review).
+    swatter_init_dirs
     local assume_yes=0 arg
     for arg in "$@"; do
         case "$arg" in

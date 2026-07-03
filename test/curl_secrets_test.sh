@@ -113,6 +113,7 @@ source "${ROOT}/lib/store_sqlite.sh"
 source "${ROOT}/lib/swarm.sh"
 source "${ROOT}/lib/providers/swarm.sh"
 SWARM_ENABLE="true"; SWARM_HUB_URL="https://hub.example"; SWARM_PUBLISH="true"
+LOG_DIR="$TMP/log"   # cmd_swarm runs swatter_init_dirs, which dies on the root-owned default
 mkdir -p "$TMP/feeds"
 SWARM_WRITE_TOKEN_FILE="$TMP/sw.tok";  printf 'SWARMWRITESECRET'  > "$SWARM_WRITE_TOKEN_FILE"
 SWARM_READ_TOKEN_FILE="$TMP/sr.tok";   printf 'SWARMREADSECRET'   > "$SWARM_READ_TOKEN_FILE"
@@ -137,6 +138,12 @@ cfg_has swarm-feed 'header = "Authorization: Bearer SWARMREADSECRET"'
 cmd_swarm enroll </dev/null >/dev/null 2>&1
 argv_clean swarm-enroll "SWARMENROLLSECRET"
 cfg_has swarm-enroll 'header = "Authorization: Bearer SWARMENROLLSECRET"'
+
+# 13) purge (POST /purge, write token, --yes consent path)
+: > "$LOG"; MOCK_STDOUT='200'
+cmd_swarm purge --yes </dev/null >/dev/null 2>&1
+argv_clean swarm-purge "SWARMWRITESECRET"
+cfg_has swarm-purge 'header = "Authorization: Bearer SWARMWRITESECRET"'
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"

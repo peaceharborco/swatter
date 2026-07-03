@@ -33,7 +33,7 @@ provider_swarm_refresh() {
 
     # Frozen obligation 1: valid empty 200 = "no active offenders" -> CLEAR.
     if ! grep -q '[^[:space:]]' "${out}.raw" 2>/dev/null; then
-        : > "$out"; printf '[]' > "$meta"
+        : > "$out"; rm -f "$meta"   # fresh-or-absent: meta removed, not stubbed
         rm -f "${out}.raw"
         log_info "swarm feed empty (no active offenders) — cleared"
         return 0
@@ -55,8 +55,9 @@ provider_swarm_refresh() {
         cfg="$(_swarm_curl_cfg_token "${SWARM_READ_TOKEN_FILE}")" || { rm -f "$meta"; return 0; }
         code="$(curl --max-time 30 -sS -K "$cfg" -o "${meta}.raw" -w '%{http_code}' \
                      "${SWARM_HUB_URL%/}/feed?format=json" 2>/dev/null)"
+        local mcrc=$?
         rm -f "$cfg"
-        if [[ "$code" == "200" ]] && jq -e 'type=="array"' "${meta}.raw" >/dev/null 2>&1; then
+        if (( mcrc == 0 )) && [[ "$code" == "200" ]] && jq -e 'type=="array"' "${meta}.raw" >/dev/null 2>&1; then
             mv "${meta}.raw" "$meta"
         else
             rm -f "${meta}.raw" "$meta"

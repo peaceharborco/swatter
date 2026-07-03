@@ -85,6 +85,16 @@ warn="$(swatter_swarm_publish 2>&1 >/dev/null)"
 printf '%s' "$warn" | grep -qi 'reject' && PASS=$((PASS+1)) || { echo "FAIL rejected-warn"; FAIL=$((FAIL+1)); }
 check rejected-cursor-advanced "$(cat "$CURSOR")" "6000"
 
+# 5b) 200 with an EMPTY/garbled body (no enrolled:true ack) keeps cursor
+swatter_now() { echo 6500; }; swatter_store_record 203.0.113.101 perm csf 0 90 "ban d" 0; unset -f swatter_now
+CURL_RESP=''
+warn="$(swatter_swarm_publish 2>&1 >/dev/null)"
+printf '%s' "$warn" | grep -qi 'ack' && PASS=$((PASS+1)) || { echo "FAIL noack-warn"; FAIL=$((FAIL+1)); }
+check noack-cursor-kept "$(cat "$CURSOR")" "6000"
+CURL_RESP='{"accepted":1,"rejected":0,"enrolled":true}'
+swatter_swarm_publish 2>/dev/null   # drain ban d so later cases start clean
+check noack-retry-advances "$(cat "$CURSOR")" "6500"
+
 # 6) report mode publishes nothing
 CURL_RESP='{"accepted":1,"rejected":0,"enrolled":true}'; : > "$POSTS"; SWATTER_MODE="report"
 swatter_swarm_publish 2>/dev/null

@@ -18,6 +18,7 @@ LOG_DIR="${STATE_DIR}/log"; trap 'rm -rf "$STATE_DIR"' EXIT
 mkdir -p "${STATE_DIR}/feeds" "${LOG_DIR}"
 STORE="flatfile"; swatter_store_init
 SWATTER_HAVE_JQ=1; SWATTER_MODE="enforce"
+INTEL_PROVIDERS="swarm"   # sweep gates on active consume (pre-ship review)
 SWARM_ENABLE="true"; SWARM_HUB_URL="https://hub.example"
 SWARM_ACTION="corroborated-block"; SWARM_MIN_CORROBORATION=2; SWARM_BASE_SCORE=70; SWARM_MAX_AGE_DAYS=3
 SWARM_ALLOW_FILE="${STATE_DIR}/swarm.allow.cidr"; printf '5.5.5.5\n' > "$SWARM_ALLOW_FILE"
@@ -66,6 +67,16 @@ check sweep-stale-noop "$(grep -c . "$BLOCKS" || true)" "0"
 SWARM_ACTION="boost"; : > "$BLOCKS"
 swatter_swarm_sweep 2>/dev/null
 check sweep-boost-noop "$(grep -c . "$BLOCKS" || true)" "0"
+
+# consume INACTIVE (swarm removed from INTEL_PROVIDERS): lingering fresh meta
+# must NOT keep proactively blocking (pre-ship review)
+SWARM_ACTION="corroborated-block"; INTEL_PROVIDERS="ipsum"
+printf '[{"ip":"8.8.4.4","host_count":9,"category":null,"expires":99}]' > "$META"
+touch "$META"
+: > "$BLOCKS"
+swatter_swarm_sweep 2>/dev/null
+check sweep-consume-inactive "$(grep -c . "$BLOCKS" || true)" "0"
+INTEL_PROVIDERS="swarm"
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
