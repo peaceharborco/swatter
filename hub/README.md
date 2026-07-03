@@ -45,6 +45,9 @@ swatter swarm enroll            # POSTs /register with the enroll token
 
 - `POST /contribute` (write) — `{host_id, entries:[{ip,category?}]}` (ip = IP or CIDR)
 - `POST /register` (enroll) — `{host_id, label?}`
+- `POST /purge` (write) — `{host_id}` — removes ALL of that host's sightings +
+  any offenders left uncorroborated (bad-publish recovery; host stays enrolled).
+  Host CLI: `swatter swarm purge --yes`.
 - `GET /feed` (read) — bare `ip`/`cidr` per line; `?format=json` for `host_count`
   (required for `corroborated-block`); `X-Swarm-Truncated: true` if capped
 - `GET /health` — `{ok:true}`

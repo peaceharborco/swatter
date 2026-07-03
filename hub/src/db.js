@@ -73,3 +73,16 @@ export async function prune(env, { now }) {
   ]);
   return { offenders: o.meta.changes ?? 0, sightings: s.meta.changes ?? 0 };
 }
+
+// Bad-publish recovery (spec §13): drop every sighting this host contributed,
+// then any offenders left with no sightings at all. One atomic batch so a
+// concurrent feed never sees a half-purged state. The host stays enrolled.
+export async function purgeHost(env, { host }) {
+  const [s, o] = await env.DB.batch([
+    env.DB.prepare("DELETE FROM sightings WHERE host = ?").bind(host),
+    env.DB.prepare(
+      "DELETE FROM offenders WHERE ip NOT IN (SELECT DISTINCT ip FROM sightings)"
+    ),
+  ]);
+  return { sightings: s.meta.changes ?? 0, offenders: o.meta.changes ?? 0 };
+}

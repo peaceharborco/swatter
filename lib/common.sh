@@ -136,6 +136,21 @@ ABUSEIPDB_DAILY_QUOTA=1000
 : "${PERSIST_WINDOW_DAYS:=3}"
 : "${PERSIST_BUCKET_SECONDS:=3600}"
 : "${METRICS_FILE:=/var/lib/node_exporter/textfile_collector/swatter.prom}"
+
+# --- Swarm (fleet reputation sharing; subsystem 2 host side; ALL inert by default)
+# Consume additionally requires adding `swarm` to INTEL_PROVIDERS.
+: "${SWARM_ENABLE:=false}"
+: "${SWARM_HUB_URL:=}"
+: "${SWARM_WRITE_TOKEN_FILE:=/etc/swatter/swarm.write.token}"
+: "${SWARM_READ_TOKEN_FILE:=/etc/swatter/swarm.read.token}"
+: "${SWARM_ENROLL_TOKEN_FILE:=}"
+: "${SWARM_PUBLISH:=true}"
+: "${SWARM_ACTION:=boost}"
+: "${SWARM_MIN_CORROBORATION:=2}"
+: "${SWARM_BASE_SCORE:=70}"
+: "${SWARM_ALLOW_FILE:=/etc/swatter/swarm.allow.cidr}"
+: "${SWARM_MAX_AGE_DAYS:=3}"
+
 INTEL_CACHE_TTL=86400
 
 STORE="sqlite"

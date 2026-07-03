@@ -26,6 +26,7 @@
 #   swatter metrics [--print]      write the Prometheus textfile (or print it)
 #   swatter export-bans [file]     write perm-ban list to file (or stdout)
 #   swatter import-bans <file>     block each listed IP as perm (skips never-block/invalid)
+#   swatter swarm {enroll|status|disable|purge}  fleet reputation sharing (see SWARM_* config)
 #   swatter version
 
 set -uo pipefail
@@ -59,7 +60,7 @@ swatter_check_deps
 SWATTER_NOW_EPOCH="$(date -u +%s)"; export SWATTER_NOW_EPOCH
 
 # Source the rest.
-for m in allowlist classify ingest store_sqlite block_csf block_ipset block block_cf origin_lock intel asn metrics errors mailer notify report_abuseipdb score alerts report; do
+for m in allowlist classify ingest store_sqlite block_csf block_ipset block block_cf origin_lock intel asn metrics errors mailer notify report_abuseipdb score swarm alerts report; do
     # shellcheck disable=SC1090
     source "${LIBDIR}/${m}.sh"
 done
@@ -82,6 +83,9 @@ cmd_scan() {
     swatter_intel_init
     log_info "swatter scan start (mode=${SWATTER_MODE})"
     swatter_scan
+    # Fleet publish: delta of this run's confirmed perm bans, inside the scan
+    # lock (spec §4.1). Fail-soft — a hub outage must never fail the scan.
+    swatter_swarm_publish || true
 }
 
 cmd_status() {
@@ -253,6 +257,10 @@ cmd_refresh_feeds() {
     swatter_intel_init
     swatter_intel_refresh_all || rc=1
 
+    # Corroborated-block sweep (opt-in): acts on the JUST-refreshed swarm meta,
+    # entirely through _swatter_execute_block. No-op unless configured.
+    swatter_swarm_sweep || true
+
     # Re-run Cloudflare posture detection now that ranges are fresh. Only matters
     # for CF_MODE=auto, but caching it always keeps `status`/`test-config`
     # informative regardless of mode.
@@ -326,6 +334,10 @@ cmd_test_config() {
             greynoise)       [[ -n "${GREYNOISE_KEY:-}" ]] && echo "  intel greynoise: key set" || echo "  intel greynoise: key not set (GREYNOISE_KEY empty) -> provider inert" ;;
             projecthoneypot) [[ -n "${HTTPBL_KEY:-}" ]] && echo "  intel projecthoneypot: key set" || echo "  intel projecthoneypot: key not set (HTTPBL_KEY empty) -> provider inert" ;;
             abuseipdb)       [[ -n "${ABUSEIPDB_KEY:-}" ]] && echo "  intel abuseipdb: key set" || echo "  intel abuseipdb: key not set (ABUSEIPDB_KEY empty) -> provider inert" ;;
+            swarm)           if [[ "${SWARM_ENABLE:-false}" == "true" && -n "${SWARM_HUB_URL:-}" ]]; then
+                                 [[ -r "${SWARM_READ_TOKEN_FILE:-}" ]] && echo "  intel swarm: enabled (hub ${SWARM_HUB_URL})" \
+                                     || echo "  intel swarm: read token MISSING (${SWARM_READ_TOKEN_FILE}) -> consume inert"
+                             else echo "  intel swarm: SWARM_ENABLE/SWARM_HUB_URL not set -> provider inert"; fi ;;
         esac
     done
     if [[ "${ASN_SIGNAL_ENABLE:-false}" == "true" || " ${INTEL_PROVIDERS:-} " == *" projecthoneypot "* ]]; then
@@ -439,6 +451,7 @@ main() {
         metrics)       cmd_metrics "$@" ;;
         export-bans)   cmd_export_bans "$@" ;;
         import-bans)   cmd_import_bans "$@" ;;
+        swarm)         cmd_swarm "$@" ;;
         version|--version|-v) echo "swatter ${SWATTER_VERSION}" ;;
         ""|help|-h|--help) usage ;;
         *) echo "swatter: unknown command '${sub}' (try: swatter help)" >&2; exit 2 ;;
