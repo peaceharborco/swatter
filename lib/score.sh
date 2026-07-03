@@ -49,11 +49,22 @@ _swatter_pick_ttl() {
 _swatter_audit() {
     # $1 ip $2 score $3 action $4 channel $5 ttl $6 reason $7 evidence_json $8 reputation
     local f="${LOG_DIR}/decisions.jsonl" now; now="$(swatter_now)"
+    # reason is the only free-text field here and can carry intel-derived text.
+    # Neutralize the three chars that break a hand-built JSON line: backslash
+    # (the escaper below doesn't handle it), double-quote (closes the string),
+    # and any control char incl. newline (splits the JSONL record that report.sh
+    # / `why` parse with jq). Intel labels are already cleaned upstream; this is
+    # the record-layer backstop so no future reason source can corrupt the log.
+    local reason="${6//\\/\\\\}"; reason="${reason//\"/\'}"; reason="${reason//[[:cntrl:]]/ }"
+    # The ip field is charset-safe from the scorer today, but sanitize it here too
+    # (same backslash/quote/cntrl neutralization) so the record layer is
+    # self-protecting for any future caller that reaches _swatter_audit directly.
+    local aip="${1//\\/\\\\}"; aip="${aip//\"/\'}"; aip="${aip//[[:cntrl:]]/}"
     # A failed append must be LOUD (never abort the block path, but never
     # vanish either): blocks landing on the firewall with no decision record
     # silently break caps, repeat-escalation, and every /server-logs count.
     printf '{"ts":%s,"iso":"%s","ip":"%s","score":%s,"action":"%s","channel":"%s","ttl":%s,"reason":"%s","reputation":%s,"mode":"%s","evidence":%s}\n' \
-        "$now" "$(ts)" "$1" "$2" "$3" "$4" "${5:-0}" "${6//\"/\'}" "${8:-0}" "${SWATTER_MODE}" "$7" \
+        "$now" "$(ts)" "$aip" "$2" "$3" "$4" "${5:-0}" "$reason" "${8:-0}" "${SWATTER_MODE}" "$7" \
         >> "$f" 2>/dev/null || log_error "audit write FAILED (${f}): decision '${3}' for ${1} NOT recorded"
 }
 
@@ -63,6 +74,16 @@ _swatter_audit() {
 _swatter_execute_block() {
     local ip="$1" action="$2" ttl="$3" folded="$4" reason="$5" ev="$6" rep="$7" novhost="$8" top_vhost="$9" healthy="${10}"
     SWATTER_LAST_BACKEND_ERR=""   # per-IP: a backend failure below sets it; no cross-IP bleed
+    # Strict validity + safe-target gate, FIRST. score.awk's charset pre-filter
+    # admits tokens like 999.999.999.999 or '::::' (harmless bytes, but not
+    # addresses), and a /0 / unspecified address is valid-but-catastrophic — none
+    # may reach csf/ipset/the CF API as a block target. Audit the skip (parity
+    # with the never-block exempt path) so it is visible to `why`/report.
+    if ! swatter_is_valid_ip_or_cidr "$ip" || _swatter_is_unsafe_block_target "$ip"; then
+        log_warn "refusing to act on invalid/unsafe ip token '${ip}'"
+        _swatter_audit "$ip" "$folded" "skipped-invalid" "none" 0 "invalid_or_unsafe_ip ${reason}" "$ev" "$rep"
+        return 1
+    fi
     # never-block, LAST, right before acting.
     local nb
     if nb="$(swatter_is_never_block "$ip")"; then

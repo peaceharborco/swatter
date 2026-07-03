@@ -375,6 +375,25 @@ ORIGIN_LOCK_DIGEST="on"
 check ol-gate-on-zero    "$(_ol_digest_should_render 0 && echo show || echo hide)" "show"
 ORIGIN_LOCK_DIGEST="off"
 check ol-gate-off-hits   "$(_ol_digest_should_render 4 && echo show || echo hide)" "hide"
+
+# _ol_tag_ip must classify by CIDR CONTAINMENT, not literal string match: a
+# monitoring/allow range (e.g. 198.51.100.0/24) that CONTAINS the source IP has
+# to tag "legit" so the operator isn't shown a real monitor as "uncategorized"
+# before arming DROP. (grep -F on the CIDR file can't do containment.)
+MONITORING_RANGES_FILE="$DIG/monitoring.cidr"; printf '198.51.100.0/24\n' > "$MONITORING_RANGES_FILE"
+OPERATOR_ALLOW_FILE="$DIG/allow.cidr";        printf '203.0.113.9\n'      > "$OPERATOR_ALLOW_FILE"
+check ol-tag-monitoring-cidr "$(_ol_tag_ip 198.51.100.7)" "legit"
+check ol-tag-allow-exact     "$(_ol_tag_ip 203.0.113.9)"  "legit"
+check ol-tag-attacker-feed   "$(_ol_tag_ip 45.135.232.17)" "attacker"
+check ol-tag-unknown         "$(_ol_tag_ip 8.8.8.8)"       "uncategorized"
+# Guard: if origin_lock.sh is sourced WITHOUT allowlist.sh (a standalone/cron
+# fragment), the _ip_in_cidr_file dependency is absent — _ol_tag_ip must degrade
+# to "uncategorized" (safe default), never crash the digest under set -u.
+check ol-tag-no-cidrfn "$(bash -c '
+  source "'"${ROOT}"'/lib/common.sh"; source "'"${ROOT}"'/lib/origin_lock.sh"
+  MONITORING_RANGES_FILE="'"$DIG"'/monitoring.cidr"; STATE_DIR="'"$DIG"'"
+  _ol_tag_ip 198.51.100.7' 2>/dev/null)" "uncategorized"
+
 STATE_DIR="$OLD_STATE"; rm -rf "$DIG"
 
 echo "----------------------------------------"

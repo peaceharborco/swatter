@@ -187,6 +187,51 @@ BLOCK_RC=0
 swatter_classify()         { echo "DIRECT"; }
 swatter_cf_manages_plane() { return 1; }
 
+# 15) Malformed IP tokens that pass score.awk's loose charset gate (bounded to
+#     [0-9A-Fa-f:.] but not validity) must NEVER reach a firewall backend. The
+#     block path applies the strict validator itself — the last line of defense.
+for badip in "999.999.999.999" "::::" "deadbe:ef::0:12345"; do
+    LAST_CSF=""
+    feed "$badip"$'\t100\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"honeypot","honeypot":1,"top_vhost":""}'
+    swatter_scan >/dev/null 2>&1
+    check "malformed-ip-no-backend(${badip})" "${LAST_CSF}" ""
+    # ...and the skip is AUDITED (observability parity with the never-block path),
+    # not just dropped with a log line.
+    check "malformed-ip-audited(${badip})" "$(last_action)" "skipped-invalid"
+done
+
+# 16) ...and a valid attacker IP in the same run still gets blocked (the gate
+#     rejects garbage, not traffic).
+LAST_CSF=""
+feed $'203.0.113.99\t100\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"honeypot","honeypot":1,"top_vhost":""}'
+swatter_scan >/dev/null 2>&1
+check valid-ip-still-blocked "${LAST_CSF}" "perm 203.0.113.99"
+
+# 17) _swatter_audit backstop: a reason carrying a backslash and a double-quote
+#     must still yield a parseable JSON line (the record layer neutralizes them
+#     even if some future reason source isn't pre-sanitized).
+if command -v jq >/dev/null 2>&1; then
+    : > "$LOG_DIR/decisions.jsonl"
+    _swatter_audit '203.0.113.7' 90 temp csf 3600 'intel=mal\ware "x"' '{"k":1}' 0
+    if jq -e . "$LOG_DIR/decisions.jsonl" >/dev/null 2>&1; then
+        check audit-json-valid "valid" "valid"
+    else
+        check audit-json-valid "invalid" "valid"
+    fi
+    check audit-json-oneline "$(wc -l < "$LOG_DIR/decisions.jsonl" | tr -d ' ')" "1"
+
+    # The ip field is sanitized at the record layer too (parity with reason), so
+    # even a hostile ip token can't break the JSON line — defense in depth for any
+    # future path into _swatter_audit that bypasses the charset-safe scorer.
+    : > "$LOG_DIR/decisions.jsonl"
+    _swatter_audit 'evil"ip\x' 90 temp csf 3600 'r' '{"k":1}' 0
+    if jq -e . "$LOG_DIR/decisions.jsonl" >/dev/null 2>&1; then
+        check audit-json-hostile-ip-valid "valid" "valid"
+    else
+        check audit-json-hostile-ip-valid "invalid" "valid"
+    fi
+fi
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

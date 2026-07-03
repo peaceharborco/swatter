@@ -40,6 +40,45 @@ rm -rf "$STATE_DIR/intel"; mkdir -p "$STATE_DIR/intel"
 out="$(swatter_intel_score 9.9.9.9)"
 check nodata      "$(printf '%s' "$out" | cut -f1)" "0"
 
+# Hostile label: a provider whose label carries control chars (tab / newline /
+# backslash) — attacker- or MITM-influenced API field (e.g. GreyNoise .name).
+# The label reaches the TSV score contract (cut -f2) and downstream reason /
+# decisions.jsonl, so intel MUST sanitize it to a single clean line: no embedded
+# tab (would mis-split the 3-field output), no newline, no backslash.
+provider_evil() { printf '77\t%s\tmal\tishere\nSECOND\\line\t\n' "$INTEL_CACHE_TTL"; }
+INTEL_PROVIDERS="evil"
+rm -rf "$STATE_DIR/intel"; mkdir -p "$STATE_DIR/intel"
+out="$(swatter_intel_score 2.2.2.2)"
+check evil-score      "$(printf '%s' "$out" | cut -f1)" "77"
+
+# A provider (or MITM/proxy) that emits a LEADING blank line must not zero the
+# reputation signal — we take the first NON-blank line, so the real score/label
+# survive while any injected trailing lines are still dropped.
+provider_blankfirst() { printf '\n80\t%s\tmalicious:x\t\n99\tINJECTED\t\n' "$INTEL_CACHE_TTL"; }
+INTEL_PROVIDERS="blankfirst"
+rm -rf "$STATE_DIR/intel"; mkdir -p "$STATE_DIR/intel"
+bout="$(swatter_intel_score 4.4.4.4)"
+check blankfirst-score "$(printf '%s' "$bout" | cut -f1)" "80"
+check blankfirst-oneline "$(printf '%s' "$bout" | wc -l | tr -d ' ')" "0"
+# One clean record: no embedded newline splitting the 3-field score contract.
+check evil-one-line   "$(printf '%s' "$out" | wc -l | tr -d ' ')" "0"
+lbl="$(printf '%s' "$out" | cut -f2)"
+check evil-no-newline "$(printf '%s' "$lbl" | wc -l | tr -d ' ')" "0"
+check evil-no-tab     "$(printf '%s' "$lbl" | grep -c $'\t')" "0"
+check evil-no-bslash  "$(printf '%s' "$lbl" | grep -c '\\\\')" "0"
+
+# _intel_clean directly: an INLINE backslash + tab on the SAME (first) line must
+# be neutralized — tab removed (else it mis-splits the 3-field TSV), backslash
+# removed (else it can corrupt the hand-built audit JSON).
+_dirty="$(printf 'ab\\cd\tef')"   # ab\cd<TAB>ef
+_cleaned="$(_intel_clean "$_dirty")"
+check clean-no-tab     "$(printf '%s' "$_cleaned" | grep -c $'\t')" "0"
+check clean-no-bslash  "$(printf '%s' "$_cleaned" | grep -c '\\\\')" "0"
+check clean-keeps-text "$(printf '%s' "$_cleaned" | grep -c 'ab')" "1"
+# A double-quote in a label is neutralized AT THE SOURCE (not only in the audit
+# layer) so the intel TSV cache + bestlabel can't carry a raw quote anywhere.
+check clean-no-quote   "$(printf '%s' "$(_intel_clean 'ev"il')" | grep -c '"')" "0"
+
 # --- registry wiring: intel_init sources aggregates + refresh loop ---
 SWATTER_LIB_DIR="${ROOT}/lib"
 # A fake aggregate provider file would normally define provider_<name>; emulate by

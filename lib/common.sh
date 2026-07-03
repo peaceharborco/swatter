@@ -250,15 +250,78 @@ die()       { log_error "$@"; exit 1; }
 # The IP/CIDR regex is intentionally identical to the one previously only in
 # cmd_allow so behavior is unchanged for valid inputs.
 # ---------------------------------------------------------------------------
-# Non-fatal predicate: 0 if the value looks like an IP or CIDR. Internal
-# paths (store layer, sweeps) use this and degrade gracefully — a malformed
-# token parsed out of a log line must never kill a run.
+# Structural IPv6 validity (no prefix): hex/colon charset, at most one '::',
+# groups of 1-4 hex digits, exactly 8 groups uncompressed / at most 7 with '::'.
+# A trailing embedded IPv4 (e.g. ::ffff:192.0.2.1) is a legit textual form — the
+# dotted quad counts as the final TWO 16-bit groups, so its bound is one lower.
+# Self-contained so common.sh stays dependency-free.
+_swatter_valid_ipv6() {
+    local a="${1,,}" L="" R="" g n v4groups=0
+    # Split off a trailing dotted-quad tail, validate it as an IPv4 (octets
+    # 0-255), and treat it as two hex groups for the group-count bounds.
+    if [[ "$a" == *.* ]]; then
+        local tail="${a##*:}" head="${a%:*}"
+        [[ "$a" == *:* ]] || return 1
+        [[ "$tail" =~ ^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}$ ]] || return 1
+        a="${head}:0"      # placeholder single group; we add 2 to the count below
+        v4groups=2
+    fi
+    [[ "$a" =~ ^[0-9a-f:]+$ ]] || return 1
+    if [[ "$a" == *::* ]]; then
+        [[ "$a" == *:::* || "${a#*::}" == *::* ]] && return 1   # ':::' / two '::'
+        L="${a%%::*}"; R="${a#*::}"
+    else
+        [[ "$a" == :* || "$a" == *: ]] && return 1   # bare edge colon needs '::'
+        L="$a"
+    fi
+    local -a lg=() rg=()
+    IFS=: read -ra lg <<<"$L"; IFS=: read -ra rg <<<"$R"
+    for g in ${lg[@]+"${lg[@]}"} ${rg[@]+"${rg[@]}"}; do
+        [[ "$g" =~ ^[0-9a-f]{1,4}$ ]] || return 1
+    done
+    # -1 for the "0" placeholder that stood in for the v4 tail, +2 for the quad.
+    n=$(( ${#lg[@]} + ${#rg[@]} - (v4groups > 0 ? 1 : 0) + v4groups ))
+    if [[ "$a" == *::* ]]; then (( n <= 7 )); else (( n == 8 )); fi
+}
+
+# Non-fatal predicate: 0 if the value is a REAL IP or CIDR — v4 octets bounded
+# 0-255, v6 structurally valid, prefix lengths bounded per family. This is the
+# authoritative gate: score.awk's charset pre-filter is deliberately loose (it
+# only guarantees no shell-meaningful bytes), so the block path and store layer
+# rely on THIS to keep garbage tokens away from csf/ipset/CF. Internal paths
+# use it and degrade gracefully — a malformed token parsed out of a log line
+# must never kill a run.
 swatter_is_valid_ip_or_cidr() {
-    local ip="${1:-}"
+    local ip="${1:-}" addr plen=""
     [[ -n "$ip" ]] || return 1
-    # v4: optional /0-32 ; v6: optional /0-128 (loose on full v6 syntax but sufficient and much stricter on prefix len than original)
-    [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/([0-9]|[12][0-9]|3[0-2]))?$ ]] && return 0
-    [[ "$ip" =~ ^[0-9A-Fa-f:]+(/([0-9]|[1-9][0-9]|1[0-1][0-9]|12[0-8]))?$ ]] && return 0
+    addr="${ip%%/*}"
+    if [[ "$ip" == */* ]]; then
+        plen="${ip#*/}"
+        [[ "$ip" == "${addr}/${plen}" && -n "$addr" ]] || return 1   # exactly one '/'
+    fi
+    if [[ "$addr" == *:* ]]; then
+        _swatter_valid_ipv6 "$addr" || return 1
+        [[ -z "$plen" ]] || [[ "$plen" =~ ^([0-9]|[1-9][0-9]|1[0-1][0-9]|12[0-8])$ ]] || return 1
+    else
+        [[ "$addr" =~ ^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}$ ]] || return 1
+        [[ -z "$plen" ]] || [[ "$plen" =~ ^([0-9]|[12][0-9]|3[0-2])$ ]] || return 1
+    fi
+    return 0
+}
+
+# A syntactically-valid IP/CIDR that is CATASTROPHIC as a block target: a /0
+# prefix (denies the whole internet) or an unspecified address (0.0.0.0 / ::).
+# The general validator stays permissive because it also gates allow-lists,
+# never-block CIDR files, and feed downloads where these forms are harmless — so
+# the "never block this" call belongs at the block SINKS, not in the validator.
+# 0 (true) = unsafe, do not block.
+_swatter_is_unsafe_block_target() {
+    local t="${1:-}" addr
+    addr="${t%%/*}"
+    [[ "$t" == */* && "${t#*/}" == "0" ]] && return 0   # /0 = entire internet
+    case "$addr" in
+        0.0.0.0|::|0:0:0:0:0:0:0:0) return 0 ;;          # unspecified address
+    esac
     return 1
 }
 
@@ -276,7 +339,10 @@ swatter_validate_ip_or_cidr() {
 # gates the never-block set (a poisoned file could let a CF edge be CSF-denied).
 swatter_cidr_list_ok() {
     local line n=0
-    while IFS= read -r line; do
+    # `|| [[ -n "$line" ]]` so a final line WITHOUT a trailing newline is still
+    # validated — otherwise a poisoned last line (captive-portal HTML with no
+    # closing newline) would be silently DROPPED and the list would falsely pass.
+    while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line%$'\r'}"; line="${line//[[:space:]]/}"
         [[ -z "$line" ]] && continue
         swatter_is_valid_ip_or_cidr "$line" || return 1

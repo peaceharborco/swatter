@@ -35,6 +35,16 @@ check sql-fail-stdout-clean "$out" ""
 grep -q "sqlite error" "$_sqlerr" && PASS=$((PASS+1)) || { echo "FAIL sql-fail-warn"; FAIL=$((FAIL+1)); }
 check sql-ok-stdout "$(_sql "SELECT 42;" 2>/dev/null)" "42"
 
+# store_init on an unwritable DB dir must ALSO surface (not vanish into
+# 2>/dev/null): a scan that starts on a silently-empty ledger loses cap and
+# repeat-escalation state without any signal.
+_initerr="$STATE_DIR/initerr"
+STATE_DIR_SAVE="$STATE_DIR"; STATE_DIR="/nonexistent-swatter-db-dir"
+swatter_store_init 2>"$_initerr"; rc=$?
+STATE_DIR="$STATE_DIR_SAVE"
+check store-init-fail-rc "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+grep -qi "store init" "$_initerr" && PASS=$((PASS+1)) || { echo "FAIL store-init-warn"; FAIL=$((FAIL+1)); }
+
 # Inject 5 older distinct buckets directly, all within 3 days -> 6 total.
 db="$STATE_DIR/swatter.db"
 now=$(swatter_now)

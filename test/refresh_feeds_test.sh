@@ -38,6 +38,14 @@ case "\$mode" in
           esac ;;
     html) printf '<html><body>gateway error</body></html>\n' ;;
     fail) exit 22 ;;
+    v6empty) case "\$*" in
+              *ips-v4*) printf '104.16.0.0/13\n172.64.0.0/13\n131.0.72.0/22\n';;
+              *ips-v6*) : ;;
+          esac ;;
+    v6blank) case "\$*" in
+              *ips-v4*) printf '104.16.0.0/13\n172.64.0.0/13\n131.0.72.0/22\n';;
+              *ips-v6*) printf '\n   \n\t\n';;
+          esac ;;
 esac
 exit 0
 EOF
@@ -69,6 +77,19 @@ chmod 0444 "$state/ro/cloudflare.cidr"; chmod 0555 "$state/ro"
 sed -i.bak "s|^CLOUDFLARE_IPS_FILE=.*|CLOUDFLARE_IPS_FILE=\"$state/ro/cloudflare.cidr\"|" "$SWATTER_CONF"
 run; check write-fail-rc-nonzero "$([[ $? -ne 0 ]] && echo yes || echo no)" "yes"
 chmod 0755 "$state/ro"; mv "$SWATTER_CONF.bak" "$SWATTER_CONF"
+
+# E) v4 succeeds but v6 comes back EMPTY -> keep the existing (v6-bearing) file
+# and exit nonzero. Writing a v4-only file would silently shrink the never-block
+# set and origin-lock v6 coverage on an IPv6-fronted origin.
+echo v6empty > "$state/curl_mode"
+run; check v6empty-rc-nonzero "$([[ $? -ne 0 ]] && echo yes || echo no)" "yes"
+grep -q "2400:cb00::/32" "$state/cloudflare.cidr" && PASS=$((PASS+1)) || { echo "FAIL v6empty-file-kept"; FAIL=$((FAIL+1)); }
+
+# F) v6 body is present but WHITESPACE-ONLY (0 valid CIDR lines): must be treated
+# like empty, not slip through a bare -z check and install a v4-only file.
+echo v6blank > "$state/curl_mode"
+run; check v6blank-rc-nonzero "$([[ $? -ne 0 ]] && echo yes || echo no)" "yes"
+grep -q "2400:cb00::/32" "$state/cloudflare.cidr" && PASS=$((PASS+1)) || { echo "FAIL v6blank-file-kept"; FAIL=$((FAIL+1)); }
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"

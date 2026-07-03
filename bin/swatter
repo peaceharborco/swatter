@@ -37,7 +37,7 @@ umask 0027
 
 SWATTER_ENTRYPOINT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
 SWATTER_ARGV=("$@")
-SWATTER_VERSION="2.5.1"
+SWATTER_VERSION="2.5.2"
 
 # Locate libs: installed layout (/usr/local/lib/swatter) or repo layout (../lib).
 _self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -75,7 +75,10 @@ cmd_scan() {
     done
     swatter_init_dirs
     swatter_acquire_lock
-    swatter_store_init
+    # A broken ledger must ABORT the scan, not degrade silently: blocking without
+    # the store loses caps, repeat-escalation, and perm tracking — worse than not
+    # running, because the operator believes protection is intact.
+    swatter_store_init || die "store init failed — aborting scan (ledger unusable)"
     swatter_intel_init
     log_info "swatter scan start (mode=${SWATTER_MODE})"
     swatter_scan
@@ -181,7 +184,9 @@ cmd_allow() {
     printf '%s # %s - %s\n' "$ip" "${note:-added via swatter allow}" \
         "$(date -u '+%Y-%m-%d %H:%M:%S UTC' -d "@${SWATTER_NOW_EPOCH}" 2>/dev/null \
            || date -u -r "${SWATTER_NOW_EPOCH}" '+%Y-%m-%d %H:%M:%S UTC')" >> "$f"
-    chmod 0644 "$f" 2>/dev/null || true
+    # 0640 (not world-readable): the allow file lists operator/monitoring IPs —
+    # infrastructure detail that shouldn't be legible to every user on a shared box.
+    chmod 0640 "$f" 2>/dev/null || true
     log_info "never-block allow: ${ip}${note:+ (${note})}"
     echo "allowed ${ip} (never-block, both planes)"
 }
@@ -215,14 +220,21 @@ cmd_refresh_feeds() {
         local cf4 cf6 tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/swatter-cfranges.XXXXXX")" || { log_error "refresh-feeds: mktemp failed"; return 1; }
         cf4="$(curl --max-time 20 -fsS https://www.cloudflare.com/ips-v4 2>/dev/null)"
         cf6="$(curl --max-time 20 -fsS https://www.cloudflare.com/ips-v6 2>/dev/null)"
-        if [[ -z "$cf4" ]]; then
-            log_warn "cloudflare range download failed (keeping existing ${CLOUDFLARE_IPS_FILE})"
-            rc=1
-        elif ! printf '%s\n%s\n' "$cf4" "$cf6" | swatter_cidr_list_ok; then
-            # A 200 with a non-CIDR body (captive portal / intercepting proxy /
-            # error page) must NEVER replace the file that gates the never-block
-            # set — a poisoned list could let a CF edge be CSF-denied.
-            log_error "cloudflare range download INVALID (non-CIDR body) — keeping existing ${CLOUDFLARE_IPS_FILE}"
+        # Validate EACH family independently: swatter_cidr_list_ok requires >=1
+        # valid CIDR line AND every non-blank line valid. Checking the families
+        # separately means a v6 body that is empty OR whitespace-only OR a
+        # captive-portal page fails its own gate — a bare -z check would let a
+        # whitespace v6 body through and install a v4-only file (shrinking the
+        # never-block set + origin-lock v6 coverage; an IPv6 CF edge could then be
+        # CSF-denied). BOTH families must be independently good or the existing
+        # (last-good, complete) file is kept: keeping slightly-stale-but-complete
+        # ranges is far safer than writing a fresh-but-incomplete set, and the
+        # allowlist freshness guard warns if it ages out.
+        local v4ok=1 v6ok=1
+        printf '%s\n' "$cf4" | swatter_cidr_list_ok || v4ok=0
+        printf '%s\n' "$cf6" | swatter_cidr_list_ok || v6ok=0
+        if (( ! v4ok || ! v6ok )); then
+            log_error "cloudflare range download INVALID/incomplete (v4 $([[ $v4ok -eq 1 ]] && echo ok || echo BAD), v6 $([[ $v6ok -eq 1 ]] && echo ok || echo BAD)) — keeping existing ${CLOUDFLARE_IPS_FILE}"
             rc=1
         else
             # A validated body that never lands must not read as success to cron.
@@ -380,7 +392,10 @@ cmd_export_bans() {
 cmd_import_bans() {
     local file="${1:-}"
     [[ -f "$file" ]] || die "usage: swatter import-bans <file>"
-    swatter_store_init
+    # Like cmd_scan: import-bans WRITES the ledger (records each ban). A broken
+    # store would firewall-block without recording — the exact divergence we guard
+    # against — so abort before applying any block rather than leave untracked denies.
+    swatter_store_init || die "store init failed — aborting import-bans (ledger unusable)"
     local line ip nb n=0 dry
     dry="$([[ "${SWATTER_MODE}" == "enforce" ]] && echo 0 || echo 1)"
     local channel="${DIRECT_BACKEND:-csf}"

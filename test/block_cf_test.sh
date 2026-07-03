@@ -25,8 +25,19 @@ swatter_cf_manages_plane() { return 0; }
 _cf_zone_id() { printf 'zone123'; return 0; }       # default: resolves
 _cf_api()     { printf '%s' "${_CF_API_RESP:-}"; }  # default: empty -> error
 
-# 1) empty vhost -> NOVHOST(4): no nameable target this window, not a config gap.
+# 0) defense-in-depth: a malformed IP is refused before ANY plane logic / API,
+#    so no caller can push garbage into a Cloudflare access rule.
 SWATTER_MODE="enforce"
+_api_hits=0; _cf_api() { _api_hits=$((_api_hits+1)); printf '%s' "${_CF_API_RESP:-}"; }
+swatter_cf_block "999.999.999.999" 3600 r x.com; check cf-malformed-rc "$?" "1"
+swatter_cf_block "::::" 3600 r x.com >/dev/null 2>&1; check cf-malformed2-rc "$?" "1"
+# Unsafe targets (/0, unspecified) are refused before any API call too.
+swatter_cf_block "0.0.0.0/0" 3600 r x.com >/dev/null 2>&1; check cf-unsafe-rc "$?" "1"
+swatter_cf_block "::" 3600 r x.com >/dev/null 2>&1; check cf-unsafe2-rc "$?" "1"
+check cf-malformed-no-api "$_api_hits" "0"
+_cf_api() { printf '%s' "${_CF_API_RESP:-}"; }   # restore
+
+# 1) empty vhost -> NOVHOST(4): no nameable target this window, not a config gap.
 swatter_cf_block 1.2.3.4 3600 r ""; check empty-vhost-novhost "$?" "$SWATTER_RC_NOVHOST"
 
 # 2) vhost present but NOT in CF_DOMAINS_MAP -> CONFIG(3).

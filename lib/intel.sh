@@ -67,6 +67,23 @@ swatter_intel_available() {
     [[ -n "${INTEL_PROVIDERS// }" ]]
 }
 
+# Sanitize an attacker/MITM-influenceable provider label to a single clean token:
+# strip CR/LF (would split the TSV score contract + decisions.jsonl), tabs (would
+# mis-split our own 3-field output), and backslashes (would corrupt the hand-built
+# audit JSON, whose escaper only handles quotes). Bounded to 80 chars.
+_intel_clean() {
+    local s="${1:-}"
+    # Explicit single-char substitutions (a combined bracket class mixing these
+    # plus a backslash before ']' parses ambiguously across bash versions):
+    s="${s//\\/}"          # drop backslashes (would corrupt hand-built JSON)
+    s="${s//\"/}"          # drop double-quotes (would break a JSON string value)
+    s="${s//$'\t'/ }"      # tab -> space (would mis-split the 3-field TSV)
+    s="${s//$'\r'/ }"
+    s="${s//$'\n'/ }"      # CR/LF -> space (would split the record)
+    s="${s//[[:cntrl:]]/}" # strip any remaining control chars
+    printf '%s' "${s:0:80}"
+}
+
 _intel_cache_get() {
     # $1=provider $2=ip ; echoes "score\tlabel\tverdict" if fresh, else nothing.
     # verdict field may be empty (3-field legacy cache files are still valid).
@@ -87,24 +104,35 @@ _intel_cache_put() {
     printf '%s\t%s\t%s\n' "$score" "$label" "$verdict" > "${d}/${ip}" 2>/dev/null || true
 }
 
+# First NON-blank line of a provider/cache payload. Dropping injected TRAILING
+# lines (a hostile label carrying a newline) AND skipping a LEADING blank/CRLF
+# line (a MITM/proxy prepending whitespace, which would otherwise zero the score).
+_intel_firstline() { printf '%s' "${1:-}" | awk 'NF{print; exit}'; }
+
 # swatter_intel_score <ip> : echoes "best_score \t best_label \t suppress_flag".
 # suppress_flag is 1 when any provider returned verdict "suppress"; else 0.
 # score 0 means no malicious signal (or no data).
 swatter_intel_score() {
     local ip="$1" best=0 bestlabel="" suppress=0
-    local prov out cached score ttl label verdict
+    local prov out cached score ttl label verdict line
     for prov in ${INTEL_PROVIDERS}; do
         if cached="$(_intel_cache_get "$prov" "$ip")"; then
-            score="$(printf '%s' "$cached" | cut -f1)"
-            label="$(printf '%s' "$cached" | cut -f2)"
-            verdict="$(printf '%s' "$cached" | cut -f3)"
+            line="$(_intel_firstline "$cached")"
+            score="$(printf '%s' "$line" | cut -f1)"
+            label="$(_intel_clean "$(printf '%s' "$line" | cut -f2)")"
+            verdict="$(_intel_clean "$(printf '%s' "$line" | cut -f3)")"
         else
             if ! declare -F "provider_${prov}" >/dev/null; then continue; fi
             if out="$(provider_"${prov}" "$ip" 2>/dev/null)"; then
+                # Parse ONLY the first non-blank line: a provider whose label
+                # carries a newline (hostile/MITM API field) must not leak extra
+                # lines into the score contract or the cache, and a leading blank
+                # must not swallow the real score line.
+                out="$(_intel_firstline "$out")"
                 score="$(printf '%s' "$out" | cut -f1)"
                 ttl="$(printf '%s' "$out" | cut -f2)"
-                label="$(printf '%s' "$out" | cut -f3)"
-                verdict="$(printf '%s' "$out" | cut -f4)"
+                label="$(_intel_clean "$(printf '%s' "$out" | cut -f3)")"
+                verdict="$(_intel_clean "$(printf '%s' "$out" | cut -f4)")"
                 [[ "$score" =~ ^[0-9]+$ ]] || score=0
                 _intel_cache_put "$prov" "$ip" "$score" "$label" "$verdict"
             else
