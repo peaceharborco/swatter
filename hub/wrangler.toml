@@ -2,6 +2,17 @@ name = "swatter-swarm-hub"
 main = "src/index.js"
 compatibility_date = "2024-11-01"
 
+# Custom domain (operator-directed 2026-07-03): the Workers platform manages the
+# DNS record + cert for this hostname in the peaceharbor.com zone. Zone writes
+# are operator-run (Developer rule: zone state goes through terminal-scripts /
+# the operator, not agent-run wrangler) — the OPERATOR runs `wrangler deploy`
+# with this block active to attach the domain.
+routes = [
+  { pattern = "swarm.peaceharbor.com", custom_domain = true }
+]
+# workers.dev stays enabled so the hub has a URL before/without the custom domain.
+workers_dev = true
+
 [vars]
 SWARM_TTL = "604800"
 MAX_ENTRIES = "1000"
@@ -10,10 +21,8 @@ FEED_MAX = "50000"
 [[d1_databases]]
 binding = "DB"
 database_name = "swatter-swarm"
-# Zero-UUID works for the local/test harness; replace with the real id from
-# `wrangler d1 create` before `wrangler deploy` (round-2 review: a non-UUID
-# placeholder can break Miniflare D1 init).
-database_id = "00000000-0000-0000-0000-000000000000"
+# Prod database in the Peace Harbor Web account (created 2026-07-03).
+database_id = "0aaa4d75-f275-4b32-bf1e-e0ec775cd860"
 migrations_dir = "migrations"
 
 # Per-connecting-IP limiter AND a global limiter (spec §4.2: "connecting IP + a
