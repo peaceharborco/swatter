@@ -1,14 +1,22 @@
-# Swatter Swarm Hub Implementation Plan (v2)
+# Swatter Swarm Hub Implementation Plan (v2.1)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **v2 supersedes v1.** Rewritten after the two-model plan review
-> (`…-swatter-swarm-hub-review-grok.md`) against design spec **v3**. Key changes:
-> `host_count` is DERIVED at feed-read time (no write-race); a **host registry**
-> (`hosts` table + enroll token) gates the count (forgery defense); the hub
-> accepts **IP or CIDR**; the test harness uses the **current** `cloudflareTest()`
-> + Vitest 4.1 API; rate limiting keys on the **connecting IP**; empty-feed,
-> truncation-signalling, and payload caps are handled.
+> **v2.1** folds in the round-2 plan review
+> (`…-swatter-swarm-hub-review-grok-rev2.md`): pool pinned `^0.13.0` (Vitest-4
+> compatible); official D1 migration recipe (`readD1Migrations` in the Node config
+> → `TEST_MIGRATIONS` binding → `applyD1Migrations` once); test tokens provisioned;
+> validator off-by-one on the non-compressed embedded-v4 form + leading-zero
+> prefix parity fixed; **unenrolled host_ids are write-gated** (no sightings/offender
+> bloat); global `/contribute` limiter added; `?limit=` clamped; prune batched;
+> host-consume obligations moved into the frozen contract. Both round-2 verdicts
+> confirmed the core design (read-time count + registry) is sound.
+>
+> **v2 supersedes v1.** Rewritten after the round-1 plan review against design
+> spec **v3**: `host_count` DERIVED at feed-read time (no write-race); a **host
+> registry** gates the count (forgery defense); hub accepts **IP or CIDR**;
+> current `cloudflareTest()` harness; connecting-IP rate limit; empty-feed +
+> truncation + payload caps.
 
 **Goal:** Build the self-hostable Swatter Swarm hub — a Cloudflare Worker + D1 that ingests each fleet host's confirmed offenders (`POST /contribute`), enrolls trusted hosts (`POST /register`), and serves the merged, decaying blocklist back (`GET /feed`), with corroboration (`host_count`) derived safely at read time.
 
@@ -19,10 +27,13 @@
 ## Global Constraints
 
 - **Subsystem 1 of 2.** This FREEZES the HTTP contract the host-side plan consumes. Contract (do not change field names/shapes without updating the host plan):
-  - `POST /contribute` — write token — `{host_id: string, entries: [{ip: string, category?: string}]}` → `200 {accepted, rejected}`; `413` if `entries.length > MAX_ENTRIES`.
+  - `POST /contribute` — write token — `{host_id: string, entries: [{ip: string, category?: string}]}` → `200 {accepted, rejected, enrolled}`; `413` if `entries.length > MAX_ENTRIES`. **`enrolled:false` + `accepted:0`** if the `host_id` isn't registered — the host must `swatter swarm enroll` first (nothing is stored for an unenrolled host).
   - `POST /register` — enroll token — `{host_id: string, label?: string}` → `200 {enrolled: host_id}`.
-  - `GET /feed` — read token — default `text/plain` bare `ip`/`cidr` per line (empty body if none); `?format=json` → `[{ip, host_count, category, expires}]`; `?limit=N`. Response header `X-Swarm-Truncated: true` when the row cap was hit.
+  - `GET /feed` — read token — default `text/plain` bare `ip`/`cidr` per line (empty body if none); `?format=json` → `[{ip, host_count, category, expires}]`; `?limit=N` clamped to `[1, FEED_MAX]`. Response header `X-Swarm-Truncated: true` when the row cap was hit.
   - `GET /health` — no auth — `{ok:true}`.
+- **HOST-SIDE consume obligations this contract imposes (the host plan MUST honor these — they are part of the freeze, not footnotes):**
+  1. An **empty `200` bare feed means "no active offenders" → the host CLEARS `swarm.txt`** (and the swarm signal for this cycle). It must NOT pass an empty body through `swatter_cidr_list_ok` (whose `n>0` would reject it and freeze decay). "Keep last-good" applies ONLY to a fetch *failure* (non-200 / transport error), never to a valid empty 200.
+  2. **`corroborated-block` REQUIRES the `?format=json` feed** — the bare feed carries no `host_count`. A host in `boost` may use bare; a host in `corroborated-block` MUST fetch JSON.
 - **`host_count` is DERIVED at read time** (`COUNT(DISTINCT s.host) FROM sightings s JOIN hosts h ON s.host=h.host WHERE s.ip=? AND s.last_seen > now-SWARM_TTL`). It is NEVER stored on `offenders`. Only ENROLLED hosts count.
 - **Feed accepts IP or CIDR**; rejects `/0` and unspecified (`0.0.0.0`, `::`). Parity with the bash `swatter_is_valid_ip_or_cidr` + `_swatter_is_unsafe_block_target`.
 - **Three tokens** (Worker secrets, never in `wrangler.toml`): `SWARM_WRITE_TOKEN` (contribute), `SWARM_READ_TOKEN` (feed), `SWARM_ENROLL_TOKEN` (register). A read token must NOT work on write/enroll paths; a write token must NOT work on enroll.
@@ -53,12 +64,18 @@
   "type": "module",
   "scripts": { "test": "vitest run", "deploy": "wrangler deploy" },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.8.0",
+    "@cloudflare/vitest-pool-workers": "^0.13.0",
     "vitest": "^4.1.0",
     "wrangler": "^4.36.0"
   }
 }
 ```
+
+> **Version note (round-2 review):** pool `^0.8.0` peers Vitest 2–3 and will NOT
+> install with Vitest 4.1 — it must be `^0.13.0`+ (current `0.18`). If `npm install`
+> still complains about peers, bump pool to the latest and re-run Task 1 Step 8
+> BEFORE any other task; the harness-proof gate exists precisely to absorb this
+> ecosystem churn.
 
 - [ ] **Step 2: `hub/migrations/0001_init.sql`** (schema; applied to test D1 by setup, to prod by `wrangler d1 migrations apply`)
 
@@ -105,13 +122,24 @@ FEED_MAX = "50000"
 [[d1_databases]]
 binding = "DB"
 database_name = "swatter-swarm"
-database_id = "REPLACE_AFTER_d1_create"
+# Zero-UUID works for the local/test harness; replace with the real id from
+# `wrangler d1 create` before `wrangler deploy` (round-2 review: a non-UUID
+# placeholder can break Miniflare D1 init).
+database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "migrations"
 
+# Per-connecting-IP limiter AND a global limiter (spec §4.2: "connecting IP + a
+# global /contribute limit") — the global one bounds a distributed leaked-token
+# holder that the per-IP one alone can't.
 [[ratelimits]]
 name = "CONTRIBUTE_LIMITER"
 namespace_id = "1001"
 simple = { limit = 120, period = 60 }
+
+[[ratelimits]]
+name = "GLOBAL_LIMITER"
+namespace_id = "1002"
+simple = { limit = 6000, period = 60 }
 
 [triggers]
 crons = ["17 4 * * *"]
@@ -119,42 +147,56 @@ crons = ["17 4 * * *"]
 # Secrets (NOT here): SWARM_WRITE_TOKEN, SWARM_READ_TOKEN, SWARM_ENROLL_TOKEN
 ```
 
-- [ ] **Step 4: `hub/vitest.config.js`** (current API: `cloudflareTest()` plugin)
+- [ ] **Step 4: `hub/vitest.config.js`** — the OFFICIAL D1 recipe: read migrations
+  in Node (config context), pass them + the three test tokens through
+  `miniflare.bindings`. (Round-2 review: reading migrations inside the setup file
+  and dropping tables per-test is the wrong wiring.)
 
 ```js
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { readD1Migrations } from "@cloudflare/vitest-pool-workers/config";
 import { defineConfig } from "vitest/config";
+import path from "node:path";
+
+const migrations = await readD1Migrations(path.join(__dirname, "migrations"));
 
 export default defineConfig({
-  plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.toml" } })],
+  plugins: [
+    cloudflareTest({
+      wrangler: { configPath: "./wrangler.toml" },
+      miniflare: {
+        // migrations array handed to the worker context for the setup file;
+        // test tokens provisioned here (wrangler.toml deliberately omits secrets).
+        bindings: {
+          TEST_MIGRATIONS: migrations,
+          SWARM_WRITE_TOKEN: "test-write",
+          SWARM_READ_TOKEN: "test-read",
+          SWARM_ENROLL_TOKEN: "test-enroll",
+        },
+      },
+    }),
+  ],
   test: { setupFiles: ["./test/apply-migrations.js"] },
 });
 ```
 
-- [ ] **Step 5: `hub/test/apply-migrations.js`** (seed the ephemeral D1 from migrations before each test — the documented D1 recipe)
+- [ ] **Step 5: `hub/test/apply-migrations.js`** — apply migrations ONCE; isolated
+  storage resets writes between tests (no per-test DROP/re-apply).
 
 ```js
 import { env, applyD1Migrations } from "cloudflare:test";
-import { readD1Migrations } from "@cloudflare/vitest-pool-workers/config";
-import { beforeEach } from "vitest";
+import { beforeAll } from "vitest";
 
-const migrations = await readD1Migrations("./migrations");
-
-beforeEach(async () => {
-  await env.DB.exec("DROP TABLE IF EXISTS offenders");
-  await env.DB.exec("DROP TABLE IF EXISTS sightings");
-  await env.DB.exec("DROP TABLE IF EXISTS hosts");
-  // reset the applied-migrations bookkeeping table too, if present
-  await env.DB.exec("DROP TABLE IF EXISTS d1_migrations").catch(() => {});
-  await applyD1Migrations(env.DB, migrations);
+beforeAll(async () => {
+  await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 });
 ```
 
-> If `applyD1Migrations` / `readD1Migrations` are not exported by the installed
-> version, this is the FIRST thing to fix — run Step 8 immediately after writing
-> this file to confirm the harness loads before proceeding. The schema also lives
-> in `migrations/`, so a fallback is to `env.DB.exec()` each `CREATE` statement
-> from the migration file split on `;`.
+> If the installed pool version doesn't export `cloudflareTest`/`readD1Migrations`
+> as shown, THIS is the first thing to reconcile against the version's own docs —
+> run Step 8 immediately to confirm the harness loads before any other task. The
+> per-test isolation comes from the pool's default isolated storage; do not add
+> `beforeEach` DROPs (they fight the migration bookkeeping).
 
 - [ ] **Step 6: `hub/src/index.js`** (health only for now)
 
@@ -228,10 +270,12 @@ import { isValidIpOrCidr, isUnsafeTarget } from "../src/validate.js";
 
 describe("isValidIpOrCidr", () => {
   it.each(["1.2.3.4", "203.0.113.9", "198.51.100.0/24", "::1", "2001:db8::1",
-           "2001:db8::/48", "::ffff:192.0.2.1", "2400:cb00::/32"])(
+           "2001:db8::/48", "::ffff:192.0.2.1", "0:0:0:0:0:ffff:192.0.2.1",
+           "2400:cb00::/32", "1.2.3.4/0", "::/0"])(
     "accepts %s", (s) => expect(isValidIpOrCidr(s)).toBe(true));
   it.each(["999.999.999.999", "256.0.0.1", "1.2.3", "deadbeef", "::::",
-           "1.2.3.4/33", "2001:db8::/129", "", "1.2.3.4 ", "evil\"x", "1.2.3.4/1/2"])(
+           "1.2.3.4/33", "2001:db8::/129", "", "1.2.3.4 ", "evil\"x", "1.2.3.4/1/2",
+           "1.2.3.4/00", "1.2.3.4/03", "2001:db8::/033", "1:2:3:4:5:6:7:8:9"])(
     "rejects %s", (s) => expect(isValidIpOrCidr(s)).toBe(false));
 });
 
@@ -275,7 +319,10 @@ function validV6(a) {
   }
   const groups = [...L.split(":").filter(Boolean), ...R.split(":").filter(Boolean)];
   for (const g of groups) if (!/^[0-9a-f]{1,4}$/.test(g)) return false;
-  const n = groups.length + v4tail;
+  // The embedded-v4 tail was replaced with a single ":0" placeholder group above,
+  // so subtract that 1 placeholder before adding the quad's 2 groups — matching
+  // the bash validator (round-2 review: `0:0:0:0:0:ffff:192.0.2.1` must pass).
+  const n = groups.length + v4tail - (v4tail ? 1 : 0);
   return a.includes("::") ? n <= 7 : n === 8;
 }
 
@@ -288,12 +335,14 @@ export function isValidIpOrCidr(s) {
     plen = s.slice(slash + 1);
     if (addr.length === 0 || plen.includes("/") || !/^\d+$/.test(plen)) return false;
   }
+  // Prefix regexes copied EXACTLY from the bash validator so a leading-zero plen
+  // (`/00`, `/03`, `/033`) is rejected on both sides (round-2 review parity gap).
   if (addr.includes(":")) {
     if (!validV6(addr)) return false;
-    return plen === null || (+plen >= 0 && +plen <= 128 && /^\d{1,3}$/.test(plen));
+    return plen === null || /^([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$/.test(plen);
   }
   if (!V4.test(addr)) return false;
-  return plen === null || (+plen >= 0 && +plen <= 32 && /^\d{1,2}$/.test(plen));
+  return plen === null || /^([0-9]|[12][0-9]|3[0-2])$/.test(plen);
 }
 
 export function isUnsafeTarget(s) {
@@ -379,14 +428,14 @@ git commit -m "feat(swarm-hub): three-token bearer auth check"
 - Test: `hub/test/db-register.test.js`
 
 **Interfaces:**
-- Produces: `registerHost(env, {host, label, now}): Promise<void>` — upsert into `hosts` (idempotent; re-enroll updates `label`, keeps `enrolled_at`).
+- Produces: `registerHost(env, {host, label, now}): Promise<void>` — upsert into `hosts` (idempotent; re-enroll updates `label`, keeps `enrolled_at`). `isEnrolled(env, host): Promise<boolean>` — true iff `host` is in the registry (the contribute write-gate).
 
 - [ ] **Step 1: `hub/test/db-register.test.js`**
 
 ```js
 import { env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
-import { registerHost } from "../src/db.js";
+import { registerHost, isEnrolled } from "../src/db.js";
 
 it("enrolls a host idempotently", async () => {
   await registerHost(env, { host: "boxA", label: "cds1", now: 100 });
@@ -397,11 +446,17 @@ it("enrolls a host idempotently", async () => {
   const cnt = await env.DB.prepare("SELECT COUNT(*) c FROM hosts").first();
   expect(cnt.c).toBe(1);
 });
+
+it("isEnrolled reflects the registry", async () => {
+  await registerHost(env, { host: "boxA", now: 100 });
+  expect(await isEnrolled(env, "boxA")).toBe(true);
+  expect(await isEnrolled(env, "forged")).toBe(false);
+});
 ```
 
 - [ ] **Step 2: Run — verify it fails.** `cd hub && npm test -- db-register` → FAIL.
 
-- [ ] **Step 3: `hub/src/db.js` (`registerHost`)**
+- [ ] **Step 3: `hub/src/db.js` (`registerHost`, `isEnrolled`)**
 
 ```js
 export async function registerHost(env, { host, label, now }) {
@@ -409,6 +464,11 @@ export async function registerHost(env, { host, label, now }) {
     `INSERT INTO hosts (host, enrolled_at, label) VALUES (?1, ?2, ?3)
      ON CONFLICT(host) DO UPDATE SET label=?3`
   ).bind(host, now, label ?? null).run();
+}
+
+export async function isEnrolled(env, host) {
+  const row = await env.DB.prepare("SELECT 1 FROM hosts WHERE host=?").bind(host).first();
+  return row !== null;
 }
 ```
 
@@ -540,15 +600,18 @@ describe("feedRows / host_count", () => {
     expect(rows.find(x => x.ip === "9.9.9.9").host_count).toBe(1);
   });
 
-  it("concurrent contributes for one ip yield the correct count (no write race)", async () => {
+  // NOTE: this proves the DERIVED count is correct when two hosts report the same
+  // ip — it does NOT prove cross-request race freedom (the pool serializes these
+  // in one isolate). Race freedom comes from the DESIGN: host_count is never
+  // written, only computed from committed `sightings` at read time, so there is no
+  // write to race. (round-2 review: honest labelling.)
+  it("two hosts reporting one ip => derived host_count is 2", async () => {
     await registerHost(env, { host: "boxA", now });
     await registerHost(env, { host: "boxB", now });
-    await Promise.all([
-      contributeOne(env, { ip: "7.7.7.7", host: "boxA", category: "scan", now }),
-      contributeOne(env, { ip: "7.7.7.7", host: "boxB", category: "scan", now }),
-    ]);
+    await contributeOne(env, { ip: "7.7.7.7", host: "boxA", category: "scan", now });
+    await contributeOne(env, { ip: "7.7.7.7", host: "boxB", category: "scan", now });
     const { rows } = await feedRows(env, { now, limit: 100 });
-    expect(rows.find(x => x.ip === "7.7.7.7").host_count).toBe(2);   // derived => race-proof
+    expect(rows.find(x => x.ip === "7.7.7.7").host_count).toBe(2);
   });
 
   it("excludes expired offenders, orders by ip, flags truncation at the cap", async () => {
@@ -572,7 +635,12 @@ describe("feedRows / host_count", () => {
 export async function feedRows(env, { now, limit }) {
   const ttl = Number(env.SWARM_TTL);
   const cutoff = now - ttl;
-  const cap = Math.min(Number(limit) || Number(env.FEED_MAX), Number(env.FEED_MAX));
+  const max = Number(env.FEED_MAX);
+  // Clamp to [1, FEED_MAX]: a garbage/negative/zero ?limit must never yield a
+  // negative LIMIT or a silently-empty feed (a consumer may treat empty as
+  // "clear my blocks"). round-2 review.
+  const req = Number(limit);
+  const cap = Number.isFinite(req) && req >= 1 ? Math.min(Math.floor(req), max) : max;
   const { results } = await env.DB.prepare(
     `SELECT o.ip AS ip,
             (SELECT COUNT(DISTINCT s.host) FROM sightings s
@@ -637,8 +705,12 @@ it("prunes expired offenders and stale sightings, keeps fresh", async () => {
 ```js
 export async function prune(env, { now }) {
   const cutoff = now - Number(env.SWARM_TTL);
-  const o = await env.DB.prepare("DELETE FROM offenders WHERE expires <= ?").bind(now).run();
-  const s = await env.DB.prepare("DELETE FROM sightings WHERE last_seen <= ?").bind(cutoff).run();
+  // One batch (atomic transaction) so a concurrent feed can't observe offenders
+  // and sightings out of sync between the two DELETEs (round-2 review).
+  const [o, s] = await env.DB.batch([
+    env.DB.prepare("DELETE FROM offenders WHERE expires <= ?").bind(now),
+    env.DB.prepare("DELETE FROM sightings WHERE last_seen <= ?").bind(cutoff),
+  ]);
   return { offenders: o.meta.changes ?? 0, sightings: s.meta.changes ?? 0 };
 }
 ```
@@ -698,6 +770,24 @@ describe("routes", () => {
     expect(feed.find(r => r.ip === "1.2.3.4").host_count).toBe(1);
   });
 
+  it("an UNENROLLED host_id writes nothing (no sightings/offenders bloat)", async () => {
+    const res = await call("/contribute", { method: "POST", headers: W,
+      body: JSON.stringify({ host_id: "never-enrolled", entries: [{ ip: "8.8.8.8" }] }) });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ accepted: 0, rejected: 1, enrolled: false });
+    const feed = await (await call("/feed", { headers: R })).text();
+    expect(feed).toBe("");   // 8.8.8.8 never entered the feed
+  });
+
+  it("enroll token can't contribute or read; write/read tokens can't enroll", async () => {
+    const eOnW = await call("/contribute", { method: "POST", headers: { authorization: "Bearer " + env.SWARM_ENROLL_TOKEN, "content-type": "application/json" }, body: JSON.stringify({ host_id: "x", entries: [] }) });
+    expect(eOnW.status).toBe(401);
+    const wOnFeed = await call("/feed", { headers: { authorization: "Bearer " + env.SWARM_WRITE_TOKEN } });
+    expect(wOnFeed.status).toBe(401);
+    const rOnReg = await call("/register", { method: "POST", headers: { authorization: "Bearer " + env.SWARM_READ_TOKEN, "content-type": "application/json" }, body: JSON.stringify({ host_id: "x" }) });
+    expect(rOnReg.status).toBe(401);
+  });
+
   it("bare feed lists ip/cidr; empty feed is an empty 200", async () => {
     await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA" }) });
     await call("/contribute", { method: "POST", headers: W, body: JSON.stringify({ host_id: "boxA", entries: [{ ip: "203.0.113.7" }, { ip: "198.51.100.0/24" }] }) });
@@ -739,7 +829,7 @@ describe("routes", () => {
 ```js
 import { checkAuth } from "./auth.js";
 import { isValidIpOrCidr, isUnsafeTarget } from "./validate.js";
-import { contributeOne, registerHost, feedRows, prune } from "./db.js";
+import { contributeOne, registerHost, isEnrolled, feedRows, prune } from "./db.js";
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 function json(obj, status = 200, headers = {}) {
@@ -749,25 +839,32 @@ async function readJson(request) { try { return await request.json(); } catch { 
 
 async function handleContribute(request, env) {
   if (!checkAuth(request, env.SWARM_WRITE_TOKEN)) return json({ error: "unauthorized" }, 401);
-  if (env.CONTRIBUTE_LIMITER) {
-    const key = request.headers.get("cf-connecting-ip") || "unknown";
-    const { success } = await env.CONTRIBUTE_LIMITER.limit({ key });
-    if (!success) return json({ error: "rate limited" }, 429);
-  }
+  // Per-connecting-IP AND global limits (spec §4.2) — global bounds a distributed
+  // leaked-token holder the per-IP one can't.
+  const ip = request.headers.get("cf-connecting-ip") || "unknown";
+  if (env.CONTRIBUTE_LIMITER && !(await env.CONTRIBUTE_LIMITER.limit({ key: ip })).success)
+    return json({ error: "rate limited" }, 429);
+  if (env.GLOBAL_LIMITER && !(await env.GLOBAL_LIMITER.limit({ key: "global" })).success)
+    return json({ error: "rate limited" }, 429);
   const body = await readJson(request);
   const entries = Array.isArray(body?.entries) ? body.entries : null;
-  const host = typeof body?.host_id === "string" ? body.host_id : null;
-  if (!entries || !host) return json({ error: "host_id + entries required" }, 400);
+  const host = typeof body?.host_id === "string" && body.host_id.length > 0 && body.host_id.length <= 128
+    ? body.host_id : null;
+  if (!entries || !host) return json({ error: "valid host_id + entries required" }, 400);
   if (entries.length > Number(env.MAX_ENTRIES)) return json({ error: "too many entries" }, 413);
+  // WRITE-GATE on enrollment: an unenrolled host_id must NOT create sightings /
+  // offenders (round-2 review: a leaked write token spamming random host_ids
+  // would otherwise bloat sightings + emit count-0 IPs to every consumer).
+  if (!(await isEnrolled(env, host))) return json({ accepted: 0, rejected: entries.length, enrolled: false }, 200);
   const now = nowSec();
   let accepted = 0, rejected = 0;
   for (const e of entries) {
-    const ip = e?.ip;
-    if (typeof ip !== "string" || !isValidIpOrCidr(ip) || isUnsafeTarget(ip)) { rejected++; continue; }
-    await contributeOne(env, { ip, host, category: e.category, now });
+    const eip = e?.ip;
+    if (typeof eip !== "string" || !isValidIpOrCidr(eip) || isUnsafeTarget(eip)) { rejected++; continue; }
+    await contributeOne(env, { ip: eip, host, category: e.category, now });
     accepted++;
   }
-  return json({ accepted, rejected }, 200);
+  return json({ accepted, rejected, enrolled: true }, 200);
 }
 
 async function handleRegister(request, env) {
