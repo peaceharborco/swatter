@@ -476,6 +476,10 @@ All the knobs live in `/etc/swatter/swatter.conf`:
    - **Brevo** (free 300/day): `REPORT_METHOD="brevo"` +
      `BREVO_KEY_FILE="/etc/swatter/brevo.key"`.
 3. Verify delivery with `swatter report --test`.
+4. Optional white-label: the HTML report's header shows the Peace Harbor
+   Studios lockup by default. Put your own company logo there with
+   `REPORT_LOGO_URL` (https URL, shown 360px wide) and `REPORT_LOGO_ALT`.
+   The footer branding is part of the project and is not configurable.
 
 ## Safety first
 
