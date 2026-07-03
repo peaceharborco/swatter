@@ -49,3 +49,14 @@ export async function feedRows(env, { now, limit }) {
   const rows = (results ?? []).slice(0, cap);
   return { rows, truncated: (results ?? []).length > cap };
 }
+
+export async function prune(env, { now }) {
+  const cutoff = now - Number(env.SWARM_TTL);
+  // One batch (atomic transaction) so a concurrent feed can't observe offenders
+  // and sightings out of sync between the two DELETEs (round-2 review).
+  const [o, s] = await env.DB.batch([
+    env.DB.prepare("DELETE FROM offenders WHERE expires <= ?").bind(now),
+    env.DB.prepare("DELETE FROM sightings WHERE last_seen <= ?").bind(cutoff),
+  ]);
+  return { offenders: o.meta.changes ?? 0, sightings: s.meta.changes ?? 0 };
+}
