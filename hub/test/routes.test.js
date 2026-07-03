@@ -86,3 +86,69 @@ describe("routes", () => {
     expect(res.status).toBe(429);
   });
 });
+
+describe("routes (grok-review hardening)", () => {
+  it("register and contribute share ONE host_id rule (no brickable enrolls)", async () => {
+    const long = "x".repeat(129);
+    expect((await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: long }) })).status).toBe(400);
+    expect((await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "   " }) })).status).toBe(400);
+    expect((await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "x".repeat(128) }) })).status).toBe(200);
+  });
+
+  it("non-string category does not 500 — stored as null", async () => {
+    await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA" }) });
+    const res = await call("/contribute", { method: "POST", headers: W,
+      body: JSON.stringify({ host_id: "boxA", entries: [{ ip: "1.2.3.4", category: { bad: 1 } }, { ip: "5.6.7.8", category: 123 }] }) });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ accepted: 2, rejected: 0, enrolled: true });
+    const feed = await (await call("/feed?format=json", { headers: R })).json();
+    expect(feed.find(r => r.ip === "1.2.3.4").category).toBe(null);
+    expect(feed.find(r => r.ip === "5.6.7.8").category).toBe(null);
+  });
+
+  it("rejects an oversized body with 413 before parsing", async () => {
+    // workerd's test Request doesn't auto-set content-length; real clients do.
+    const res = await call("/contribute", { method: "POST",
+      headers: { ...W, "content-length": String(2_000_000) },
+      body: JSON.stringify({ host_id: "boxA", entries: [{ ip: "1.2.3.4" }] }) });
+    expect(res.status).toBe(413);
+  });
+
+  it("malformed JSON body returns 400", async () => {
+    const res = await call("/contribute", { method: "POST", headers: W, body: "{not json" });
+    expect(res.status).toBe(400);
+  });
+
+  it("?limit clamps and signals truncation over HTTP", async () => {
+    await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA" }) });
+    await call("/contribute", { method: "POST", headers: W,
+      body: JSON.stringify({ host_id: "boxA", entries: [{ ip: "1.1.1.1" }, { ip: "2.2.2.2" }] }) });
+    const capped = await call("/feed?limit=1", { headers: R });
+    expect((await capped.text()).trim()).toBe("1.1.1.1");
+    expect(capped.headers.get("x-swarm-truncated")).toBe("true");
+    const garbage = await call("/feed?limit=0", { headers: R });   // clamps to FEED_MAX
+    expect((await garbage.text()).trim().split("\n").length).toBe(2);
+    expect(garbage.headers.get("x-swarm-truncated")).toBe(null);
+  });
+
+  it("json feed rows carry the exact frozen shape", async () => {
+    await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA" }) });
+    await call("/contribute", { method: "POST", headers: W,
+      body: JSON.stringify({ host_id: "boxA", entries: [{ ip: "9.9.9.9", category: "scan" }] }) });
+    const rows = await (await call("/feed?format=json", { headers: R })).json();
+    expect(rows.length).toBe(1);
+    expect(Object.keys(rows[0]).sort()).toEqual(["category", "expires", "host_count", "ip"]);
+    expect(rows[0].ip).toBe("9.9.9.9");
+    expect(rows[0].host_count).toBe(1);
+    expect(rows[0].category).toBe("scan");
+    expect(typeof rows[0].expires).toBe("number");
+  });
+
+  it("full MAX_ENTRIES batch succeeds (chunked, no per-entry round trips)", async () => {
+    await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA" }) });
+    const many = Array.from({ length: Number(env.MAX_ENTRIES) }, (_, i) => ({ ip: "10.2." + ((i>>8)&255) + "." + (i&255) }));
+    const res = await call("/contribute", { method: "POST", headers: W, body: JSON.stringify({ host_id: "boxA", entries: many }) });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ accepted: many.length, rejected: 0, enrolled: true });
+  });
+});

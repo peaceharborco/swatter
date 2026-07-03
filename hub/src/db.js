@@ -10,20 +10,33 @@ export async function isEnrolled(env, host) {
   return row !== null;
 }
 
-export async function contributeOne(env, { ip, host, category, now }) {
+// Chunked D1 batches: 2 statements per entry, CHUNK entries per batch() call.
+// A full MAX_ENTRIES publish costs ~20 D1 round trips instead of 2000 awaited
+// ones (Grok review: sequential per-entry writes blow the Workers subrequest
+// budget and wall-clock at the contract's advertised batch size). host_count is
+// NOT stored here (derived at read time), so there is no count race to protect.
+const CHUNK = 50;
+export async function contributeMany(env, { entries, host, now }) {
   const ttl = Number(env.SWARM_TTL);
-  // Sequential awaited statements: each commits before the next. host_count is
-  // NOT stored here (derived at read time), so there is no cross-request count
-  // race to protect against.
-  await env.DB.prepare(
-    `INSERT INTO sightings (ip, host, last_seen) VALUES (?1, ?2, ?3)
-     ON CONFLICT(ip, host) DO UPDATE SET last_seen=?3`
-  ).bind(ip, host, now).run();
-  await env.DB.prepare(
-    `INSERT INTO offenders (ip, first_seen, last_seen, last_host, category, expires)
-     VALUES (?1, ?2, ?2, ?3, ?4, ?2 + ?5)
-     ON CONFLICT(ip) DO UPDATE SET last_seen=?2, last_host=?3, category=?4, expires=?2 + ?5`
-  ).bind(ip, now, host, category ?? null, ttl).run();
+  for (let i = 0; i < entries.length; i += CHUNK) {
+    const stmts = [];
+    for (const e of entries.slice(i, i + CHUNK)) {
+      stmts.push(env.DB.prepare(
+        `INSERT INTO sightings (ip, host, last_seen) VALUES (?1, ?2, ?3)
+         ON CONFLICT(ip, host) DO UPDATE SET last_seen=?3`
+      ).bind(e.ip, host, now));
+      stmts.push(env.DB.prepare(
+        `INSERT INTO offenders (ip, first_seen, last_seen, last_host, category, expires)
+         VALUES (?1, ?2, ?2, ?3, ?4, ?2 + ?5)
+         ON CONFLICT(ip) DO UPDATE SET last_seen=?2, last_host=?3, category=?4, expires=?2 + ?5`
+      ).bind(e.ip, now, host, e.category ?? null, ttl));
+    }
+    await env.DB.batch(stmts);
+  }
+}
+
+export async function contributeOne(env, { ip, host, category, now }) {
+  return contributeMany(env, { entries: [{ ip, category }], host, now });
 }
 
 export async function feedRows(env, { now, limit }) {

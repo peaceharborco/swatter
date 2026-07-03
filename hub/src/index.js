@@ -1,8 +1,19 @@
 import { checkAuth } from "./auth.js";
 import { isValidIpOrCidr, isUnsafeTarget } from "./validate.js";
-import { contributeOne, registerHost, isEnrolled, feedRows, prune } from "./db.js";
+import { contributeMany, registerHost, isEnrolled, feedRows, prune } from "./db.js";
 
 const nowSec = () => Math.floor(Date.now() / 1000);
+// ONE host_id rule for /register AND /contribute (Grok review: register
+// accepted ids contribute then 400-rejected, bricking the enroll→publish
+// lifecycle). Printable ASCII, no spaces, 1-128 chars.
+const validHostId = (h) => typeof h === "string" && /^[\x21-\x7e]{1,128}$/.test(h);
+// Refuse to parse oversized bodies: entries are COUNT-capped only after a full
+// request.json(), so cap bytes first (Grok review).
+const MAX_BODY_BYTES = 1_048_576;
+function bodyTooLarge(request) {
+  const clen = Number(request.headers.get("content-length"));
+  return Number.isFinite(clen) && clen > MAX_BODY_BYTES;
+}
 function json(obj, status = 200, headers = {}) {
   return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json", ...headers } });
 }
@@ -17,10 +28,10 @@ async function handleContribute(request, env) {
     return json({ error: "rate limited" }, 429);
   if (env.GLOBAL_LIMITER && !(await env.GLOBAL_LIMITER.limit({ key: "global" })).success)
     return json({ error: "rate limited" }, 429);
+  if (bodyTooLarge(request)) return json({ error: "body too large" }, 413);
   const body = await readJson(request);
   const entries = Array.isArray(body?.entries) ? body.entries : null;
-  const host = typeof body?.host_id === "string" && body.host_id.length > 0 && body.host_id.length <= 128
-    ? body.host_id : null;
+  const host = validHostId(body?.host_id) ? body.host_id : null;
   if (!entries || !host) return json({ error: "valid host_id + entries required" }, 400);
   if (entries.length > Number(env.MAX_ENTRIES)) return json({ error: "too many entries" }, 413);
   // WRITE-GATE on enrollment: an unenrolled host_id must NOT create sightings /
@@ -28,22 +39,28 @@ async function handleContribute(request, env) {
   // would otherwise bloat sightings + emit count-0 IPs to every consumer).
   if (!(await isEnrolled(env, host))) return json({ accepted: 0, rejected: entries.length, enrolled: false }, 200);
   const now = nowSec();
-  let accepted = 0, rejected = 0;
+  const valid = [];
+  let rejected = 0;
   for (const e of entries) {
     const eip = e?.ip;
     if (typeof eip !== "string" || !isValidIpOrCidr(eip) || isUnsafeTarget(eip)) { rejected++; continue; }
-    await contributeOne(env, { ip: eip, host, category: e.category, now });
-    accepted++;
+    // Sanitize category: a non-string would throw D1_TYPE_ERROR (a bare 500 —
+    // outside the frozen error set); an unbounded string bloats offenders.
+    const category = typeof e.category === "string" && e.category.length <= 64 ? e.category : null;
+    valid.push({ ip: eip, category });
   }
-  return json({ accepted, rejected, enrolled: true }, 200);
+  await contributeMany(env, { entries: valid, host, now });
+  return json({ accepted: valid.length, rejected, enrolled: true }, 200);
 }
 
 async function handleRegister(request, env) {
   if (!checkAuth(request, env.SWARM_ENROLL_TOKEN)) return json({ error: "unauthorized" }, 401);
+  if (bodyTooLarge(request)) return json({ error: "body too large" }, 413);
   const body = await readJson(request);
-  const host = typeof body?.host_id === "string" ? body.host_id : null;
-  if (!host) return json({ error: "host_id required" }, 400);
-  await registerHost(env, { host, label: body.label, now: nowSec() });
+  const host = validHostId(body?.host_id) ? body.host_id : null;
+  if (!host) return json({ error: "valid host_id required (1-128 printable chars)" }, 400);
+  const label = typeof body.label === "string" && body.label.length <= 256 ? body.label : null;
+  await registerHost(env, { host, label, now: nowSec() });
   return json({ enrolled: host }, 200);
 }
 

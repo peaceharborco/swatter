@@ -31,6 +31,16 @@ fake a fleet. On each box, after setting `SWARM_HUB_URL` + the write/read tokens
 swatter swarm enroll            # POSTs /register with the enroll token
 ```
 
+> The `swatter swarm` host-side CLI ships in the next Swatter release
+> (subsystem 2 of the swarm plan). Until then, enroll a box directly:
+>
+> ```bash
+> curl -X POST "$SWARM_HUB_URL/register" \
+>   -H "Authorization: Bearer $SWARM_ENROLL_TOKEN" \
+>   -H "Content-Type: application/json" \
+>   -d '{"host_id":"<hostname>","label":"<optional label>"}'
+> ```
+
 ## Contract
 
 - `POST /contribute` (write) — `{host_id, entries:[{ip,category?}]}` (ip = IP or CIDR)
