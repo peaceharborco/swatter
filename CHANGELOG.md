@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-07-03
+
+### Added
+- **Swarm host side (subsystem 2 of 2) — fleet reputation sharing is now
+  end-to-end.** New `lib/swarm.sh` + `lib/providers/swarm.sh`: each box
+  publishes its CONFIRMED enforced perm bans to the operator's hub after every
+  scan (timestamp-cursor delta that advances only over rows the hub positively
+  acked with `enrolled:true`; four outbound gates — validator, unsafe-target,
+  never-block, fleet canary; 500-entry chunks; fail-soft, never delays a scan)
+  and consumes the merged fleet feed back as a normal intel provider
+  (`swarm` in `INTEL_PROVIDERS`): bare feed into `feeds/swarm.txt` with
+  empty-200-clears + keep-last-good-on-failure semantics, JSON sidecar for
+  `host_count` (fresh-or-absent), score scaled `SWARM_BASE_SCORE`+15 per
+  corroborating host (cap 100) through the standard `W_REPUTATION` fold.
+  Opt-in `SWARM_ACTION=corroborated-block` proactively temp-blocks feed IPs
+  corroborated by ≥`SWARM_MIN_CORROBORATION` distinct enrolled hosts — routed
+  exclusively through `_swatter_execute_block` so every local gate applies.
+  New CLI: `swatter swarm {enroll|status|disable|purge}`. New hub endpoint:
+  `POST /purge` (bad-publish recovery, additive). Everything inert by default
+  (`SWARM_ENABLE=false`). 86 new bash test assertions across 7 files + 3
+  swarm cases in the curl-secrets proof; hub suite at 71. Plan + two Grok
+  review records under `docs/superpowers/plans/2026-07-03-swatter-swarm-host*`.
+
 ## [2.6.0] - 2026-07-03
 
 ### Added
