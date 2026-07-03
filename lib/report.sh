@@ -114,8 +114,8 @@ swatter_report_build() {
     echo "  swatter unblock <ip>  — lift a block"
     echo "Abuse log: ${log}"
     echo
-    echo "Swatter · a Peace Harbor Studios project — https://studios.peaceharbor.com"
-    echo "GitHub: https://github.com/peaceharborco/swatter"
+    echo "Swatter — https://github.com/peaceharborco/swatter"
+    echo "Peace Harbor Studios — a division of Peace Harbor Companies"
 }
 
 # The abuse (bad-actor) digest body.
@@ -221,82 +221,134 @@ _report_emit_abuse() {
     }
 }
 
-# Render Direction-B structured HTML from globals. $1 = plain-text body (unused;
-# kept for call-site compatibility). Emits HTML on stdout.
-# Inline styles + tables only (email-client safe). No <pre> dump.
+# Render structured HTML from globals. $1 = plain-text body (unused; kept for
+# call-site compatibility). Emits HTML on stdout.
+#
+# Canonical Peace Harbor system-email template (peaceharbor repo:
+# brand/email-template.md, owner-approved 2026-07-02): stacked STUDIOS lockup
+# on cream, Title Caps headings, table layout for mail-client safety, slate
+# #4A5568 as the muted floor, inline styles only.
+#
+# Operators running their own Swatter may replace the header logo:
+#   REPORT_LOGO_URL  — https URL of your logo (shown 360px wide, scales down)
+#   REPORT_LOGO_ALT  — its alt text
+# The footer branding is part of the project and is not configurable.
 _report_render_html() {
     local _unused_body="${1:-}"   # kept for call-site compat
     _report_grade                 # ensure grade + summary globals are populated
     local host; host="$(hostname -f 2>/dev/null || hostname)"
-    local esc; esc() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+    local esc; esc() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'; }
     # Title-case the first letter (bash 3.2-safe — no ${x^}).
     local _tc; _tc() { local s="$1"; [[ -z "$s" ]] && return 0; printf '%s%s' "$(printf '%s' "${s:0:1}" | tr 'a-z' 'A-Z')" "${s:1}"; }
 
-    local gbg gbd gfg
+    local logo="${REPORT_LOGO_URL:-https://assets.peaceharbor.com/email/ph-lockup-stacked-studios-email-720w.png}"
+    local logo_alt="${REPORT_LOGO_ALT:-Peace Harbor Studios}"
+
+    # Brand tokens (brand/email-template.md).
+    local f_h='font-family:Sora,Helvetica,Arial,sans-serif'
+    local f_b='font-family:Manrope,Helvetica,Arial,sans-serif'
+    local pine='#1E3A2F' slate='#4A5568' ink='#1A1814' cream='#F4F0E8'
+    local bdr='#E3DCCB' panel='#FBF9F4' ember='#8C3B2E' lake='#2A5A6B'
+    local h3="${f_h};font-weight:600;font-size:14.5px;color:${pine};"
+
+    # Grade badge/tile colors: Info / Warn / Critical per the template.
+    local gbg gfg
     case "${RPT_GRADE_LEVEL:-green}" in
-        red)   gbg="#fdecea"; gbd="#f0b4ab"; gfg="#c0392b" ;;
-        amber) gbg="#fff8ec"; gbd="#eccf8f"; gfg="#B26A00" ;;
-        *)     gbg="#eef8f1"; gbd="#a9d9ba"; gfg="#1f8a4c" ;;
+        red)   gbg="#F3E4E0"; gfg="$ember" ;;
+        amber) gbg="#F7EBD4"; gfg="#7A5313" ;;
+        *)     gbg="$cream";  gfg="$pine" ;;
     esac
 
     # Recommendation — the triage hint (if any) is shown as type-this code, never a link.
     local reco; reco="$(printf '%s' "${RPT_RECO}" | esc)"
     if [[ -n "${REPORT_TRIAGE_HINT:-}" ]]; then
         local he; he="$(printf '%s' "${REPORT_TRIAGE_HINT}" | esc)"
-        reco="$(printf '%s' "$reco" | sed "s|${he}|<code style=\"font-family:ui-monospace,Menlo,monospace;background:#f6ecd6;color:#8a5200;padding:2px 7px;border-radius:5px;font-weight:700\">&</code>|g")"
+        # Neutralize sed metacharacters (incl. the | delimiter) in the pattern so
+        # an unusual hint can't corrupt the substitution.
+        local he_pat; he_pat="$(printf '%s' "$he" | sed 's/[][\\.*^$|&]/\\&/g')"
+        reco="$(printf '%s' "$reco" | sed "s|${he_pat}|<code style=\"font-family:ui-monospace,Menlo,monospace;background:#F7EBD4;color:#7A5313;padding:2px 7px;border-radius:5px;font-weight:700\">&</code>|g")"
     fi
 
-    printf '<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:640px;margin:0 auto;background:#fff;border:1px solid #e3e7ec;border-radius:14px;overflow:hidden;color:#1b1f24">'
+    printf '<div style="margin:0;padding:28px 16px;background:%s;">' "$cream"
+    printf '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0"><tr><td align="center">'
+    printf '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%%;background:#ffffff;border:1px solid %s;border-radius:10px;">' "$bdr"
 
-    # Header
-    printf '<table width="100%%" style="border-bottom:1px solid #eef1f4"><tr><td style="padding:14px 22px;font-size:14px;font-weight:700">🪰 Swatter Nightly Report</td><td style="padding:14px 22px;font-size:11px;color:#545d69;text-align:right">%s · %s · %s</td></tr></table>' \
-        "$(printf '%s' "$host" | esc)" "${REPORT_WINDOW:-24h}" "$(_tc "${SWATTER_MODE:-report}")"
+    # Header — stacked lockup on the cream field, brass rule.
+    printf '<tr><td align="center" style="background:%s;padding:24px 28px 18px;border-bottom:3px solid #C48A2E;border-radius:10px 10px 0 0;">' "$cream"
+    printf '<img src="%s" alt="%s" width="360" style="display:block;width:360px;max-width:80%%;height:auto;">' \
+        "$(printf '%s' "$logo" | esc)" "$(printf '%s' "$logo_alt" | esc)"
+    printf '</td></tr>'
 
-    # Grade hero
-    printf '<table><tr><td style="padding:22px 0 8px 22px;vertical-align:top;width:88px">'
-    printf '<div style="width:88px;height:88px;border-radius:16px;background:%s;border:2px solid %s;text-align:center;padding-top:14px;box-sizing:border-box"><div style="font-size:40px;font-weight:800;color:%s;line-height:1">%s</div><div style="font-size:9px;font-weight:700;letter-spacing:1px;color:%s;text-transform:uppercase;margin-top:4px">%s</div></div>' \
-        "$gbg" "$gbd" "$gfg" "${RPT_GRADE}" "$gfg" "$(printf '%s' "${RPT_GRADE_WORD}" | esc)"
-    printf '</td><td style="padding:22px 22px 8px 18px;vertical-align:top">'
-    printf '<div style="font-size:16px;font-weight:700;color:#1b1f24">%s</div><div style="font-size:13px;color:#545d69;margin-top:4px;line-height:1.55">%s</div><div style="font-size:12.5px;color:%s;margin-top:10px;line-height:1.5"><b>&rarr;</b> %s</div>' \
-        "$(printf '%s' "${RPT_GRADE_HEADLINE}" | esc)" "$(printf '%s' "${RPT_GRADE_SUB}" | esc)" "$gfg" "$reco"
+    # Title block: grade badge -> title -> meta line.
+    printf '<tr><td align="center" style="padding:22px 28px 4px;%s;">' "$f_b"
+    printf '<span style="display:inline-block;%s;font-size:11px;font-weight:700;border-radius:4px;padding:3px 9px;background:%s;color:%s;border:1px solid %s;">Grade %s &middot; %s</span>' \
+        "$f_h" "$gbg" "$gfg" "$bdr" "${RPT_GRADE}" "$(printf '%s' "${RPT_GRADE_WORD}" | esc)"
+    printf '<p style="%s;font-weight:600;font-size:19px;color:%s;margin:10px 0 4px;">Swatter Nightly Report</p>' "$f_h" "$ink"
+    printf '<p style="font-size:13px;color:%s;margin:0;">%s &middot; Last %s &middot; Mode %s</p>' \
+        "$slate" "$(printf '%s' "$host" | esc)" "$(printf '%s' "${REPORT_WINDOW:-24h}" | esc)" "$(printf '%s' "$(_tc "${SWATTER_MODE:-report}")" | esc)"
+    printf '</td></tr>'
+
+    # Body.
+    printf '<tr><td style="padding:14px 28px 24px;%s;font-size:15px;line-height:1.6;color:%s;">' "$f_b" "$ink"
+
+    # Grade hero: letter tile + headline / sub / recommendation.
+    printf '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0"><tr>'
+    printf '<td width="88" style="vertical-align:top;"><div style="width:88px;height:88px;border-radius:10px;background:%s;border:1px solid %s;text-align:center;padding-top:14px;box-sizing:border-box;"><div style="%s;font-size:40px;font-weight:700;color:%s;line-height:1;">%s</div><div style="%s;font-size:11.5px;font-weight:700;color:%s;margin-top:4px;">%s</div></div></td>' \
+        "$gbg" "$bdr" "$f_h" "$gfg" "${RPT_GRADE}" "$f_h" "$gfg" "$(printf '%s' "${RPT_GRADE_WORD}" | esc)"
+    printf '<td style="vertical-align:top;padding-left:18px;">'
+    printf '<div style="%s;font-weight:600;font-size:16px;color:%s;">%s</div><div style="font-size:13px;color:%s;margin-top:4px;line-height:1.55;">%s</div><div style="font-size:13px;color:%s;margin-top:10px;line-height:1.5;"><b>&rarr;</b> %s</div>' \
+        "$f_h" "$ink" "$(printf '%s' "${RPT_GRADE_HEADLINE}" | esc)" "$slate" "$(printf '%s' "${RPT_GRADE_SUB}" | esc)" "$gfg" "$reco"
     printf '</td></tr></table>'
+    printf '<p style="font-size:11.5px;color:%s;margin:12px 0 0;">A All Clear &middot; B Review &middot; C Investigate &middot; D Act Now &middot; F Fatal / Outage</p>' "$slate"
 
-    # Grade legend
-    printf '<div style="padding:0 22px 16px;font-size:10px;color:#545d69;letter-spacing:.3px">A All Clear · B Review · C Investigate · D Act Now · F Fatal / Outage</div>'
-
-    # Bad Actors
+    # Bad Actors.
     local bf=""
     if (( ${RPT_FAILED:-0} > 0 )); then
-        bf=" · <span style=\"color:#B26A00;font-weight:600\">${RPT_FAILED} backend-failed</span>$( [[ -n "${RPT_FAIL_CAUSE:-}" ]] && printf ' <span style="color:#545d69">(top: %s — retried next scan)</span>' "$(printf '%s' "${RPT_FAIL_CAUSE}" | esc)" )"
+        bf=" &middot; <span style=\"color:#7A5313;font-weight:600;\">${RPT_FAILED} backend-failed</span>$( [[ -n "${RPT_FAIL_CAUSE:-}" ]] && printf ' <span style="color:%s;">(top: %s &mdash; retried next scan)</span>' "$slate" "$(printf '%s' "${RPT_FAIL_CAUSE}" | esc)" )"
     fi
-    printf '<div style="padding:16px 22px;border-top:1px solid #eef1f4;border-left:3px solid #c0392b"><table width="100%%"><tr><td style="font-size:14px;font-weight:800">🛡️ Bad Actors</td><td style="font-size:22px;font-weight:800;color:#c0392b;text-align:right">%s</td></tr></table><div style="font-size:13px;color:#1b1f24;margin-top:5px;line-height:1.55">%s</div><div style="font-size:12px;color:#545d69;margin-top:6px">%s Permanent · %s Temporary · %s Via Cloudflare · %s At Server · %s Exempted%s</div></div>' \
-        "${RPT_ACTED:-0}" "$(_report_summary_actors | esc)" "${RPT_PERM:-0}" "${RPT_TEMP:-0}" "${RPT_CF:-0}" "${RPT_DIRECT:-0}" "${RPT_EXEMPT:-0}" "$bf"
+    printf '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-top:1px solid %s;"><tr><td style="padding-top:14px;%s">Bad Actors</td><td style="padding-top:14px;%s;font-weight:700;font-size:20px;color:%s;text-align:right;">%s</td></tr></table>' \
+        "$bdr" "$h3" "$f_h" "$pine" "${RPT_ACTED:-0}"
+    printf '<div style="font-size:13px;color:%s;margin-top:5px;line-height:1.55;">%s</div><div style="font-size:12px;color:%s;margin-top:6px;">%s Permanent &middot; %s Temporary &middot; %s Via Cloudflare &middot; %s At Server &middot; %s Exempted%s</div>' \
+        "$ink" "$(_report_summary_actors | esc)" "$slate" "${RPT_PERM:-0}" "${RPT_TEMP:-0}" "${RPT_CF:-0}" "${RPT_DIRECT:-0}" "${RPT_EXEMPT:-0}" "$bf"
 
-    # Origin-Lock (gated)
+    # Origin-Lock (gated).
     if _ol_digest_should_render "${OL_HITS:-0}"; then
-        printf '<div style="padding:16px 22px;border-top:1px solid #eef1f4;border-left:3px solid #2a6b7c"><table width="100%%"><tr><td style="font-size:14px;font-weight:800">🔒 Origin-Lock <span style="font-size:11px;font-weight:600;color:#545d69">· Mode %s</span></td><td style="font-size:22px;font-weight:800;color:#2a6b7c;text-align:right">%s</td></tr></table><div style="font-size:13px;color:#1b1f24;margin-top:5px;line-height:1.55">%s</div><div style="font-size:12px;color:#545d69;margin-top:6px">%s IPs · :443 %s · :80 %s</div>' \
-            "$(_tc "${OL_MODE}")" "${OL_HITS:-0}" "$(_report_summary_origin | esc)" "${OL_IPS:-0}" "${OL_P443:-0}" "${OL_P80:-0}"
-        printf '<table style="width:100%%;border-collapse:collapse;font-size:12px;margin-top:8px"><thead><tr style="color:#545d69;font-size:10px;text-align:left;text-transform:uppercase;letter-spacing:.4px"><th style="padding:4px 6px 4px 0">Source IP</th><th style="padding:4px 6px;text-align:right">Hits</th><th style="padding:4px 0 4px 6px;text-align:right">Verdict</th></tr></thead><tbody>'
+        printf '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-top:1px solid %s;"><tr><td style="padding-top:14px;%s">Origin-Lock <span style="font-size:12px;color:%s;font-weight:600;">&middot; Mode %s</span></td><td style="padding-top:14px;%s;font-weight:700;font-size:20px;color:%s;text-align:right;">%s</td></tr></table>' \
+            "$bdr" "$h3" "$slate" "$(printf '%s' "$(_tc "${OL_MODE}")" | esc)" "$f_h" "$pine" "${OL_HITS:-0}"
+        printf '<div style="font-size:13px;color:%s;margin-top:5px;line-height:1.55;">%s</div><div style="font-size:12px;color:%s;margin-top:6px;">%s IPs &middot; :443 %s &middot; :80 %s</div>' \
+            "$ink" "$(_report_summary_origin | esc)" "$slate" "${OL_IPS:-0}" "${OL_P443:-0}" "${OL_P80:-0}"
+        printf '<table style="width:100%%;border-collapse:collapse;font-size:12px;margin-top:8px;"><thead><tr style="color:%s;font-size:11.5px;text-align:left;"><th style="padding:4px 6px 4px 0;%s;font-weight:600;">Source IP</th><th style="padding:4px 6px;text-align:right;%s;font-weight:600;">Hits</th><th style="padding:4px 0 4px 6px;text-align:right;%s;font-weight:600;">Verdict</th></tr></thead><tbody>' \
+            "$slate" "$f_h" "$f_h" "$f_h"
         printf '%s' "$OL_TOP_ROWS" | while IFS=$'\t' read -r ip n tag; do
             [[ -n "$ip" ]] || continue
-            local tc="#545d69"; [[ "$tag" == attacker* ]] && tc="#c0392b"
-            printf '<tr style="border-top:1px solid #eef1f4"><td style="padding:5px 6px 5px 0;font-family:ui-monospace,Menlo,monospace">%s</td><td style="padding:5px 6px;text-align:right;font-variant-numeric:tabular-nums">%s</td><td style="padding:5px 0 5px 6px;text-align:right;color:%s;font-weight:600">%s</td></tr>' \
-                "$(printf '%s' "$ip" | esc)" "$n" "$tc" "$(_tc "$(printf '%s' "$tag" | esc)")"
+            local tc="$slate"; [[ "$tag" == attacker* ]] && tc="$ember"
+            printf '<tr style="border-top:1px solid %s;"><td style="padding:5px 6px 5px 0;font-family:ui-monospace,Menlo,monospace;">%s</td><td style="padding:5px 6px;text-align:right;font-variant-numeric:tabular-nums;">%s</td><td style="padding:5px 0 5px 6px;text-align:right;color:%s;font-weight:600;">%s</td></tr>' \
+                "$bdr" "$(printf '%s' "$ip" | esc)" "$n" "$tc" "$(_tc "$(printf '%s' "$tag" | esc)")"
         done
-        printf '</tbody></table></div>'
+        printf '</tbody></table>'
     fi
 
-    # Server Errors (gated)
+    # Server Errors (gated).
     if [[ "${ERROR_DIGEST_ENABLE}" == "true" ]]; then
-        local efc="#1f8a4c"; (( ${ERR_FATAL:-0} > 0 )) && efc="#c0392b"
-        printf '<div style="padding:16px 22px;border-top:1px solid #eef1f4;border-left:3px solid #c9d0d8"><table width="100%%"><tr><td style="font-size:14px;font-weight:800">🩺 Server Errors</td><td style="font-size:22px;font-weight:800;color:#545d69;text-align:right">%s</td></tr></table><div style="font-size:13px;color:#1b1f24;margin-top:5px;line-height:1.55">%s</div><div style="font-size:12px;color:#545d69;margin-top:6px"><b style="color:#545d69">%s</b> Non-Fatal · <b style="color:%s">%s</b> Fatal</div></div>' \
-            "${ERR_GENUINE:-0}" "$(_report_summary_errors | esc)" "${ERR_GENUINE:-0}" "$efc" "${ERR_FATAL:-0}"
+        local efc="$pine"; (( ${ERR_FATAL:-0} > 0 )) && efc="$ember"
+        printf '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-top:1px solid %s;"><tr><td style="padding-top:14px;%s">Server Errors</td><td style="padding-top:14px;%s;font-weight:700;font-size:20px;color:%s;text-align:right;">%s</td></tr></table>' \
+            "$bdr" "$h3" "$f_h" "$efc" "${ERR_GENUINE:-0}"
+        printf '<div style="font-size:13px;color:%s;margin-top:5px;line-height:1.55;">%s</div><div style="font-size:12px;color:%s;margin-top:6px;"><b>%s</b> Non-Fatal &middot; <b style="color:%s;">%s</b> Fatal</div>' \
+            "$ink" "$(_report_summary_errors | esc)" "$slate" "${ERR_GENUINE:-0}" "$efc" "${ERR_FATAL:-0}"
     fi
 
-    # Footer
-    printf '<div style="padding:16px 22px 6px;color:#545d69;font-size:11px;border-top:1px solid #eef1f4">On The Server: <code style="color:#545d69">swatter why &lt;ip&gt;</code> — <i>Why An IP Was Flagged</i> · <code style="color:#545d69">swatter unblock &lt;ip&gt;</code> — <i>Lift A Block</i></div>'
-    printf '<div style="padding:10px 22px 16px;color:#545d69;font-size:11px;text-align:center">🪰 Swatter · a <a href="https://studios.peaceharbor.com" style="color:#C48A2E;text-decoration:none;font-weight:600">Peace Harbor Studios</a> project · <a href="https://github.com/peaceharborco/swatter" style="color:#C48A2E;text-decoration:none">GitHub</a></div>'
-    printf '</div>'
+    # Help line.
+    printf '<p style="font-size:12px;color:%s;margin:18px 0 0;">On The Server: <code style="font-family:ui-monospace,Menlo,monospace;background:%s;padding:1px 5px;border-radius:4px;">swatter why &lt;ip&gt;</code> &mdash; <i>Why An IP Was Flagged</i> &middot; <code style="font-family:ui-monospace,Menlo,monospace;background:%s;padding:1px 5px;border-radius:4px;">swatter unblock &lt;ip&gt;</code> &mdash; <i>Lift A Block</i></p>' \
+        "$slate" "$panel" "$panel"
+    printf '</td></tr>'
+
+    # Footer — system identity + the division-identity lockup line (permanent).
+    printf '<tr><td style="background:%s;border-top:1px solid %s;padding:14px 28px 16px;%s;font-size:12px;color:%s;line-height:1.6;border-radius:0 0 10px 10px;">' \
+        "$panel" "$bdr" "$f_b" "$slate"
+    printf '<b style="color:%s;font-weight:600;">Swatter</b> on %s &middot; <a href="https://github.com/peaceharborco/swatter" style="color:%s;text-decoration:underline;">GitHub</a><br>' \
+        "$ink" "$(printf '%s' "$host" | esc)" "$lake"
+    printf '<a href="https://studios.peaceharbor.com" style="color:%s;text-decoration:underline;">Peace Harbor Studios</a> &mdash; a division of <a href="https://peaceharbor.com" style="color:%s;text-decoration:underline;">Peace Harbor Companies</a>' "$lake" "$lake"
+    printf '</td></tr></table></td></tr></table></div>'
 }
 
 # Deliver the digest. $1 subject $2 text-body $3 html-body

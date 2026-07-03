@@ -159,6 +159,11 @@ REPORT_METHOD="sendmail"          # sendmail | sendgrid | brevo
 SENDGRID_KEY_FILE=""
 BREVO_API_KEY=""
 BREVO_KEY_FILE=""
+# Header logo on the HTML report. Blank = the Peace Harbor Studios lockup;
+# operators may point these at their own company logo (the footer branding is
+# part of the project and is not configurable).
+REPORT_LOGO_URL=""
+REPORT_LOGO_ALT=""
 # Triage-command hint shown in the recommendation line on a non-clean report
 # (e.g. "/server-logs" for an operator who has that tool). Blank = generic wording
 # ("Review the sections below") so the public default suggests nothing bespoke.
