@@ -1,0 +1,35 @@
+name = "swatter-swarm-hub"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+[vars]
+SWARM_TTL = "604800"
+MAX_ENTRIES = "1000"
+FEED_MAX = "50000"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "swatter-swarm"
+# Zero-UUID works for the local/test harness; replace with the real id from
+# `wrangler d1 create` before `wrangler deploy` (round-2 review: a non-UUID
+# placeholder can break Miniflare D1 init).
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+# Per-connecting-IP limiter AND a global limiter (spec §4.2: "connecting IP + a
+# global /contribute limit") — the global one bounds a distributed leaked-token
+# holder that the per-IP one alone can't.
+[[ratelimits]]
+name = "CONTRIBUTE_LIMITER"
+namespace_id = "1001"
+simple = { limit = 120, period = 60 }
+
+[[ratelimits]]
+name = "GLOBAL_LIMITER"
+namespace_id = "1002"
+simple = { limit = 6000, period = 60 }
+
+[triggers]
+crons = ["17 4 * * *"]
+
+# Secrets (NOT here): SWARM_WRITE_TOKEN, SWARM_READ_TOKEN, SWARM_ENROLL_TOKEN
