@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.2] - 2026-07-03
+
 ### Security / hardening
 - **Strict IP validation now gates every firewall sink, not just the scan
   path.** `score.awk`'s pre-filter is deliberately loose (it only guarantees no
