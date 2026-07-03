@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-07-03
+
+### Added
+- **Swatter Swarm hub (subsystem 1 of 2).** New `hub/` directory: a
+  self-hostable Cloudflare Worker + D1 that aggregates a fleet's confirmed
+  offenders (`POST /contribute`), enrolls trusted hosts (`POST /register`),
+  and serves the merged, decaying blocklist back (`GET /feed`, bare text or
+  JSON with corroboration counts). Key properties: `host_count` is DERIVED at
+  read time (`COUNT(DISTINCT host)` over sightings joined to the enrolled-host
+  registry — no write races, forged host_ids don't count); unenrolled host_ids
+  are write-gated (nothing stored); three separated bearer tokens
+  (write/read/enroll); per-connecting-IP + global rate limits; IP-or-CIDR
+  validation with bash parity; daily prune cron. 69 Vitest tests under
+  `@cloudflare/vitest-pool-workers`. Hardened pre-merge by a two-model Grok
+  review (chunked D1 batches, unified host_id rule, category sanitization,
+  body-size cap — see `docs/superpowers/plans/…-swarm-hub-impl-review-grok.md`).
+  The HTTP contract is frozen; the host-side `swatter swarm` CLI is subsystem 2,
+  targeted for the next release. Deploy runbook: `hub/README.md`.
+
+### Changed
+- **Nightly report email adopts the Peace Harbor system-email template
+  (STUDIOS).** (Shipped to prod 2026-07-03; released here.)
+
 ## [2.5.2] - 2026-07-03
 
 ### Security / hardening
