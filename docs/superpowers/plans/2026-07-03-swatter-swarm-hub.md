@@ -1,5 +1,12 @@
 # Swatter Swarm Hub Implementation Plan
 
+> **⚠️ DO NOT EXECUTE — UNDER REVISION.** The Grok two-model review
+> (`…-swatter-swarm-hub-review-grok.md`, 2026-07-03) returned *not safe to
+> execute as-is*: outdated vitest API, cross-request `host_count` race, forgeable
+> `host_id` corroboration, empty-feed/decay contract gap, and a non-executable
+> rate-limit task. Two design decisions (host_id trust, CIDR policy) are pending
+> operator sign-off. This plan will be revised to v2 before any task runs.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the self-hostable Swatter Swarm hub — a Cloudflare Worker + D1 that ingests each fleet host's confirmed offenders and serves the merged, decaying blocklist back.
