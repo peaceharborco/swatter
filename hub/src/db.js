@@ -25,3 +25,27 @@ export async function contributeOne(env, { ip, host, category, now }) {
      ON CONFLICT(ip) DO UPDATE SET last_seen=?2, last_host=?3, category=?4, expires=?2 + ?5`
   ).bind(ip, now, host, category ?? null, ttl).run();
 }
+
+export async function feedRows(env, { now, limit }) {
+  const ttl = Number(env.SWARM_TTL);
+  const cutoff = now - ttl;
+  const max = Number(env.FEED_MAX);
+  // Clamp to [1, FEED_MAX]: a garbage/negative/zero ?limit must never yield a
+  // negative LIMIT or a silently-empty feed (a consumer may treat empty as
+  // "clear my blocks"). round-2 review.
+  const req = Number(limit);
+  const cap = Number.isFinite(req) && req >= 1 ? Math.min(Math.floor(req), max) : max;
+  const { results } = await env.DB.prepare(
+    `SELECT o.ip AS ip,
+            (SELECT COUNT(DISTINCT s.host) FROM sightings s
+              JOIN hosts h ON s.host = h.host
+             WHERE s.ip = o.ip AND s.last_seen > ?2) AS host_count,
+            o.category AS category, o.expires AS expires
+       FROM offenders o
+      WHERE o.expires > ?1
+      ORDER BY o.ip
+      LIMIT ?3`
+  ).bind(now, cutoff, cap + 1).all();
+  const rows = (results ?? []).slice(0, cap);
+  return { rows, truncated: (results ?? []).length > cap };
+}
