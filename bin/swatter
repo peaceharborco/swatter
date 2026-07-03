@@ -392,7 +392,10 @@ cmd_export_bans() {
 cmd_import_bans() {
     local file="${1:-}"
     [[ -f "$file" ]] || die "usage: swatter import-bans <file>"
-    swatter_store_init
+    # Like cmd_scan: import-bans WRITES the ledger (records each ban). A broken
+    # store would firewall-block without recording — the exact divergence we guard
+    # against — so abort before applying any block rather than leave untracked denies.
+    swatter_store_init || die "store init failed — aborting import-bans (ledger unusable)"
     local line ip nb n=0 dry
     dry="$([[ "${SWATTER_MODE}" == "enforce" ]] && echo 0 || echo 1)"
     local channel="${DIRECT_BACKEND:-csf}"

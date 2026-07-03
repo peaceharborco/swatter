@@ -187,6 +187,17 @@ done
 printf '  validator: %d passed, %d failed\n' "$VALIDATOR_PASS" "$VALIDATOR_FAIL"
 (( VALIDATOR_FAIL == 0 )) || FAIL=$((FAIL+1))
 
+# swatter_cidr_list_ok must accept a valid list whose LAST line has no trailing
+# newline (a `read` loop without the `|| [[ -n $line ]]` guard silently drops it).
+CLO_PASS=0 CLO_FAIL=0
+printf '1.2.3.0/24' | swatter_cidr_list_ok && CLO_PASS=$((CLO_PASS+1)) || { echo "FAIL cidr_list_ok drops no-newline last line"; CLO_FAIL=$((CLO_FAIL+1)); }
+printf '1.2.3.0/24\n2001:db8::/32' | swatter_cidr_list_ok && CLO_PASS=$((CLO_PASS+1)) || { echo "FAIL cidr_list_ok multi no-newline last"; CLO_FAIL=$((CLO_FAIL+1)); }
+# ...and still rejects an invalid last line / empty input.
+printf '1.2.3.0/24\ngarbage' | swatter_cidr_list_ok && { echo "FAIL cidr_list_ok accepted garbage last line"; CLO_FAIL=$((CLO_FAIL+1)); } || CLO_PASS=$((CLO_PASS+1))
+printf '' | swatter_cidr_list_ok && { echo "FAIL cidr_list_ok accepted empty"; CLO_FAIL=$((CLO_FAIL+1)); } || CLO_PASS=$((CLO_PASS+1))
+printf '  cidr_list_ok: %d passed, %d failed\n' "$CLO_PASS" "$CLO_FAIL"
+(( CLO_FAIL == 0 )) || FAIL=$((FAIL+1))
+
 # Test "already allowed" logic (awk $1 == ip) with temp file
 # Note: the check matches the *stored token* exactly (so "198.51.100.0/24" matches only when querying the cidr itself; per-ip membership is handled later by _ip_in_cidr_file).
 ALLOW_PASS=0 ALLOW_FAIL=0

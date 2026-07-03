@@ -104,24 +104,31 @@ _intel_cache_put() {
     printf '%s\t%s\t%s\n' "$score" "$label" "$verdict" > "${d}/${ip}" 2>/dev/null || true
 }
 
+# First NON-blank line of a provider/cache payload. Dropping injected TRAILING
+# lines (a hostile label carrying a newline) AND skipping a LEADING blank/CRLF
+# line (a MITM/proxy prepending whitespace, which would otherwise zero the score).
+_intel_firstline() { printf '%s' "${1:-}" | awk 'NF{print; exit}'; }
+
 # swatter_intel_score <ip> : echoes "best_score \t best_label \t suppress_flag".
 # suppress_flag is 1 when any provider returned verdict "suppress"; else 0.
 # score 0 means no malicious signal (or no data).
 swatter_intel_score() {
     local ip="$1" best=0 bestlabel="" suppress=0
-    local prov out cached score ttl label verdict
+    local prov out cached score ttl label verdict line
     for prov in ${INTEL_PROVIDERS}; do
         if cached="$(_intel_cache_get "$prov" "$ip")"; then
-            score="$(printf '%s' "$cached" | head -n1 | cut -f1)"
-            label="$(_intel_clean "$(printf '%s' "$cached" | head -n1 | cut -f2)")"
-            verdict="$(_intel_clean "$(printf '%s' "$cached" | head -n1 | cut -f3)")"
+            line="$(_intel_firstline "$cached")"
+            score="$(printf '%s' "$line" | cut -f1)"
+            label="$(_intel_clean "$(printf '%s' "$line" | cut -f2)")"
+            verdict="$(_intel_clean "$(printf '%s' "$line" | cut -f3)")"
         else
             if ! declare -F "provider_${prov}" >/dev/null; then continue; fi
             if out="$(provider_"${prov}" "$ip" 2>/dev/null)"; then
-                # Parse ONLY the first line: a provider whose label carries a
-                # newline (hostile/MITM API field) must not leak extra lines into
-                # the score contract or the cache.
-                out="$(printf '%s' "$out" | head -n1)"
+                # Parse ONLY the first non-blank line: a provider whose label
+                # carries a newline (hostile/MITM API field) must not leak extra
+                # lines into the score contract or the cache, and a leading blank
+                # must not swallow the real score line.
+                out="$(_intel_firstline "$out")"
                 score="$(printf '%s' "$out" | cut -f1)"
                 ttl="$(printf '%s' "$out" | cut -f2)"
                 label="$(_intel_clean "$(printf '%s' "$out" | cut -f3)")"

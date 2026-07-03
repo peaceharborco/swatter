@@ -309,6 +309,22 @@ swatter_is_valid_ip_or_cidr() {
     return 0
 }
 
+# A syntactically-valid IP/CIDR that is CATASTROPHIC as a block target: a /0
+# prefix (denies the whole internet) or an unspecified address (0.0.0.0 / ::).
+# The general validator stays permissive because it also gates allow-lists,
+# never-block CIDR files, and feed downloads where these forms are harmless — so
+# the "never block this" call belongs at the block SINKS, not in the validator.
+# 0 (true) = unsafe, do not block.
+_swatter_is_unsafe_block_target() {
+    local t="${1:-}" addr
+    addr="${t%%/*}"
+    [[ "$t" == */* && "${t#*/}" == "0" ]] && return 0   # /0 = entire internet
+    case "$addr" in
+        0.0.0.0|::|0:0:0:0:0:0:0:0) return 0 ;;          # unspecified address
+    esac
+    return 1
+}
+
 # Fatal wrapper for CLI entry points (why/unblock/allow), where the value came
 # from the operator and a bad one should abort with a usage error.
 swatter_validate_ip_or_cidr() {
@@ -323,7 +339,10 @@ swatter_validate_ip_or_cidr() {
 # gates the never-block set (a poisoned file could let a CF edge be CSF-denied).
 swatter_cidr_list_ok() {
     local line n=0
-    while IFS= read -r line; do
+    # `|| [[ -n "$line" ]]` so a final line WITHOUT a trailing newline is still
+    # validated — otherwise a poisoned last line (captive-portal HTML with no
+    # closing newline) would be silently DROPPED and the list would falsely pass.
+    while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line%$'\r'}"; line="${line//[[:space:]]/}"
         [[ -z "$line" ]] && continue
         swatter_is_valid_ip_or_cidr "$line" || return 1

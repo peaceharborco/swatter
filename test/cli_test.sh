@@ -44,6 +44,20 @@ EOF
     grep -qi "store init" "$s2/err" && PASS=$((PASS+1)) || { echo "FAIL scan-store-init-abort-msg"; FAIL=$((FAIL+1)); }
     # And the scan itself must NOT have run (no "scan complete" line).
     grep -qi "scan complete" "$s2/err" && { echo "FAIL scan-ran-despite-broken-store"; FAIL=$((FAIL+1)); } || PASS=$((PASS+1))
+
+    # import-bans WRITES the ledger too, so it must ALSO abort on a broken store
+    # rather than firewall-block without recording (untracked denies). Enforce mode
+    # + a ban file with one IP; the abort must happen before any block.
+    printf '203.0.113.200\n' > "$s2/bans.txt"
+    SWATTER_MODE=enforce SWATTER_CONF="$c2" bash "${ROOT}/bin/swatter" import-bans "$s2/bans.txt" >/dev/null 2>"$s2/err2"; rc=$?
+    [[ $rc -ne 0 ]] && PASS=$((PASS+1)) || { echo "FAIL import-store-init-abort-rc (got $rc)"; FAIL=$((FAIL+1)); }
+    grep -qi "store init" "$s2/err2" && PASS=$((PASS+1)) || { echo "FAIL import-store-init-abort-msg"; FAIL=$((FAIL+1)); }
+    grep -qi "ban(s) applied" "$s2/err2" && { echo "FAIL import-ran-despite-broken-store"; FAIL=$((FAIL+1)); } || PASS=$((PASS+1))
+
+    # But a READ-ONLY command (status) must NOT inherit the hard abort — it should
+    # still run (degrade) on a transiently-broken DB, only warning.
+    SWATTER_CONF="$c2" bash "${ROOT}/bin/swatter" status >/dev/null 2>"$s2/err3"; rc=$?
+    [[ $rc -eq 0 ]] && PASS=$((PASS+1)) || { echo "FAIL status-should-not-abort (got $rc)"; FAIL=$((FAIL+1)); }
     rm -rf "$s2" "$c2"
 fi
 

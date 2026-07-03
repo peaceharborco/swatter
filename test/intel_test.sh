@@ -50,6 +50,16 @@ INTEL_PROVIDERS="evil"
 rm -rf "$STATE_DIR/intel"; mkdir -p "$STATE_DIR/intel"
 out="$(swatter_intel_score 2.2.2.2)"
 check evil-score      "$(printf '%s' "$out" | cut -f1)" "77"
+
+# A provider (or MITM/proxy) that emits a LEADING blank line must not zero the
+# reputation signal — we take the first NON-blank line, so the real score/label
+# survive while any injected trailing lines are still dropped.
+provider_blankfirst() { printf '\n80\t%s\tmalicious:x\t\n99\tINJECTED\t\n' "$INTEL_CACHE_TTL"; }
+INTEL_PROVIDERS="blankfirst"
+rm -rf "$STATE_DIR/intel"; mkdir -p "$STATE_DIR/intel"
+bout="$(swatter_intel_score 4.4.4.4)"
+check blankfirst-score "$(printf '%s' "$bout" | cut -f1)" "80"
+check blankfirst-oneline "$(printf '%s' "$bout" | wc -l | tr -d ' ')" "0"
 # One clean record: no embedded newline splitting the 3-field score contract.
 check evil-one-line   "$(printf '%s' "$out" | wc -l | tr -d ' ')" "0"
 lbl="$(printf '%s' "$out" | cut -f2)"

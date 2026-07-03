@@ -12,9 +12,13 @@
 # malformed token to csf/ipset. Non-fatal (return 1 = failure); unblock is NOT
 # gated (it's cleanup — a stray removal is harmless).
 _swatter_block_ip_ok() {
-    swatter_is_valid_ip_or_cidr "${1:-}" && return 0
-    log_warn "block router: refusing malformed ip '${1:-}'"
-    return 1
+    if ! swatter_is_valid_ip_or_cidr "${1:-}"; then
+        log_warn "block router: refusing malformed ip '${1:-}'"; return 1
+    fi
+    if _swatter_is_unsafe_block_target "${1:-}"; then
+        log_warn "block router: refusing unsafe block target '${1:-}' (/0 or unspecified)"; return 1
+    fi
+    return 0
 }
 
 swatter_block_direct_temp() {

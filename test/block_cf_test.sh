@@ -31,6 +31,9 @@ SWATTER_MODE="enforce"
 _api_hits=0; _cf_api() { _api_hits=$((_api_hits+1)); printf '%s' "${_CF_API_RESP:-}"; }
 swatter_cf_block "999.999.999.999" 3600 r x.com; check cf-malformed-rc "$?" "1"
 swatter_cf_block "::::" 3600 r x.com >/dev/null 2>&1; check cf-malformed2-rc "$?" "1"
+# Unsafe targets (/0, unspecified) are refused before any API call too.
+swatter_cf_block "0.0.0.0/0" 3600 r x.com >/dev/null 2>&1; check cf-unsafe-rc "$?" "1"
+swatter_cf_block "::" 3600 r x.com >/dev/null 2>&1; check cf-unsafe2-rc "$?" "1"
 check cf-malformed-no-api "$_api_hits" "0"
 _cf_api() { printf '%s' "${_CF_API_RESP:-}"; }   # restore
 

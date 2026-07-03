@@ -219,6 +219,17 @@ if command -v jq >/dev/null 2>&1; then
         check audit-json-valid "invalid" "valid"
     fi
     check audit-json-oneline "$(wc -l < "$LOG_DIR/decisions.jsonl" | tr -d ' ')" "1"
+
+    # The ip field is sanitized at the record layer too (parity with reason), so
+    # even a hostile ip token can't break the JSON line — defense in depth for any
+    # future path into _swatter_audit that bypasses the charset-safe scorer.
+    : > "$LOG_DIR/decisions.jsonl"
+    _swatter_audit 'evil"ip\x' 90 temp csf 3600 'r' '{"k":1}' 0
+    if jq -e . "$LOG_DIR/decisions.jsonl" >/dev/null 2>&1; then
+        check audit-json-hostile-ip-valid "valid" "valid"
+    else
+        check audit-json-hostile-ip-valid "invalid" "valid"
+    fi
 fi
 
 echo "----------------------------------------"

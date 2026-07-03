@@ -315,11 +315,11 @@ swatter_cf_block() {
     # Fresh each attempt so a prior IP's CF error can't attach to this one's
     # `failed` record (score.sh reads SWATTER_LAST_BACKEND_ERR on the failed branch).
     SWATTER_LAST_BACKEND_ERR=""
-    # Defense-in-depth: never build a Cloudflare access rule for a malformed IP,
-    # regardless of caller (the scan path validates too, but the invariant is local).
-    if ! swatter_is_valid_ip_or_cidr "$ip"; then
-        SWATTER_LAST_BACKEND_ERR="malformed ip"
-        log_warn "CF block: refusing malformed ip '${ip}'"; return 1
+    # Defense-in-depth: never build a Cloudflare access rule for a malformed IP or
+    # an unsafe target (/0 / unspecified), regardless of caller.
+    if ! swatter_is_valid_ip_or_cidr "$ip" || _swatter_is_unsafe_block_target "$ip"; then
+        SWATTER_LAST_BACKEND_ERR="malformed or unsafe ip"
+        log_warn "CF block: refusing malformed/unsafe target '${ip}'"; return 1
     fi
     # Belt over score.sh's routing: only a plane-managing posture may create
     # rules (explicit direct, or auto that detected CF + has creds). Return 1 so a
