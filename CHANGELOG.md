@@ -7,7 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security / hardening
+- **Strict IP validation now gates every firewall sink, not just the scan
+  path.** `score.awk`'s pre-filter is deliberately loose (it only guarantees no
+  shell-meaningful bytes), so tokens like `999.999.999.999` or `::::` parsed from
+  a hostile log line could reach `csf`/`ipset`/the CF API as a block target.
+  `_swatter_execute_block` now runs the authoritative `swatter_is_valid_ip_or_cidr`
+  FIRST (auditing a `skipped-invalid` decision so the skip is visible to `why`/
+  report), AND the direct-plane router (`swatter_block_direct_temp`/`perm`) and
+  `swatter_cf_block` each re-validate locally — so no caller (scan, `import-bans`,
+  or any future one) can hand garbage to a firewall. The validator itself was
+  tightened: IPv4 octets bounded 0–255, IPv6 structurally validated (single `::`,
+  ≤8 groups) including the legit embedded-IPv4 form (`::ffff:192.0.2.1`), prefix
+  lengths bounded per family (previously it accepted `999.999.999.999` and
+  `deadbeef`). Pinned by hostile-log wire tests (`scan_wire_test.sh`), backend
+  guard tests (`block_test.sh`, `block_cf_test.sh`), and expanded validator cases
+  (`score_test.sh`). (No shell injection was possible — the charset was already
+  constrained — but a security tool must not hand garbage to the firewall.)
+- **Threat-intel labels are sanitized before entering the ledger.** A provider
+  response whose label (e.g. GreyNoise `.name`) carried a tab, newline, backslash,
+  or double-quote — attacker- or MITM-influenceable — could split the intel TSV
+  score contract (silently zeroing the reputation signal) and corrupt
+  `decisions.jsonl` lines that `report`/`why` parse with `jq`. `intel.sh` now
+  parses only the first line and strips control/tab/backslash/quote from labels
+  (explicit per-char substitutions, not a fragile combined bracket class);
+  `_swatter_audit` doubles backslashes and neutralizes quotes + control chars in
+  the `reason` field as a record-layer backstop. Covered by `intel_test.sh` and
+  `scan_wire_test.sh`.
+- **`swatter allow` writes the allow file `0640`, not `0644`** — the operator /
+  monitoring IP list is no longer world-readable on a shared box.
+
 ### Fixed
+- **`refresh-feeds` no longer silently drops IPv6 ranges.** A run where the v4
+  download succeeded but v6 came back empty (or whitespace-only, or a captive-
+  portal page) installed a **v4-only** `cloudflare.cidr`, shrinking both the
+  never-block set and origin-lock v6 coverage — an IPv6 CF edge could then be
+  CSF-denied. Each family is now validated independently with `swatter_cidr_list_ok`
+  (≥1 valid CIDR and every line valid); if either fails, the existing (last-good,
+  complete) file is kept and the run exits nonzero so cron alerts. Keeping
+  slightly-stale-but-complete ranges is safer than writing a fresh-but-incomplete
+  set, and the allowlist freshness guard warns if it ages out. Pinned in
+  `refresh_feeds_test.sh` (empty **and** whitespace-only v6 cases).
+- **Nightly origin-lock digest classifies sources by CIDR containment.**
+  `_ol_tag_ip` used `grep -F` against the monitoring/allow files (literal match
+  only) and hardcoded `/etc/swatter` paths, so a monitoring **range** covering a
+  source IP was mislabeled "uncategorized" in the report. It now uses
+  `_ip_in_cidr_file` and the configured file paths. (The DROP-arming `preflight`
+  already used the correct containment check — this was report-only.) Pinned in
+  `origin_lock_test.sh`.
+- **`store_init` surfaces a failed schema bootstrap AND `scan` aborts on it**
+  instead of discarding sqlite's stderr — a corrupt/unwritable DB no longer starts
+  a scan on a silently-empty ledger (which would lose caps, repeat-escalation, and
+  perm tracking while the operator believes protection is intact). `store_init`
+  captures stderr, logs loudly, and returns nonzero; `cmd_scan` now `die`s on that
+  failure. Pinned in `persist_test.sh` (loudness) and `cli_test.sh` (scan abort).
+
 - **Installer no longer strips the report timezone on upgrade.** `install.sh`
   rendered `/etc/cron.d/swatter-report` from its own (empty) environment
   instead of the live `/etc/swatter/swatter.conf`, so every `install local`

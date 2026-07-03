@@ -35,6 +35,18 @@ swatter_block_direct_perm 9.9.9.9 r;    check default-csf "$RAN" "csf_perm 9.9.9
 swatter_csf_perm() { return 2; }; DIRECT_BACKEND="csf"
 swatter_block_direct_perm 1.1.1.1 r; check rc-passthrough "$?" "2"
 
+# Defense-in-depth: the router itself refuses a malformed IP so no caller (scan,
+# import-bans, or a future one) can hand garbage to csf/ipset. RAN must NOT change.
+swatter_csf_perm() { RAN="csf_perm $*"; return 0; }   # restore recorder
+RAN="sentinel"; DIRECT_BACKEND="csf"
+swatter_block_direct_perm "999.999.999.999" r; check malformed-perm-rc "$?" "1"
+check malformed-perm-nocall "$RAN" "sentinel"
+RAN="sentinel"
+swatter_block_direct_temp "::::" 60 r; check malformed-temp-rc "$?" "1"
+check malformed-temp-nocall "$RAN" "sentinel"
+# A valid IP still routes through.
+RAN=""; swatter_block_direct_perm "203.0.113.4" r; check valid-perm-routes "$RAN" "csf_perm 203.0.113.4 r"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -6,7 +6,19 @@
 # router is THIN — each backend keeps its own dry-run/cap/counter logic, so the
 # safety-critical CSF path (block_csf.sh) is unchanged. Return codes pass through.
 
+# Defense-in-depth IP gate at the router (the single entry every block-creating
+# caller uses — scan and import-bans alike). The scan path already validates, but
+# making the invariant LOCAL here means no caller, present or future, can hand a
+# malformed token to csf/ipset. Non-fatal (return 1 = failure); unblock is NOT
+# gated (it's cleanup — a stray removal is harmless).
+_swatter_block_ip_ok() {
+    swatter_is_valid_ip_or_cidr "${1:-}" && return 0
+    log_warn "block router: refusing malformed ip '${1:-}'"
+    return 1
+}
+
 swatter_block_direct_temp() {
+    _swatter_block_ip_ok "${1:-}" || return 1
     case "${DIRECT_BACKEND:-csf}" in
         ipset) swatter_ipset_temp "$@" ;;
         *)     swatter_csf_temp   "$@" ;;
@@ -14,6 +26,7 @@ swatter_block_direct_temp() {
 }
 
 swatter_block_direct_perm() {
+    _swatter_block_ip_ok "${1:-}" || return 1
     case "${DIRECT_BACKEND:-csf}" in
         ipset) swatter_ipset_perm "$@" ;;
         *)     swatter_csf_perm   "$@" ;;

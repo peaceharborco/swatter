@@ -67,6 +67,23 @@ swatter_intel_available() {
     [[ -n "${INTEL_PROVIDERS// }" ]]
 }
 
+# Sanitize an attacker/MITM-influenceable provider label to a single clean token:
+# strip CR/LF (would split the TSV score contract + decisions.jsonl), tabs (would
+# mis-split our own 3-field output), and backslashes (would corrupt the hand-built
+# audit JSON, whose escaper only handles quotes). Bounded to 80 chars.
+_intel_clean() {
+    local s="${1:-}"
+    # Explicit single-char substitutions (a combined bracket class mixing these
+    # plus a backslash before ']' parses ambiguously across bash versions):
+    s="${s//\\/}"          # drop backslashes (would corrupt hand-built JSON)
+    s="${s//\"/}"          # drop double-quotes (would break a JSON string value)
+    s="${s//$'\t'/ }"      # tab -> space (would mis-split the 3-field TSV)
+    s="${s//$'\r'/ }"
+    s="${s//$'\n'/ }"      # CR/LF -> space (would split the record)
+    s="${s//[[:cntrl:]]/}" # strip any remaining control chars
+    printf '%s' "${s:0:80}"
+}
+
 _intel_cache_get() {
     # $1=provider $2=ip ; echoes "score\tlabel\tverdict" if fresh, else nothing.
     # verdict field may be empty (3-field legacy cache files are still valid).
@@ -95,16 +112,20 @@ swatter_intel_score() {
     local prov out cached score ttl label verdict
     for prov in ${INTEL_PROVIDERS}; do
         if cached="$(_intel_cache_get "$prov" "$ip")"; then
-            score="$(printf '%s' "$cached" | cut -f1)"
-            label="$(printf '%s' "$cached" | cut -f2)"
-            verdict="$(printf '%s' "$cached" | cut -f3)"
+            score="$(printf '%s' "$cached" | head -n1 | cut -f1)"
+            label="$(_intel_clean "$(printf '%s' "$cached" | head -n1 | cut -f2)")"
+            verdict="$(_intel_clean "$(printf '%s' "$cached" | head -n1 | cut -f3)")"
         else
             if ! declare -F "provider_${prov}" >/dev/null; then continue; fi
             if out="$(provider_"${prov}" "$ip" 2>/dev/null)"; then
+                # Parse ONLY the first line: a provider whose label carries a
+                # newline (hostile/MITM API field) must not leak extra lines into
+                # the score contract or the cache.
+                out="$(printf '%s' "$out" | head -n1)"
                 score="$(printf '%s' "$out" | cut -f1)"
                 ttl="$(printf '%s' "$out" | cut -f2)"
-                label="$(printf '%s' "$out" | cut -f3)"
-                verdict="$(printf '%s' "$out" | cut -f4)"
+                label="$(_intel_clean "$(printf '%s' "$out" | cut -f3)")"
+                verdict="$(_intel_clean "$(printf '%s' "$out" | cut -f4)")"
                 [[ "$score" =~ ^[0-9]+$ ]] || score=0
                 _intel_cache_put "$prov" "$ip" "$score" "$label" "$verdict"
             else

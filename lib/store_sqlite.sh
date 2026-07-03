@@ -20,7 +20,12 @@ _swatter_jsonl() { printf '%s/ledger.jsonl' "${STATE_DIR}"; }
 
 swatter_store_init() {
     if [[ "${STORE}" == "sqlite" ]]; then
-        sqlite3 "$(_swatter_db)" <<'SQL' 2>/dev/null
+        # Capture stderr, don't discard it: a corrupt/unwritable DB that fails
+        # schema bootstrap would otherwise start the scan on a silently-empty
+        # ledger, losing cap + repeat-escalation state with no signal. Warn loud
+        # and propagate rc so the caller/cron can tell the ledger is broken.
+        local _ierr _irc
+        _ierr="$(sqlite3 "$(_swatter_db)" 2>&1 >/dev/null <<'SQL'
 CREATE TABLE IF NOT EXISTS offenders(
   ip TEXT PRIMARY KEY, first_seen INTEGER, last_seen INTEGER,
   worst_score INTEGER DEFAULT 0, total_offenses INTEGER DEFAULT 0,
@@ -36,6 +41,11 @@ CREATE TABLE IF NOT EXISTS sightings(
   PRIMARY KEY (ip, bucket));
 CREATE INDEX IF NOT EXISTS ix_sightings_ip ON sightings(ip);
 SQL
+        )"; _irc=$?
+        if (( _irc != 0 )); then
+            log_error "store init FAILED (${STORE} ${STATE_DIR}): $(printf '%s' "$_ierr" | tr '\n' ' ' | cut -c1-160)"
+            return "$_irc"
+        fi
         chmod 0640 "$(_swatter_db)" 2>/dev/null || true
     else
         touch "$(_swatter_jsonl)" 2>/dev/null || true

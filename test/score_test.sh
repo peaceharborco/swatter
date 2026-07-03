@@ -162,7 +162,8 @@ echo
 echo "=== validator + allowlist logic tests ==="
 # Test swatter_validate_ip_or_cidr (from common)
 VALIDATOR_PASS=0 VALIDATOR_FAIL=0
-for good in 1.2.3.4 192.168.0.1/24 2001:db8::1 2001:db8:1:2::/64 ::1; do
+for good in 1.2.3.4 192.168.0.1/24 2001:db8::1 2001:db8:1:2::/64 ::1 :: 2400:cb00::/32 \
+            ::ffff:192.0.2.1 ::ffff:1.2.3.4/128 2001:DB8::1; do
     # Subshell: a wrongly-rejecting validator die()s, which must fail this case,
     # not abort the whole suite.
     if (swatter_validate_ip_or_cidr "$good") 2>/dev/null; then
@@ -171,7 +172,12 @@ for good in 1.2.3.4 192.168.0.1/24 2001:db8::1 2001:db8:1:2::/64 ::1; do
         echo "FAIL validator good: $good"; VALIDATOR_FAIL=$((VALIDATOR_FAIL+1))
     fi
 done
-for bad in "not-ip" "1.2.3" "1.2.3.4.5" "example.com" "1.2.3.4/99" ""; do
+# The bad list includes tokens that pass score.awk's loose charset gate
+# (999...., deadbeef, ::::) — the validator is the authoritative gate the
+# block path relies on, so it must reject what the fast pre-filter lets by.
+for bad in "not-ip" "1.2.3" "1.2.3.4.5" "example.com" "1.2.3.4/99" "" \
+           "999.999.999.999" "256.1.1.1" "deadbeef" "::::" "1::2::3" \
+           "1:2:3:4:5:6:7:8:9" "12345::1" "1.2.3.4/1/2"; do
     if (swatter_validate_ip_or_cidr "$bad") 2>/dev/null; then
         echo "FAIL validator should-reject: $bad"; VALIDATOR_FAIL=$((VALIDATOR_FAIL+1))
     else

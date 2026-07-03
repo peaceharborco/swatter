@@ -575,6 +575,10 @@ _ol_digest_should_render() {
 }
 
 # Is <ip> in a swatter threat feed (attacker) or an allow/monitoring range (legit)?
+# Feeds are flat IP lists (exact match); allow/monitoring are CIDR files, so use
+# _ip_in_cidr_file for containment — a /24 monitoring range must tag every IP it
+# covers as legit, and the paths are the configured ones (not hardcoded /etc), so
+# a relocated STATE_DIR/allow file is honored.
 _ol_tag_ip() {
     local ip="$1" f
     for f in "${STATE_DIR}/feeds/"ipsum.txt "${STATE_DIR}/feeds/"blocklist_de.txt \
@@ -582,10 +586,16 @@ _ol_tag_ip() {
              "${STATE_DIR}/feeds/"et_compromised.txt; do
         [[ -r "$f" ]] && grep -qxF "$ip" "$f" 2>/dev/null && { printf 'attacker'; return; }
     done
-    local c
-    for c in /etc/swatter/monitoring.cidr /etc/swatter/allow.cidr; do
-        [[ -r "$c" ]] && grep -qF "$ip" "$c" 2>/dev/null && { printf 'legit'; return; }
-    done
+    # _ip_in_cidr_file lives in allowlist.sh; bin/swatter always sources it before
+    # this file, but guard anyway so a standalone source (cron fragment / test)
+    # degrades to "uncategorized" quietly instead of erroring on every file.
+    if declare -F _ip_in_cidr_file >/dev/null; then
+        local c
+        for c in "${MONITORING_RANGES_FILE:-/etc/swatter/monitoring.cidr}" \
+                 "${OPERATOR_ALLOW_FILE:-/etc/swatter/allow.cidr}"; do
+            [[ -r "$c" ]] && _ip_in_cidr_file "$ip" "$c" && { printf 'legit'; return; }
+        done
+    fi
     printf 'uncategorized'
 }
 
