@@ -107,6 +107,37 @@ provider_greynoise 1.2.3.4 >/dev/null 2>&1
 argv_clean greynoise "GNSECRET"
 cfg_has greynoise 'header = "key: GNSECRET"'
 
+# 10-12) Swarm: three tokens (write/read/enroll), all via -K, never argv.
+source "${ROOT}/lib/allowlist.sh"
+source "${ROOT}/lib/store_sqlite.sh"
+source "${ROOT}/lib/swarm.sh"
+source "${ROOT}/lib/providers/swarm.sh"
+SWARM_ENABLE="true"; SWARM_HUB_URL="https://hub.example"; SWARM_PUBLISH="true"
+mkdir -p "$TMP/feeds"
+SWARM_WRITE_TOKEN_FILE="$TMP/sw.tok";  printf 'SWARMWRITESECRET'  > "$SWARM_WRITE_TOKEN_FILE"
+SWARM_READ_TOKEN_FILE="$TMP/sr.tok";   printf 'SWARMREADSECRET'   > "$SWARM_READ_TOKEN_FILE"
+SWARM_ENROLL_TOKEN_FILE="$TMP/se.tok"; printf 'SWARMENROLLSECRET' > "$SWARM_ENROLL_TOKEN_FILE"
+swatter_store_perm_ips_since() { printf '203.0.113.7\t100\n'; }
+swatter_is_never_block() { return 1; }
+
+# 10) publish (POST /contribute, write token)
+: > "$LOG"; MOCK_STDOUT='200'
+swatter_swarm_publish >/dev/null 2>&1
+argv_clean swarm-publish "SWARMWRITESECRET"
+cfg_has swarm-publish 'header = "Authorization: Bearer SWARMWRITESECRET"'
+
+# 11) feed refresh (GET /feed, read token)
+: > "$LOG"; MOCK_STDOUT='200'
+provider_swarm_refresh >/dev/null 2>&1
+argv_clean swarm-feed "SWARMREADSECRET"
+cfg_has swarm-feed 'header = "Authorization: Bearer SWARMREADSECRET"'
+
+# 12) enroll (POST /register, enroll token)
+: > "$LOG"; MOCK_STDOUT='200'
+cmd_swarm enroll </dev/null >/dev/null 2>&1
+argv_clean swarm-enroll "SWARMENROLLSECRET"
+cfg_has swarm-enroll 'header = "Authorization: Bearer SWARMENROLLSECRET"'
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
