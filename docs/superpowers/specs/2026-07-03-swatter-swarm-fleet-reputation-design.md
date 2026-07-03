@@ -1,18 +1,24 @@
-# Swatter Swarm — fleet reputation sharing (Phase 1 design, v2)
+# Swatter Swarm — fleet reputation sharing (Phase 1 design, v3)
 
 **Date:** 2026-07-03
-**Status:** design v2 — revised after the Grok two-model review
-(`…-design-review-grok.md`). Action model (§8) CONFIRMED by the operator
-(ship both `boost` + `corroborated-block`). Ready for implementation planning.
-**Author:** brainstormed with the operator; review findings folded in.
+**Status:** design v3 — folds in BOTH the design review and the hub-plan review.
+Operator-confirmed decisions: ship both `boost` + `corroborated-block` (§8),
+per-token host registry (§6), hub accepts IP-or-CIDR (§4.2), `host_count` derived
+at read time (§4.2/§5). Hub implementation plan must be rewritten to v2 against
+this design before execution.
+**Author:** brainstormed with the operator; two rounds of review findings folded in.
 
-> **v2 changelog:** rewrote the trust model after review Blocker #2 — Phase 1
-> trust comes from *ownership of contributors*, but bad *data* from one host can
-> still propagate, so action is now corroboration-gated and a consume-side fleet
-> allowlist is mandatory. Fixed the feed-format/validator contract (Blocker #1).
-> Defined `SWARM_ACTION` integration (Blocker #3) and resolved the
-> pre-block/safety tradeoff honestly (Blocker #4). Specified hub concurrency,
-> pruning, staleness, dual tokens, flatfile-safe cursor, disable path, IPv6.
+> **v3 changelog (hub-plan review):** `host_count` is now derived at feed-read
+> time (kills the cross-request write race); a **per-token host registry** + a
+> third **enroll token** close the forgeable-`host_id` corroboration hole; the hub
+> accepts **IP or CIDR** (parity with the bash validator); the **empty-feed**
+> contract (clear vs. keep-last-good) is explicit; rate limiting keys on the
+> connecting IP, not the attacker-controlled `host_id`; `corroborated-block`
+> requires the JSON feed; payload cap + truncation signalling added.
+> **v2 changelog (design review):** corroboration-gated action + mandatory
+> consume-side fleet allowlist (poison propagation); bare-IP feed format;
+> `SWARM_ACTION` gate path via `_swatter_execute_block`; honest pre-block framing;
+> dual tokens, prune, staleness, flatfile-safe cursor, disable path, IPv6.
 
 ## 1. Goal
 
@@ -77,26 +83,42 @@ corroboration-gated proactive mode (§8). We do not oversell "pre-block."
 
 Operator deploys to their own CF account (§10). Endpoints:
 
-- `POST /contribute` — **write-token** auth. Per IP, in a single D1 transaction:
-  upsert `offenders` (bump `last_seen`, `expires = last_seen + SWARM_TTL`,
-  `last_host`); upsert `sightings(ip, host, last_seen)`; recompute
-  `host_count = COUNT(DISTINCT host) FROM sightings WHERE ip=? AND last_seen >
-  now - SWARM_TTL`. Server-side revalidates each IP + rejects unsafe targets.
-  **Rate-limited** per token (and per host_id) to bound a leaked-token attacker.
-- `GET /feed` — **read-token** auth (a DIFFERENT token from write; see §4.4).
-  Two formats:
-  - default → **bare `ip` per line** (IPv4 and IPv6), which is exactly what
-    `swatter_cidr_list_ok` validates (review Blocker #1). This is the file that
-    feeds scoring/never-block.
+- `POST /contribute` — **write-token** auth. Per entry: server-side re-validate
+  (accept a valid **IP or CIDR** — parity with the bash validator so a host's
+  CIDR perm-ban isn't silently dropped; hub-plan-review decision B) and reject
+  unsafe targets (`/0`, unspecified). Then upsert `sightings(ip, host, last_seen)`
+  and touch `offenders(ip, first_seen, last_seen, last_host, category, expires =
+  last_seen + SWARM_TTL)`. **`host_count` is NOT stored on write** — see below.
+  `entries[]` is capped (e.g. 1000/request; `413` over). Rate-limited on the
+  **connecting IP + a global `/contribute` limit** (NOT on the attacker-controlled
+  `host_id`; hub-plan-review Major #6).
+- **`host_count` is derived at READ time** from `sightings`
+  (`COUNT(DISTINCT host) WHERE ip=? AND host IN (registered) AND last_seen >
+  now-SWARM_TTL`), NOT cached on write. This removes the cross-request write race
+  the plan review flagged (Blocker #2) — the count always reflects the committed
+  `sightings` source of truth — and lets the **host registry** (§6) gate it.
+- `POST /register` — **enroll-token** auth (a THIRD credential, operator-held, NOT
+  on every box; §4.4). Adds a `host_id` to the `hosts` registry. Only registered
+  `host_id`s count toward `host_count`, so a leaked *write* token cannot forge
+  corroboration by inventing `host_id`s (hub-plan-review Blocker #3, decision A:
+  per-token host registry).
+- `GET /feed` — **read-token** auth (a DIFFERENT token from write/enroll; §4.4).
+  - default → **bare `ip`/`cidr` per line**, exactly what `swatter_cidr_list_ok`
+    validates. Feeds scoring/never-block. **An empty active set returns an empty
+    `200`** — the host MUST treat that as "valid empty → clear `swarm.txt`," NOT
+    route it through `swatter_cidr_list_ok` (whose `n>0` would reject it and freeze
+    decay; hub-plan-review Blocker #4). Handled in the host-side consume path.
   - `?format=json` → `[{ip, host_count, category, expires}]` for weighting +
-    report. Bounded by a **max feed size**; paginated (`?cursor=`) if exceeded.
-- **Scheduled prune** (Worker cron, daily): delete `offenders` past `expires`
-  AND `sightings` past `now - SWARM_TTL` (both, per review — sightings was
-  unbounded). Prune failures are surfaced (logged/metric) so a stuck prune can't
-  silently grow the table + feed.
+    report. **`corroborated-block` REQUIRES this JSON feed** (the bare feed carries
+    no `host_count`; hub-plan-review Major #9). Bounded by a **max feed size**; if
+    truncated, a response header (`X-Swarm-Truncated`) + log signals it (silent
+    lexical truncation would drop the same high-address offenders every time;
+    Major #8). Cursor pagination is a fast-follow.
+- **Scheduled prune** (Worker cron, daily): delete `offenders` past `expires` AND
+  `sightings` past `now - SWARM_TTL`. Prune failures are surfaced (logged/metric).
 
-`SWARM_TTL` is **hub-authoritative** (a Worker config/binding), not host config
-(review — authority split). Hosts don't set expiry.
+`SWARM_TTL` is **hub-authoritative** (a Worker config/binding). Hosts don't set
+expiry.
 
 **Store: D1** — SQL fits `host_count`, expiry, and the DISTINCT-host count. KV
 would force hand-rolled counting/expiry. *(Recommended; override on review.)*
@@ -117,18 +139,27 @@ would force hand-rolled counting/expiry. *(Recommended; override on review.)*
   never-block → classify → unsafe-target → scoring — before any block. Swarm can
   *raise* a score; it cannot bypass a gate.
 
-### 4.4 Auth — two tokens, not one
+### 4.4 Auth — three tokens (write / read / enroll)
 
-Review: a single shared bearer on every root box is both a poisoning key and a
-recon key. Phase 1 mitigation:
+A single shared bearer would be both a poisoning key and a recon key. Phase 1
+splits credentials by capability:
 
-- **Write token** (`SWARM_WRITE_TOKEN_FILE`, 0400) — only on boxes that publish.
-- **Read token** (`SWARM_READ_TOKEN_FILE`, 0400) — on all consumers.
-- A compromised *consumer* (read-only) cannot poison the hub. A leaked write
-  token still allows re-poisoning within its rate limit until rotated — **stated
-  honestly: TTL does NOT bound an active attacker; rotation does.** Per-host
-  signing that would fully fix this is Phase 2.
-- Both sent via `curl -K` (never argv).
+- **Write token** (`SWARM_WRITE_TOKEN_FILE`, 0400) — on publishing boxes; gates
+  `POST /contribute`.
+- **Read token** (`SWARM_READ_TOKEN_FILE`, 0400) — on all consumers; gates
+  `GET /feed`.
+- **Enroll token** (`SWARM_ENROLL_TOKEN`, operator-held, NOT deployed to boxes)
+  — gates `POST /register`, which adds a `host_id` to the registry (§6). Because
+  only *registered* host_ids count toward `host_count`, and enrolling requires
+  this separate token, **a leaked write token cannot forge corroboration** (it can
+  add sightings under invented host_ids, but they never count). This is the fix
+  for the plan-review forgeable-host_id blocker.
+- A compromised *consumer* (read-only) cannot poison the hub. A leaked *write*
+  token can add sightings for real IPs (bounded by the connecting-IP + global rate
+  limits) but cannot inflate `host_count` past real corroboration, cannot enroll,
+  and cannot read the offender list. **Stated honestly: rotation, not TTL, stops
+  an active attacker; full per-host request signing is Phase 2.**
+- All sent via `curl -K` (never argv).
 
 ### 4.5 Consume-side fleet allowlist (canary) — NEW, mandatory
 
@@ -142,14 +173,15 @@ for Phase 2's global canary set.
 ## 5. Data model (D1)
 
 ```sql
+-- offenders: NO cached host_count (derived at read time from sightings, so the
+-- cross-request write race can't corrupt it). Holds only decay + metadata.
 CREATE TABLE offenders (
-  ip         TEXT PRIMARY KEY,
+  ip         TEXT PRIMARY KEY,          -- IP or CIDR
   first_seen INTEGER NOT NULL,
   last_seen  INTEGER NOT NULL,
-  host_count INTEGER NOT NULL DEFAULT 1,   -- DISTINCT hosts within SWARM_TTL
   last_host  TEXT,
   category   TEXT,
-  expires    INTEGER NOT NULL              -- last_seen + SWARM_TTL
+  expires    INTEGER NOT NULL           -- last_seen + SWARM_TTL
 );
 CREATE INDEX ix_offenders_expires ON offenders(expires);
 
@@ -160,18 +192,29 @@ CREATE TABLE sightings (
   PRIMARY KEY (ip, host)
 );
 CREATE INDEX ix_sightings_seen ON sightings(last_seen);   -- for prune
+
+-- registry: only these host_ids count toward host_count (forgery defense).
+CREATE TABLE hosts (
+  host        TEXT PRIMARY KEY,
+  enrolled_at INTEGER NOT NULL,
+  label       TEXT
+);
 ```
 
-`host_count` = corroboration; `last_host`/`sightings` = contributor identity —
-the fields Phase 2's trust layer needs. (Data model is forward-compatible; the
-*auth* layer is a Phase-2 replacement — see §14.)
+`host_count` is computed at read time as
+`COUNT(DISTINCT s.host) FROM sightings s JOIN hosts h ON s.host=h.host
+ WHERE s.ip=? AND s.last_seen > now-SWARM_TTL`. `sightings` + `hosts` are the
+contributor-identity + corroboration substrate Phase 2's trust layer extends.
 
-## 6. Host id
+## 6. Host id + registry
 
 Opaque, stable, random per box (`$STATE_DIR/swarm.host_id`), NOT hostname/IP.
-Seeds Phase-2 contributor identity. In Phase 1 the hub *trusts the claimed
-host_id* (no signing) — acceptable because contributors are owned; Phase 2 binds
-host_id to a signing key.
+A box is **enrolled once** by the operator (`swatter swarm enroll`, which
+`POST /register`s with the operator-held **enroll token**, §4.4) — a deliberate
+step, not auto-on-first-contribute (auto-enroll would reopen the forgery hole).
+Only enrolled host_ids count toward `host_count`, so a leaked write token cannot
+manufacture corroboration. host_id seeds Phase-2 contributor identity (Phase 2
+binds it to a signing key).
 
 ## 7. Safety (corrected after review)
 
@@ -227,6 +270,7 @@ defer `corroborated-block`. The recommended model is a superset of this.)*
 | `SWARM_HUB_URL` | `""` | hub base URL |
 | `SWARM_WRITE_TOKEN_FILE` | `/etc/swatter/swarm.write.token` | 0400; publishers only |
 | `SWARM_READ_TOKEN_FILE` | `/etc/swatter/swarm.read.token` | 0400; consumers |
+| `SWARM_ENROLL_TOKEN_FILE` | `""` | 0400; ONLY on the box that runs `swatter swarm enroll` (operator-held; not fleet-wide) |
 | `SWARM_PUBLISH` | `true` | contribute this box's offenders |
 | `SWARM_ACTION` | `boost` | `boost` \| `corroborated-block` |
 | `SWARM_MIN_CORROBORATION` | `2` | min distinct hosts for a proactive block |
@@ -238,11 +282,14 @@ defer `corroborated-block`. The recommended model is a superset of this.)*
 
 ## 10. Packaging — self-hostable `hub/`
 
-New `hub/`: `worker.js`, `wrangler.toml` (D1 binding + cron trigger + rate-limit
-binding), `schema.sql`, `README.md` (deploy in minutes: create D1, apply schema,
-`wrangler secret put` the write + read tokens, `wrangler deploy`, point boxes at
-the URL). PH is the first tenant (cds1); new boxes enroll zero-config with the URL
-+ tokens.
+New `hub/`: `worker.js` (or split modules), `wrangler.toml` (D1 binding + cron
+trigger + `[[ratelimits]]` binding), `schema.sql`, `README.md` (deploy in minutes:
+create D1, apply schema, `wrangler secret put` the write + read + enroll tokens,
+`wrangler deploy`, point boxes at the URL). PH is the first tenant (cds1). Adding a
+box is **two steps**: drop the URL + write/read tokens in its conf, then
+`swatter swarm enroll` once (operator runs it with the enroll token) so the box's
+`host_id` counts toward corroboration. (Not fully zero-config: the deliberate
+enroll step is what makes the host registry a forgery defense — §6.)
 
 ## 11. Testing
 
@@ -318,6 +365,14 @@ safety from *ownership*; Phase 2 earns it from *consensus + signing*.
 5. **`SWARM_MIN_CORROBORATION=2`** — default (2 suits a small/growing fleet; at
    N=1 box `corroborated-block` simply never fires until a 2nd box confirms, which
    is the correct behavior). Revisit if the fleet grows large.
+6. **Per-token host registry** gates `host_count` (only enrolled host_ids count) —
+   **CONFIRMED 2026-07-03** (hub-plan-review decision A). Closes the forgeable-
+   host_id hole: a leaked write token can't manufacture corroboration.
+7. **Hub accepts IP or CIDR** (parity with the bash validator; reject `/0` +
+   unspecified) — **CONFIRMED 2026-07-03** (hub-plan-review decision B). A host's
+   CIDR perm-ban is shared, not silently dropped.
+8. **`host_count` derived at feed-read time** (not cached on write) — removes the
+   cross-request write race (hub-plan-review Blocker #2).
 
 ## 16. Open questions for review
 
@@ -325,13 +380,21 @@ safety from *ownership*; Phase 2 earns it from *consensus + signing*.
 - Multi-hub consumption (personal + partner) — a stepping stone to Phase 2, or
   out of scope now?
 
-## 17. Review resolution (Grok, 2026-07-03)
+## 17. Review resolution
 
-All four Blockers and the Majors from `…-design-review-grok.md` are addressed in
-this v2: feed format (Blocker #1 → §4.2 bare-IP), poison propagation (Blocker #2
-→ §4.5 fleet allowlist + §8 corroboration + §7 corrected claims),
-`SWARM_ACTION=block` gate path (Blocker #3 → §8 via `_swatter_execute_block`),
-pre-block/safety tradeoff (Blocker #4 → §1/§8 honest split). Majors: dual tokens
-+ rate limit (§4.4), hub transaction/prune/staleness/size-cap (§4.2/§4.3/§12),
-ts-based flatfile-safe cursor (§4.1), disable/purge path (§13), IPv6 (§4.2),
-softened Phase-2 auth claim (§14).
+**Design review (`…-design-review-grok.md`, 2026-07-03)** — all four Blockers +
+Majors addressed in spec v2: feed format (§4.2 bare-IP), poison propagation (§4.5
+fleet allowlist + §8 corroboration + §7 corrected claims), `SWARM_ACTION` gate
+path (§8 via `_swatter_execute_block`), pre-block/safety tradeoff (§1/§8),
+dual tokens (§4.4), prune/staleness (§4.2/§4.3/§12), flatfile-safe cursor (§4.1),
+disable/purge (§13), IPv6, softened Phase-2 claim (§14).
+
+**Hub plan review (`plans/…-swatter-swarm-hub-review-grok.md`, 2026-07-03)** —
+folded into spec v3 (this doc): `host_count` derived at read time (Blocker #2 →
+§4.2/§5), per-token host registry vs forgeable host_id (Blocker #3 → §4.4/§6),
+empty-feed-clears-vs-failure-keeps (Blocker #4 → §4.2/§4.3), IP-or-CIDR parity
+(Major #7 → §4.2), connecting-IP/global rate limit not host_id (Major #6 → §4.2),
+dual-fetch requirement for corroborated-block (Major #9 → §4.2), payload cap +
+truncation signalling (Majors #8/#10 → §4.2). The **hub implementation plan
+(`plans/…-swatter-swarm-hub.md`) must be rewritten to v2** against this corrected
+design + the current `cloudflareTest()`/Vitest-4.1 harness before execution.
