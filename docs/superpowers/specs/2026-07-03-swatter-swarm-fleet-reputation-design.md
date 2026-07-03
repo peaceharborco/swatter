@@ -2,8 +2,8 @@
 
 **Date:** 2026-07-03
 **Status:** design v2 — revised after the Grok two-model review
-(`…-design-review-grok.md`); awaiting operator approval of the action model (§8)
-before implementation planning.
+(`…-design-review-grok.md`). Action model (§8) CONFIRMED by the operator
+(ship both `boost` + `corroborated-block`). Ready for implementation planning.
 **Author:** brainstormed with the operator; review findings folded in.
 
 > **v2 changelog:** rewrote the trust model after review Blocker #2 — Phase 1
@@ -194,9 +194,9 @@ host_id to a signing key.
   + fleet-allow-checked before an IP leaves the box.
 - Secret hygiene: dual 0400 tokens via `curl -K`.
 
-## 8. Action model (`SWARM_ACTION`) — the key decision (confirm on review)
+## 8. Action model (`SWARM_ACTION`) — CONFIRMED (operator sign-off 2026-07-03: ship both)
 
-**Recommended: `boost` default + opt-in `corroborated-block`.**
+**`boost` default + opt-in `corroborated-block` — both ship in Phase 1.**
 
 - `boost` (default): `provider_swarm` returns a reputation **score** 0–100 for a
   listed IP (like `provider_abuseipdb` returns a confidence), computed from a base
@@ -307,21 +307,21 @@ host_id) is built to grow into this. The *auth* layer (shared tokens,
 host_id-as-claim) is a Phase-2 **replacement**, not an extension. Phase 1 earns
 safety from *ownership*; Phase 2 earns it from *consensus + signing*.
 
-## 15. Decisions taken without the operator (confirm on review)
+## 15. Decisions (operator sign-off status)
 
-1. **Hub store = D1** (over KV).
-2. **Action model = `boost` default + opt-in `corroborated-block`**
-   (`SWARM_MIN_CORROBORATION=2`), rather than unconditional block-on-sight or
-   boost-only. This is the §8 decision most wanting your sign-off.
-3. **Dual read/write tokens** (not one shared bearer).
-4. **Mandatory consume-side `SWARM_ALLOW_FILE`** as the Phase-1 canary.
+1. **Action model = `boost` default + opt-in `corroborated-block`, both shipping
+   in Phase 1** — **CONFIRMED 2026-07-03.**
+2. **Hub store = D1** (over KV) — default; not objected.
+3. **Dual read/write tokens** (not one shared bearer) — default; not objected.
+4. **Mandatory consume-side `SWARM_ALLOW_FILE`** as the Phase-1 canary — default;
+   not objected.
+5. **`SWARM_MIN_CORROBORATION=2`** — default (2 suits a small/growing fleet; at
+   N=1 box `corroborated-block` simply never fires until a 2nd box confirms, which
+   is the correct behavior). Revisit if the fleet grows large.
 
 ## 16. Open questions for review
 
 - Category taxonomy: reuse `decisive_rule`, or a coarser shared set?
-- `SWARM_MIN_CORROBORATION` default — 2 or 3? (2 at small fleet, 3 as it grows.)
-- Should `corroborated-block` ship in Phase 1 at all, or defer to keep the first
-  cut boost-only?
 - Multi-hub consumption (personal + partner) — a stepping stone to Phase 2, or
   out of scope now?
 
