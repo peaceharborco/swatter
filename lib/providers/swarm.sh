@@ -70,3 +70,47 @@ provider_swarm_refresh() {
     return 0
 }
 
+# Per-IP lookup against the local swarm feed. Free (no network): exact-IP line
+# match, then CIDR containment via the allowlist matcher. Score scales with the
+# fleet's corroboration: base SWARM_BASE_SCORE at host_count=1, +15 per extra
+# distinct host, capped 100 (folds through the standard W_REPUTATION path —
+# swarm is a NORMAL intel provider, not a new fold weight; spec §8).
+# NOTE (locked decision): an IP contained in a corroborated CIDR row scores at
+# the conservative BASE — meta host_count is keyed by the CIDR string. The
+# corroborated-block sweep is unaffected (it iterates meta rows directly).
+provider_swarm() {
+    local ip="$1" feed="${STATE_DIR}/feeds/swarm.txt" meta="${STATE_DIR}/feeds/swarm.meta.json"
+    _swarm_enabled || return 1
+    [[ -s "$feed" ]] || return 1
+
+    # Staleness (spec §4.3): older than SWARM_MAX_AGE_DAYS => signal ABSENT
+    # (+ one warn per process, not per IP).
+    local age
+    age=$(( $(swatter_now) - $(stat_mtime "$feed" || echo 0) ))
+    if (( age > ${SWARM_MAX_AGE_DAYS:-3} * 86400 )); then
+        if [[ -z "${_SWARM_STALE_WARNED:-}" ]]; then
+            log_warn "swarm feed stale (>${SWARM_MAX_AGE_DAYS}d old) — swarm signal ignored (run: swatter refresh-feeds)"
+            _SWARM_STALE_WARNED=1
+        fi
+        return 1
+    fi
+
+    # Fleet canary: a fleet-allow IP is never swarm-boosted (spec §4.5).
+    [[ -s "${SWARM_ALLOW_FILE:-}" ]] && _ip_in_cidr_file "$ip" "${SWARM_ALLOW_FILE}" && return 1
+
+    local hit=0
+    awk -v ip="$ip" '$1==ip{f=1; exit} END{exit !f}' "$feed" && hit=1
+    if (( ! hit )) && declare -F _ip_in_cidr_file >/dev/null; then
+        _ip_in_cidr_file "$ip" "$feed" && hit=1
+    fi
+    (( hit )) || return 1
+
+    local hc=1
+    if [[ "${SWATTER_HAVE_JQ}" -eq 1 && -s "$meta" ]]; then
+        hc="$(jq -r --arg ip "$ip" '[.[] | select(.ip==$ip)][0].host_count // 1' "$meta" 2>/dev/null)"
+        [[ "$hc" =~ ^[0-9]+$ ]] || hc=1
+    fi
+    local score=$(( ${SWARM_BASE_SCORE:-70} + 15 * (hc - 1) ))
+    (( score > 100 )) && score=100
+    printf '%s\t%s\thosts=%s\n' "$score" "${INTEL_CACHE_TTL}" "$hc"
+}
