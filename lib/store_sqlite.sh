@@ -241,6 +241,32 @@ swatter_store_perm_ips() {
     fi
 }
 
+# Delta variant for the swarm publisher: perm ips (same still-banned, enforced
+# semantics as swatter_store_perm_ips) whose LATEST enforced perm action is
+# newer than <since>. Prints "ip<TAB>ts" per line; ts drives the publish cursor.
+swatter_store_perm_ips_since() {
+    local since="${1:-0}"
+    [[ "$since" =~ ^[0-9]+$ ]] || since=0
+    if [[ "${STORE}" == "sqlite" ]]; then
+        _sqlq "SELECT a.ip || char(9) || MAX(a.ts) FROM actions a
+                 JOIN offenders o ON o.ip = a.ip
+                WHERE o.perm=1 AND a.action='perm' AND a.dry_run=0
+                GROUP BY a.ip HAVING MAX(a.ts) > ${since}
+                ORDER BY a.ip;"
+    else
+        awk -v since="$since" '
+            { ip=""; act=""; dr=1; ts=0 }
+            match($0, /"ip":"[^"]*"/)     { ip=substr($0, RSTART+6, RLENGTH-7) }
+            match($0, /"action":"[^"]*"/) { act=substr($0, RSTART+10, RLENGTH-11) }
+            match($0, /"ts":[0-9]+/)      { ts=substr($0, RSTART+5, RLENGTH-5)+0 }
+            /"dry_run":0/                 { dr=0 }
+            ip!="" && act=="perm" && dr==0 { banned[ip]=1; if (ts>last[ip]) last[ip]=ts }
+            ip!="" && act=="unblock"       { banned[ip]=0 }
+            END { for (i in banned) if (banned[i] && last[i]>since) print i "\t" last[i] }
+        ' "$(_swatter_jsonl)" 2>/dev/null | sort
+    fi
+}
+
 # Echo "temp_offenders <TAB> perm_offenders" (for metrics).
 swatter_store_counts() {
     if [[ "${STORE}" != "sqlite" ]]; then printf '0\t0\n'; return 0; fi
