@@ -1,89 +1,96 @@
-# Swatter Swarm Hub Implementation Plan
-
-> **⚠️ DO NOT EXECUTE — UNDER REVISION.** The Grok two-model review
-> (`…-swatter-swarm-hub-review-grok.md`, 2026-07-03) returned *not safe to
-> execute as-is*: outdated vitest API, cross-request `host_count` race, forgeable
-> `host_id` corroboration, empty-feed/decay contract gap, and a non-executable
-> rate-limit task. Two design decisions (host_id trust, CIDR policy) are pending
-> operator sign-off. This plan will be revised to v2 before any task runs.
+# Swatter Swarm Hub Implementation Plan (v2)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the self-hostable Swatter Swarm hub — a Cloudflare Worker + D1 that ingests each fleet host's confirmed offenders and serves the merged, decaying blocklist back.
+> **v2 supersedes v1.** Rewritten after the two-model plan review
+> (`…-swatter-swarm-hub-review-grok.md`) against design spec **v3**. Key changes:
+> `host_count` is DERIVED at feed-read time (no write-race); a **host registry**
+> (`hosts` table + enroll token) gates the count (forgery defense); the hub
+> accepts **IP or CIDR**; the test harness uses the **current** `cloudflareTest()`
+> + Vitest 4.1 API; rate limiting keys on the **connecting IP**; empty-feed,
+> truncation-signalling, and payload caps are handled.
 
-**Architecture:** A single Worker with a `fetch` router (`POST /contribute`, `GET /feed`, `GET /health`) and a `scheduled` handler (daily prune). State lives in D1 (SQLite): an `offenders` table (merged, with `host_count` corroboration + `expires` decay) and a `sightings` table (per-`(ip,host)`, the exact source of `host_count`). Two separate bearer tokens gate write vs. read. All mutating work per IP runs in one atomic D1 `batch()` so concurrent publishers can't corrupt `host_count`.
+**Goal:** Build the self-hostable Swatter Swarm hub — a Cloudflare Worker + D1 that ingests each fleet host's confirmed offenders (`POST /contribute`), enrolls trusted hosts (`POST /register`), and serves the merged, decaying blocklist back (`GET /feed`), with corroboration (`host_count`) derived safely at read time.
 
-**Tech Stack:** Cloudflare Workers (JS, ES modules), D1, Wrangler, Vitest with `@cloudflare/vitest-pool-workers` (runs tests inside the real Workers runtime with a live ephemeral D1).
+**Architecture:** One Worker: a `fetch` router (`/health`, `/contribute`, `/register`, `/feed`) and a `scheduled` prune. D1 holds `offenders` (decay + metadata, NO cached count), `sightings` (per-`(ip,host)`), and `hosts` (the enrolled-host registry). `host_count` is computed at read time as `COUNT(DISTINCT host)` over `sightings` JOINed to `hosts` within `SWARM_TTL`, so concurrent writes can't corrupt it and forged host_ids (not in `hosts`) don't count. Three bearer tokens gate write / read / enroll.
+
+**Tech Stack:** Cloudflare Workers (JS, ES modules), D1, Wrangler ≥ 4.36 (Rate Limiting GA binding), Vitest 4.1+ with `@cloudflare/vitest-pool-workers` (`cloudflareTest()` API). Pure-logic modules (validation, auth) are tested under plain Vitest; D1 logic runs in the Workers pool with `applyD1Migrations`.
 
 ## Global Constraints
 
-- **This is subsystem 1 of 2.** It owns the HTTP contract that the host-side plan (`…-swatter-swarm-host.md`) consumes. The contract below is FROZEN by this plan; do not change endpoint shapes/field names without updating the host plan.
-- **Feed default format is bare IP per line** (one `ip`, no other fields) — the host validates it with `swatter_cidr_list_ok`, which strips all whitespace, so a tab/space/multi-field line would be rejected. Rich metadata is `GET /feed?format=json` only.
-- **Two tokens:** `SWARM_WRITE_TOKEN` gates `POST /contribute`; `SWARM_READ_TOKEN` gates `GET /feed`. A read token must NOT be accepted on `/contribute`. Both are Worker secrets (`wrangler secret put`), never in `wrangler.toml`.
-- **`SWARM_TTL` is hub-authoritative** (a `wrangler.toml` `[vars]` value, seconds; default `604800` = 7 days). Hosts never set expiry.
-- **Every IP is re-validated server-side** and unsafe targets (`/0`, `0.0.0.0`, `::`) are rejected on ingest — never trust the client.
-- **`host_count` = `COUNT(DISTINCT host)` over `sightings` within `SWARM_TTL`** — recomputed inside the same atomic batch as the sighting upsert.
-- IPv4 and IPv6 both supported end-to-end.
-- Response bodies are `text/plain` for the bare feed and `application/json` elsewhere. Auth failures return `401`; malformed input `400`; rate-limited `429`.
+- **Subsystem 1 of 2.** This FREEZES the HTTP contract the host-side plan consumes. Contract (do not change field names/shapes without updating the host plan):
+  - `POST /contribute` — write token — `{host_id: string, entries: [{ip: string, category?: string}]}` → `200 {accepted, rejected}`; `413` if `entries.length > MAX_ENTRIES`.
+  - `POST /register` — enroll token — `{host_id: string, label?: string}` → `200 {enrolled: host_id}`.
+  - `GET /feed` — read token — default `text/plain` bare `ip`/`cidr` per line (empty body if none); `?format=json` → `[{ip, host_count, category, expires}]`; `?limit=N`. Response header `X-Swarm-Truncated: true` when the row cap was hit.
+  - `GET /health` — no auth — `{ok:true}`.
+- **`host_count` is DERIVED at read time** (`COUNT(DISTINCT s.host) FROM sightings s JOIN hosts h ON s.host=h.host WHERE s.ip=? AND s.last_seen > now-SWARM_TTL`). It is NEVER stored on `offenders`. Only ENROLLED hosts count.
+- **Feed accepts IP or CIDR**; rejects `/0` and unspecified (`0.0.0.0`, `::`). Parity with the bash `swatter_is_valid_ip_or_cidr` + `_swatter_is_unsafe_block_target`.
+- **Three tokens** (Worker secrets, never in `wrangler.toml`): `SWARM_WRITE_TOKEN` (contribute), `SWARM_READ_TOKEN` (feed), `SWARM_ENROLL_TOKEN` (register). A read token must NOT work on write/enroll paths; a write token must NOT work on enroll.
+- **`SWARM_TTL`** hub-authoritative (`[vars]`, seconds, default `604800`). **`MAX_ENTRIES`** default `1000`. **`FEED_MAX`** default `50000`.
+- Rate limiting keys on `request.headers.get("cf-connecting-ip")` (NOT the attacker-controlled `host_id`).
+- Auth failures `401`; malformed input `400`; oversized `413`; rate-limited `429`.
 
 ---
 
-### Task 1: Project scaffold + health endpoint (proves the test harness)
+### Task 1: Scaffold + health + D1 harness proof
 
 **Files:**
-- Create: `hub/package.json`
-- Create: `hub/wrangler.toml`
-- Create: `hub/vitest.config.js`
-- Create: `hub/schema.sql`
+- Create: `hub/package.json`, `hub/wrangler.toml`, `hub/vitest.config.js`
+- Create: `hub/migrations/0001_init.sql`
+- Create: `hub/test/apply-migrations.js` (setup)
 - Create: `hub/src/index.js`
 - Test: `hub/test/health.test.js`
 
 **Interfaces:**
-- Produces: the Worker default export `{ fetch(request, env, ctx), scheduled(event, env, ctx) }`; `GET /health` → `200` `{"ok":true}`.
+- Produces: default export `{ fetch(request, env, ctx), scheduled(event, env, ctx) }`; `GET /health` → `200 {ok:true}`; a working Workers-pool + D1 test harness (proven by a smoke query).
 
-- [ ] **Step 1: Write `hub/package.json`**
+- [ ] **Step 1: `hub/package.json`**
 
 ```json
 {
   "name": "swatter-swarm-hub",
   "private": true,
   "type": "module",
-  "scripts": {
-    "test": "vitest run",
-    "deploy": "wrangler deploy"
-  },
+  "scripts": { "test": "vitest run", "deploy": "wrangler deploy" },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.5.0",
-    "vitest": "^2.0.0",
-    "wrangler": "^3.80.0"
+    "@cloudflare/vitest-pool-workers": "^0.8.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.36.0"
   }
 }
 ```
 
-- [ ] **Step 2: Write `hub/schema.sql`** (the full schema; applied to the test D1 by vitest config in Step 4 and to prod in Task 9)
+- [ ] **Step 2: `hub/migrations/0001_init.sql`** (schema; applied to test D1 by setup, to prod by `wrangler d1 migrations apply`)
 
 ```sql
-CREATE TABLE IF NOT EXISTS offenders (
-  ip         TEXT PRIMARY KEY,
+-- offenders: NO host_count (derived at read time). Decay + metadata only.
+CREATE TABLE offenders (
+  ip         TEXT PRIMARY KEY,          -- IP or CIDR
   first_seen INTEGER NOT NULL,
   last_seen  INTEGER NOT NULL,
-  host_count INTEGER NOT NULL DEFAULT 1,
   last_host  TEXT,
   category   TEXT,
   expires    INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS ix_offenders_expires ON offenders(expires);
+CREATE INDEX ix_offenders_expires ON offenders(expires);
 
-CREATE TABLE IF NOT EXISTS sightings (
+CREATE TABLE sightings (
   ip        TEXT NOT NULL,
   host      TEXT NOT NULL,
   last_seen INTEGER NOT NULL,
   PRIMARY KEY (ip, host)
 );
-CREATE INDEX IF NOT EXISTS ix_sightings_seen ON sightings(last_seen);
+CREATE INDEX ix_sightings_seen ON sightings(last_seen);
+
+-- registry: only enrolled host_ids count toward host_count.
+CREATE TABLE hosts (
+  host        TEXT PRIMARY KEY,
+  enrolled_at INTEGER NOT NULL,
+  label       TEXT
+);
 ```
 
-- [ ] **Step 3: Write `hub/wrangler.toml`**
+- [ ] **Step 3: `hub/wrangler.toml`**
 
 ```toml
 name = "swatter-swarm-hub"
@@ -91,176 +98,180 @@ main = "src/index.js"
 compatibility_date = "2024-11-01"
 
 [vars]
-SWARM_TTL = "604800"        # 7 days, hub-authoritative
-FEED_MAX = "50000"          # max rows a single /feed page returns
+SWARM_TTL = "604800"
+MAX_ENTRIES = "1000"
+FEED_MAX = "50000"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "swatter-swarm"
-database_id = "REPLACE_AFTER_wrangler_d1_create"   # set in Task 9
+database_id = "REPLACE_AFTER_d1_create"
+migrations_dir = "migrations"
+
+[[ratelimits]]
+name = "CONTRIBUTE_LIMITER"
+namespace_id = "1001"
+simple = { limit = 120, period = 60 }
 
 [triggers]
-crons = ["17 4 * * *"]      # daily prune, 04:17 UTC
+crons = ["17 4 * * *"]
 
-# Secrets (NOT here): SWARM_WRITE_TOKEN, SWARM_READ_TOKEN via `wrangler secret put`
+# Secrets (NOT here): SWARM_WRITE_TOKEN, SWARM_READ_TOKEN, SWARM_ENROLL_TOKEN
 ```
 
-- [ ] **Step 4: Write `hub/vitest.config.js`** (runs tests in the Workers runtime with an ephemeral D1 seeded from `schema.sql`)
+- [ ] **Step 4: `hub/vitest.config.js`** (current API: `cloudflareTest()` plugin)
 
 ```js
-import { defineWorkersConfig } from "@cloudflare/vitest-pool-workers/config";
-import { readFileSync } from "node:fs";
+import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { defineConfig } from "vitest/config";
 
-const schema = readFileSync(new URL("./schema.sql", import.meta.url), "utf8");
-
-export default defineWorkersConfig({
-  test: {
-    poolOptions: {
-      workers: {
-        wrangler: { configPath: "./wrangler.toml" },
-        miniflare: {
-          // apply schema to the test D1 before each test file
-          d1Databases: ["DB"],
-          bindings: { SWARM_WRITE_TOKEN: "test-write", SWARM_READ_TOKEN: "test-read" },
-        },
-      },
-    },
-    setupFiles: ["./test/setup.js"],
-  },
-  define: { __SCHEMA__: JSON.stringify(schema) },
+export default defineConfig({
+  plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.toml" } })],
+  test: { setupFiles: ["./test/apply-migrations.js"] },
 });
 ```
 
-- [ ] **Step 5: Write `hub/test/setup.js`** (seed schema into the ephemeral D1 before each test)
+- [ ] **Step 5: `hub/test/apply-migrations.js`** (seed the ephemeral D1 from migrations before each test — the documented D1 recipe)
 
 ```js
-import { env } from "cloudflare:test";
+import { env, applyD1Migrations } from "cloudflare:test";
+import { readD1Migrations } from "@cloudflare/vitest-pool-workers/config";
 import { beforeEach } from "vitest";
+
+const migrations = await readD1Migrations("./migrations");
 
 beforeEach(async () => {
   await env.DB.exec("DROP TABLE IF EXISTS offenders");
   await env.DB.exec("DROP TABLE IF EXISTS sightings");
-  for (const stmt of __SCHEMA__.split(";").map(s => s.trim()).filter(Boolean)) {
-    await env.DB.exec(stmt.replace(/\s+/g, " "));
-  }
+  await env.DB.exec("DROP TABLE IF EXISTS hosts");
+  // reset the applied-migrations bookkeeping table too, if present
+  await env.DB.exec("DROP TABLE IF EXISTS d1_migrations").catch(() => {});
+  await applyD1Migrations(env.DB, migrations);
 });
 ```
 
-- [ ] **Step 6: Write the failing health test `hub/test/health.test.js`**
+> If `applyD1Migrations` / `readD1Migrations` are not exported by the installed
+> version, this is the FIRST thing to fix — run Step 8 immediately after writing
+> this file to confirm the harness loads before proceeding. The schema also lives
+> in `migrations/`, so a fallback is to `env.DB.exec()` each `CREATE` statement
+> from the migration file split on `;`.
+
+- [ ] **Step 6: `hub/src/index.js`** (health only for now)
+
+```js
+function json(obj, status = 200, headers = {}) {
+  return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json", ...headers } });
+}
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/health") return json({ ok: true });
+    return new Response("not found", { status: 404 });
+  },
+  async scheduled(event, env, ctx) { /* prune wired in Task 9 */ },
+};
+```
+
+- [ ] **Step 7: `hub/test/health.test.js`** (health + a D1 smoke query proving the harness)
 
 ```js
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import worker from "../src/index.js";
 
-describe("health", () => {
-  it("GET /health returns 200 ok", async () => {
-    const req = new Request("https://hub/health");
+describe("harness", () => {
+  it("GET /health returns ok", async () => {
     const ctx = createExecutionContext();
-    const res = await worker.fetch(req, env, ctx);
+    const res = await worker.fetch(new Request("https://hub/health"), env, ctx);
     await waitOnExecutionContext(ctx);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
   });
+
+  it("D1 schema is applied (tables queryable)", async () => {
+    // Fails loudly if migrations didn't apply — guards against silent-empty-DB.
+    await env.DB.prepare("INSERT INTO hosts (host, enrolled_at) VALUES ('h', 1)").run();
+    const row = await env.DB.prepare("SELECT host FROM hosts WHERE host='h'").first();
+    expect(row.host).toBe("h");
+  });
 });
 ```
 
-- [ ] **Step 7: Run the test — verify it fails**
+- [ ] **Step 8: Install + run — verify health passes and the D1 smoke test proves the harness**
 
 Run: `cd hub && npm install && npm test`
-Expected: FAIL — `../src/index.js` does not exist / no default export.
+Expected: both tests PASS. If the config/migrations API errors, fix the harness (Step 4/5) NOW before any other task.
 
-- [ ] **Step 8: Write minimal `hub/src/index.js`**
-
-```js
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/health") {
-      return Response.json({ ok: true });
-    }
-    return new Response("not found", { status: 404 });
-  },
-  async scheduled(event, env, ctx) {
-    // prune wired in Task 8
-  },
-};
-```
-
-- [ ] **Step 9: Run the test — verify it passes**
-
-Run: `cd hub && npm test`
-Expected: PASS.
-
-- [ ] **Step 10: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add hub/
-git commit -m "feat(swarm-hub): scaffold Worker + D1 test harness and /health"
+git commit -m "feat(swarm-hub): scaffold Worker + D1 (cloudflareTest/Vitest4.1) + /health"
 ```
 
 ---
 
-### Task 2: Server-side IP validation + unsafe-target rejection
+### Task 2: Validation — IP or CIDR, reject unsafe (pure module)
 
 **Files:**
 - Create: `hub/src/validate.js`
 - Test: `hub/test/validate.test.js`
 
 **Interfaces:**
-- Produces: `isValidIp(s): boolean` (IPv4 octets 0–255; IPv6 structural incl. `::` and embedded-v4; no prefix — the hub stores single IPs, not CIDRs, so a `/n` is rejected); `isUnsafeTarget(s): boolean` (`0.0.0.0`, `::`, `0:0:0:0:0:0:0:0`). Mirrors Swatter's `swatter_is_valid_ip_or_cidr` intent but IP-only.
+- Produces: `isValidIpOrCidr(s): boolean` (valid IPv4/IPv6, optional `/len` bounded 0–32 v4 / 0–128 v6, incl. `::ffff:` embedded-v4; rejects garbage); `isUnsafeTarget(s): boolean` (`/0`, `0.0.0.0`, `::`, `0:0:0:0:0:0:0:0`). Mirrors the bash validator + unsafe-target rules so hub and host agree.
 
-- [ ] **Step 1: Write the failing test `hub/test/validate.test.js`**
+- [ ] **Step 1: `hub/test/validate.test.js`** (parity cases with the bash validator)
 
 ```js
 import { describe, it, expect } from "vitest";
-import { isValidIp, isUnsafeTarget } from "../src/validate.js";
+import { isValidIpOrCidr, isUnsafeTarget } from "../src/validate.js";
 
-describe("isValidIp", () => {
-  it.each(["1.2.3.4", "203.0.113.9", "::1", "2001:db8::1", "::ffff:192.0.2.1"])(
-    "accepts %s", (ip) => expect(isValidIp(ip)).toBe(true));
+describe("isValidIpOrCidr", () => {
+  it.each(["1.2.3.4", "203.0.113.9", "198.51.100.0/24", "::1", "2001:db8::1",
+           "2001:db8::/48", "::ffff:192.0.2.1", "2400:cb00::/32"])(
+    "accepts %s", (s) => expect(isValidIpOrCidr(s)).toBe(true));
   it.each(["999.999.999.999", "256.0.0.1", "1.2.3", "deadbeef", "::::",
-           "1.2.3.4/24", "", "1.2.3.4 ", "evil\"x"])(
-    "rejects %s", (ip) => expect(isValidIp(ip)).toBe(false));
+           "1.2.3.4/33", "2001:db8::/129", "", "1.2.3.4 ", "evil\"x", "1.2.3.4/1/2"])(
+    "rejects %s", (s) => expect(isValidIpOrCidr(s)).toBe(false));
 });
 
 describe("isUnsafeTarget", () => {
-  it.each(["0.0.0.0", "::", "0:0:0:0:0:0:0:0"])(
-    "flags %s unsafe", (ip) => expect(isUnsafeTarget(ip)).toBe(true));
-  it.each(["1.2.3.4", "2001:db8::1"])(
-    "allows %s", (ip) => expect(isUnsafeTarget(ip)).toBe(false));
+  it.each(["0.0.0.0", "::", "0:0:0:0:0:0:0:0", "0.0.0.0/0", "1.2.3.4/0", "::/0"])(
+    "flags %s", (s) => expect(isUnsafeTarget(s)).toBe(true));
+  it.each(["1.2.3.4", "2001:db8::1", "198.51.100.0/24"])(
+    "allows %s", (s) => expect(isUnsafeTarget(s)).toBe(false));
 });
 ```
 
 - [ ] **Step 2: Run — verify it fails**
 
 Run: `cd hub && npm test -- validate`
-Expected: FAIL — `../src/validate.js` missing.
+Expected: FAIL — module missing.
 
-- [ ] **Step 3: Write `hub/src/validate.js`**
+- [ ] **Step 3: `hub/src/validate.js`**
 
 ```js
-// IPv4: four octets 0-255, no leading zeros, no prefix.
 const V4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 
-function isValidV6(a) {
+function validV6(a) {
   a = a.toLowerCase();
   let v4tail = 0;
   if (a.includes(".")) {
+    if (!a.includes(":")) return false;
     const tail = a.slice(a.lastIndexOf(":") + 1);
-    if (!a.includes(":") || !V4.test(tail)) return false;
+    if (!V4.test(tail)) return false;
     a = a.slice(0, a.lastIndexOf(":")) + ":0";
     v4tail = 2;
   }
   if (!/^[0-9a-f:]+$/.test(a)) return false;
-  let L, R;
+  let L, R = "";
   if (a.includes("::")) {
     if (a.includes(":::") || a.slice(a.indexOf("::") + 2).includes("::")) return false;
     L = a.slice(0, a.indexOf("::"));
     R = a.slice(a.indexOf("::") + 2);
   } else {
     if (a.startsWith(":") || a.endsWith(":")) return false;
-    L = a; R = "";
+    L = a;
   }
   const groups = [...L.split(":").filter(Boolean), ...R.split(":").filter(Boolean)];
   for (const g of groups) if (!/^[0-9a-f]{1,4}$/.test(g)) return false;
@@ -268,13 +279,29 @@ function isValidV6(a) {
   return a.includes("::") ? n <= 7 : n === 8;
 }
 
-export function isValidIp(s) {
-  if (typeof s !== "string" || s.length === 0 || s.includes("/")) return false;
-  return s.includes(":") ? isValidV6(s) : V4.test(s);
+export function isValidIpOrCidr(s) {
+  if (typeof s !== "string" || s.length === 0) return false;
+  let addr = s, plen = null;
+  const slash = s.indexOf("/");
+  if (slash !== -1) {
+    addr = s.slice(0, slash);
+    plen = s.slice(slash + 1);
+    if (addr.length === 0 || plen.includes("/") || !/^\d+$/.test(plen)) return false;
+  }
+  if (addr.includes(":")) {
+    if (!validV6(addr)) return false;
+    return plen === null || (+plen >= 0 && +plen <= 128 && /^\d{1,3}$/.test(plen));
+  }
+  if (!V4.test(addr)) return false;
+  return plen === null || (+plen >= 0 && +plen <= 32 && /^\d{1,2}$/.test(plen));
 }
 
 export function isUnsafeTarget(s) {
-  return s === "0.0.0.0" || s === "::" || s === "0:0:0:0:0:0:0:0";
+  if (typeof s !== "string") return true;
+  const slash = s.indexOf("/");
+  if (slash !== -1 && s.slice(slash + 1) === "0") return true;   // /0
+  const addr = slash === -1 ? s : s.slice(0, slash);
+  return addr === "0.0.0.0" || addr === "::" || addr === "0:0:0:0:0:0:0:0";
 }
 ```
 
@@ -287,49 +314,44 @@ Expected: PASS.
 
 ```bash
 git add hub/src/validate.js hub/test/validate.test.js
-git commit -m "feat(swarm-hub): server-side IP validation + unsafe-target rejection"
+git commit -m "feat(swarm-hub): IP-or-CIDR validation + unsafe-target (bash parity)"
 ```
 
 ---
 
-### Task 3: Auth — separate write/read token checks
+### Task 3: Auth — three-token bearer check (pure module)
 
 **Files:**
 - Create: `hub/src/auth.js`
 - Test: `hub/test/auth.test.js`
 
 **Interfaces:**
-- Produces: `checkAuth(request, expectedToken): boolean` — constant-time-ish compare of the `Authorization: Bearer <token>` header against `expectedToken`; false on missing/malformed/mismatch.
+- Produces: `checkAuth(request, expectedToken): boolean` — length-safe XOR compare of `Authorization: Bearer <token>`; false on missing/malformed/empty-expected.
 
-- [ ] **Step 1: Write the failing test `hub/test/auth.test.js`**
+- [ ] **Step 1: `hub/test/auth.test.js`**
 
 ```js
 import { describe, it, expect } from "vitest";
 import { checkAuth } from "../src/auth.js";
-
-const reqWith = (h) => new Request("https://hub/x", { headers: h ? { authorization: h } : {} });
+const req = (h) => new Request("https://hub/x", { headers: h ? { authorization: h } : {} });
 
 describe("checkAuth", () => {
-  it("accepts the exact bearer", () => expect(checkAuth(reqWith("Bearer sekret"), "sekret")).toBe(true));
-  it("rejects a wrong token", () => expect(checkAuth(reqWith("Bearer nope"), "sekret")).toBe(false));
-  it("rejects a missing header", () => expect(checkAuth(reqWith(null), "sekret")).toBe(false));
-  it("rejects a non-bearer scheme", () => expect(checkAuth(reqWith("Basic sekret"), "sekret")).toBe(false));
-  it("rejects when expected is empty", () => expect(checkAuth(reqWith("Bearer "), "")).toBe(false));
+  it("accepts exact", () => expect(checkAuth(req("Bearer sekret"), "sekret")).toBe(true));
+  it("rejects wrong", () => expect(checkAuth(req("Bearer nope"), "sekret")).toBe(false));
+  it("rejects missing", () => expect(checkAuth(req(null), "sekret")).toBe(false));
+  it("rejects non-bearer", () => expect(checkAuth(req("Basic sekret"), "sekret")).toBe(false));
+  it("rejects empty expected", () => expect(checkAuth(req("Bearer x"), "")).toBe(false));
 });
 ```
 
-- [ ] **Step 2: Run — verify it fails**
+- [ ] **Step 2: Run — verify it fails.** `cd hub && npm test -- auth` → FAIL (missing).
 
-Run: `cd hub && npm test -- auth`
-Expected: FAIL — `../src/auth.js` missing.
-
-- [ ] **Step 3: Write `hub/src/auth.js`**
+- [ ] **Step 3: `hub/src/auth.js`**
 
 ```js
 export function checkAuth(request, expectedToken) {
   if (!expectedToken) return false;
-  const h = request.headers.get("authorization") || "";
-  const m = h.match(/^Bearer (.+)$/);
+  const m = (request.headers.get("authorization") || "").match(/^Bearer (.+)$/);
   if (!m) return false;
   const got = m[1];
   if (got.length !== expectedToken.length) return false;
@@ -339,233 +361,276 @@ export function checkAuth(request, expectedToken) {
 }
 ```
 
-- [ ] **Step 4: Run — verify it passes**
-
-Run: `cd hub && npm test -- auth`
-Expected: PASS.
+- [ ] **Step 4: Run — verify it passes.** `cd hub && npm test -- auth` → PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add hub/src/auth.js hub/test/auth.test.js
-git commit -m "feat(swarm-hub): dual write/read bearer-token auth"
+git commit -m "feat(swarm-hub): three-token bearer auth check"
 ```
 
 ---
 
-### Task 4: DB — atomic contribute (sighting upsert + host_count recompute + offender upsert)
+### Task 4: DB — register a host (registry)
 
 **Files:**
 - Create: `hub/src/db.js`
+- Test: `hub/test/db-register.test.js`
+
+**Interfaces:**
+- Produces: `registerHost(env, {host, label, now}): Promise<void>` — upsert into `hosts` (idempotent; re-enroll updates `label`, keeps `enrolled_at`).
+
+- [ ] **Step 1: `hub/test/db-register.test.js`**
+
+```js
+import { env } from "cloudflare:test";
+import { describe, it, expect } from "vitest";
+import { registerHost } from "../src/db.js";
+
+it("enrolls a host idempotently", async () => {
+  await registerHost(env, { host: "boxA", label: "cds1", now: 100 });
+  await registerHost(env, { host: "boxA", label: "cds1-renamed", now: 200 });
+  const row = await env.DB.prepare("SELECT * FROM hosts WHERE host='boxA'").first();
+  expect(row.enrolled_at).toBe(100);          // preserved
+  expect(row.label).toBe("cds1-renamed");     // updated
+  const cnt = await env.DB.prepare("SELECT COUNT(*) c FROM hosts").first();
+  expect(cnt.c).toBe(1);
+});
+```
+
+- [ ] **Step 2: Run — verify it fails.** `cd hub && npm test -- db-register` → FAIL.
+
+- [ ] **Step 3: `hub/src/db.js` (`registerHost`)**
+
+```js
+export async function registerHost(env, { host, label, now }) {
+  await env.DB.prepare(
+    `INSERT INTO hosts (host, enrolled_at, label) VALUES (?1, ?2, ?3)
+     ON CONFLICT(host) DO UPDATE SET label=?3`
+  ).bind(host, now, label ?? null).run();
+}
+```
+
+- [ ] **Step 4: Run — verify it passes.** `cd hub && npm test -- db-register` → PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add hub/src/db.js hub/test/db-register.test.js
+git commit -m "feat(swarm-hub): host registry (idempotent enroll)"
+```
+
+---
+
+### Task 5: DB — contribute (sighting + offender, NO cached count)
+
+**Files:**
+- Modify: `hub/src/db.js`
 - Test: `hub/test/db-contribute.test.js`
 
 **Interfaces:**
-- Consumes: `env.DB` (D1), `env.SWARM_TTL`.
-- Produces: `contributeOne(env, {ip, host, category, now}): Promise<{host_count}>` — one atomic `env.DB.batch()`: upsert `sightings`, recompute `host_count = COUNT(DISTINCT host) WHERE ip AND last_seen > now-TTL`, upsert `offenders` with that count + `expires = now + TTL`. Returns the new `host_count`.
+- Produces: `contributeOne(env, {ip, host, category, now}): Promise<void>` — upsert `sightings(ip,host,last_seen=now)` and upsert `offenders(ip, first_seen, last_seen, last_host, category, expires=now+TTL)`. NO host_count written. Two sequentially-awaited statements (each commits; no reliance on undocumented intra-batch visibility).
 
-- [ ] **Step 1: Write the failing test `hub/test/db-contribute.test.js`**
+- [ ] **Step 1: `hub/test/db-contribute.test.js`**
 
 ```js
 import { env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import { contributeOne } from "../src/db.js";
-
 const now = 1_800_000_000;
 
 describe("contributeOne", () => {
-  it("first report sets host_count=1 and expiry", async () => {
-    const r = await contributeOne(env, { ip: "1.2.3.4", host: "hostA", category: "scan", now });
-    expect(r.host_count).toBe(1);
-    const row = await env.DB.prepare("SELECT * FROM offenders WHERE ip=?").bind("1.2.3.4").first();
-    expect(row.host_count).toBe(1);
-    expect(row.expires).toBe(now + Number(env.SWARM_TTL));
-    expect(row.last_host).toBe("hostA");
+  it("records a sighting and an offender with expiry", async () => {
+    await contributeOne(env, { ip: "1.2.3.4", host: "boxA", category: "scan", now });
+    const s = await env.DB.prepare("SELECT * FROM sightings WHERE ip='1.2.3.4'").first();
+    expect(s.host).toBe("boxA");
+    const o = await env.DB.prepare("SELECT * FROM offenders WHERE ip='1.2.3.4'").first();
+    expect(o.expires).toBe(now + Number(env.SWARM_TTL));
+    expect(o.last_host).toBe("boxA");
   });
 
-  it("same ip from a SECOND host raises host_count to 2", async () => {
-    await contributeOne(env, { ip: "1.2.3.4", host: "hostA", category: "scan", now });
-    const r = await contributeOne(env, { ip: "1.2.3.4", host: "hostB", category: "scan", now: now + 10 });
-    expect(r.host_count).toBe(2);
+  it("same (ip,host) stays one sighting row and bumps last_seen", async () => {
+    await contributeOne(env, { ip: "1.2.3.4", host: "boxA", category: "scan", now });
+    await contributeOne(env, { ip: "1.2.3.4", host: "boxA", category: "scan", now: now + 10 });
+    const c = await env.DB.prepare("SELECT COUNT(*) c FROM sightings WHERE ip='1.2.3.4'").first();
+    expect(c.c).toBe(1);
+    const s = await env.DB.prepare("SELECT last_seen FROM sightings WHERE ip='1.2.3.4'").first();
+    expect(s.last_seen).toBe(now + 10);
   });
 
-  it("same ip from the SAME host stays host_count=1 and bumps last_seen", async () => {
-    await contributeOne(env, { ip: "1.2.3.4", host: "hostA", category: "scan", now });
-    const r = await contributeOne(env, { ip: "1.2.3.4", host: "hostA", category: "scan", now: now + 10 });
-    expect(r.host_count).toBe(1);
-    const row = await env.DB.prepare("SELECT last_seen, expires FROM offenders WHERE ip=?").bind("1.2.3.4").first();
-    expect(row.last_seen).toBe(now + 10);
-    expect(row.expires).toBe(now + 10 + Number(env.SWARM_TTL));
-  });
-
-  it("a sighting older than TTL does not count toward host_count", async () => {
-    const ttl = Number(env.SWARM_TTL);
-    await contributeOne(env, { ip: "9.9.9.9", host: "stale", category: "scan", now: now - ttl - 100 });
-    const r = await contributeOne(env, { ip: "9.9.9.9", host: "fresh", category: "scan", now });
-    expect(r.host_count).toBe(1); // only 'fresh' is within TTL
+  it("accepts a CIDR as the ip key", async () => {
+    await contributeOne(env, { ip: "198.51.100.0/24", host: "boxA", category: "import", now });
+    const o = await env.DB.prepare("SELECT ip FROM offenders WHERE ip='198.51.100.0/24'").first();
+    expect(o.ip).toBe("198.51.100.0/24");
   });
 });
 ```
 
-- [ ] **Step 2: Run — verify it fails**
+- [ ] **Step 2: Run — verify it fails.** `cd hub && npm test -- db-contribute` → FAIL.
 
-Run: `cd hub && npm test -- db-contribute`
-Expected: FAIL — `contributeOne` not exported.
-
-- [ ] **Step 3: Write `hub/src/db.js` (`contributeOne`)**
+- [ ] **Step 3: Add `contributeOne` to `hub/src/db.js`**
 
 ```js
 export async function contributeOne(env, { ip, host, category, now }) {
   const ttl = Number(env.SWARM_TTL);
-  const cutoff = now - ttl;
-
-  // Atomic: D1 batch() runs as one transaction; writes are serialized per-DB,
-  // so a concurrent contribute for the same ip commits fully before the next,
-  // and the COUNT below always sees a consistent sightings table.
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO sightings (ip, host, last_seen) VALUES (?1, ?2, ?3)
-       ON CONFLICT(ip, host) DO UPDATE SET last_seen=?3`
-    ).bind(ip, host, now),
-    env.DB.prepare(
-      `INSERT INTO offenders (ip, first_seen, last_seen, host_count, last_host, category, expires)
-       VALUES (?1, ?2, ?2,
-               (SELECT COUNT(DISTINCT host) FROM sightings WHERE ip=?1 AND last_seen > ?3),
-               ?4, ?5, ?2 + ?6)
-       ON CONFLICT(ip) DO UPDATE SET
-         last_seen=?2,
-         host_count=(SELECT COUNT(DISTINCT host) FROM sightings WHERE ip=?1 AND last_seen > ?3),
-         last_host=?4,
-         category=?5,
-         expires=?2 + ?6`
-    ).bind(ip, now, cutoff, host, category ?? null, ttl),
-  ]);
-
-  const row = await env.DB.prepare("SELECT host_count FROM offenders WHERE ip=?").bind(ip).first();
-  return { host_count: row.host_count };
+  // Sequential awaited statements: each commits before the next. host_count is
+  // NOT stored here (derived at read time), so there is no cross-request count
+  // race to protect against.
+  await env.DB.prepare(
+    `INSERT INTO sightings (ip, host, last_seen) VALUES (?1, ?2, ?3)
+     ON CONFLICT(ip, host) DO UPDATE SET last_seen=?3`
+  ).bind(ip, host, now).run();
+  await env.DB.prepare(
+    `INSERT INTO offenders (ip, first_seen, last_seen, last_host, category, expires)
+     VALUES (?1, ?2, ?2, ?3, ?4, ?2 + ?5)
+     ON CONFLICT(ip) DO UPDATE SET last_seen=?2, last_host=?3, category=?4, expires=?2 + ?5`
+  ).bind(ip, now, host, category ?? null, ttl).run();
 }
 ```
 
-- [ ] **Step 4: Run — verify it passes**
-
-Run: `cd hub && npm test -- db-contribute`
-Expected: PASS (all 4 cases).
+- [ ] **Step 4: Run — verify it passes.** `cd hub && npm test -- db-contribute` → PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add hub/src/db.js hub/test/db-contribute.test.js
-git commit -m "feat(swarm-hub): atomic contribute upsert with DISTINCT-host host_count"
+git commit -m "feat(swarm-hub): contribute (sighting + offender, no cached count)"
 ```
 
 ---
 
-### Task 5: DB — feed query (bare + json, non-expired, size cap)
+### Task 6: DB — feed with read-time host_count (registry-gated) + concurrency proof
 
 **Files:**
 - Modify: `hub/src/db.js`
 - Test: `hub/test/db-feed.test.js`
 
 **Interfaces:**
-- Consumes: `env.DB`, `env.FEED_MAX`.
-- Produces: `feedRows(env, {now, limit}): Promise<Array<{ip, host_count, category, expires}>>` — rows with `expires > now`, ordered by `ip`, capped at `min(limit, FEED_MAX)`. (Serialization to bare/JSON happens in the handler, Task 7.)
+- Produces: `feedRows(env, {now, limit}): Promise<{rows, truncated}>` — non-expired offenders ordered by ip, capped at `min(limit, FEED_MAX)`; each row `{ip, host_count, category, expires}` where `host_count = COUNT(DISTINCT s.host) FROM sightings s JOIN hosts h ON s.host=h.host WHERE s.ip=offenders.ip AND s.last_seen > now-TTL`. `truncated=true` if the cap was hit.
 
-- [ ] **Step 1: Write the failing test `hub/test/db-feed.test.js`**
+- [ ] **Step 1: `hub/test/db-feed.test.js`** (includes the registry gate + a concurrency case)
 
 ```js
 import { env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
-import { contributeOne, feedRows } from "../src/db.js";
-
+import { contributeOne, feedRows, registerHost } from "../src/db.js";
 const now = 1_800_000_000;
 
-describe("feedRows", () => {
-  it("returns only non-expired rows, ordered by ip", async () => {
-    await contributeOne(env, { ip: "2.2.2.2", host: "h", category: "a", now });
-    await contributeOne(env, { ip: "1.1.1.1", host: "h", category: "b", now });
-    // force one expired
-    await env.DB.prepare("UPDATE offenders SET expires=? WHERE ip=?").bind(now - 1, "2.2.2.2").run();
-    const rows = await feedRows(env, { now, limit: 1000 });
-    expect(rows.map(r => r.ip)).toEqual(["1.1.1.1"]);
-    expect(rows[0].host_count).toBe(1);
+describe("feedRows / host_count", () => {
+  it("counts only ENROLLED distinct hosts", async () => {
+    await registerHost(env, { host: "boxA", now });
+    await registerHost(env, { host: "boxB", now });
+    // boxA + boxB enrolled; 'forged' is NOT enrolled
+    await contributeOne(env, { ip: "1.2.3.4", host: "boxA", category: "scan", now });
+    await contributeOne(env, { ip: "1.2.3.4", host: "boxB", category: "scan", now });
+    await contributeOne(env, { ip: "1.2.3.4", host: "forged", category: "scan", now });
+    const { rows } = await feedRows(env, { now, limit: 100 });
+    const r = rows.find(x => x.ip === "1.2.3.4");
+    expect(r.host_count).toBe(2);   // forged does not count
   });
 
-  it("respects the limit cap", async () => {
-    for (const ip of ["10.0.0.1", "10.0.0.2", "10.0.0.3"])
-      await contributeOne(env, { ip, host: "h", category: "a", now });
-    const rows = await feedRows(env, { now, limit: 2 });
-    expect(rows.length).toBe(2);
+  it("a sighting older than TTL does not count", async () => {
+    await registerHost(env, { host: "boxA", now });
+    await registerHost(env, { host: "boxB", now });
+    await contributeOne(env, { ip: "9.9.9.9", host: "boxA", category: "x", now: now - Number(env.SWARM_TTL) - 5 });
+    await contributeOne(env, { ip: "9.9.9.9", host: "boxB", category: "x", now });
+    const { rows } = await feedRows(env, { now, limit: 100 });
+    // offender.last_seen was bumped by boxB (fresh); host_count counts only fresh boxB
+    expect(rows.find(x => x.ip === "9.9.9.9").host_count).toBe(1);
+  });
+
+  it("concurrent contributes for one ip yield the correct count (no write race)", async () => {
+    await registerHost(env, { host: "boxA", now });
+    await registerHost(env, { host: "boxB", now });
+    await Promise.all([
+      contributeOne(env, { ip: "7.7.7.7", host: "boxA", category: "scan", now }),
+      contributeOne(env, { ip: "7.7.7.7", host: "boxB", category: "scan", now }),
+    ]);
+    const { rows } = await feedRows(env, { now, limit: 100 });
+    expect(rows.find(x => x.ip === "7.7.7.7").host_count).toBe(2);   // derived => race-proof
+  });
+
+  it("excludes expired offenders, orders by ip, flags truncation at the cap", async () => {
+    await registerHost(env, { host: "boxA", now });
+    for (const ip of ["10.0.0.3", "10.0.0.1", "10.0.0.2"])
+      await contributeOne(env, { ip, host: "boxA", category: "a", now });
+    await env.DB.prepare("UPDATE offenders SET expires=? WHERE ip='10.0.0.2'").bind(now - 1).run();
+    const { rows, truncated } = await feedRows(env, { now, limit: 1 });
+    expect(rows.length).toBe(1);
+    expect(rows[0].ip).toBe("10.0.0.1");   // lowest non-expired, ordered
+    expect(truncated).toBe(true);
   });
 });
 ```
 
-- [ ] **Step 2: Run — verify it fails**
-
-Run: `cd hub && npm test -- db-feed`
-Expected: FAIL — `feedRows` not exported.
+- [ ] **Step 2: Run — verify it fails.** `cd hub && npm test -- db-feed` → FAIL.
 
 - [ ] **Step 3: Add `feedRows` to `hub/src/db.js`**
 
 ```js
 export async function feedRows(env, { now, limit }) {
+  const ttl = Number(env.SWARM_TTL);
+  const cutoff = now - ttl;
   const cap = Math.min(Number(limit) || Number(env.FEED_MAX), Number(env.FEED_MAX));
   const { results } = await env.DB.prepare(
-    `SELECT ip, host_count, category, expires FROM offenders
-     WHERE expires > ?1 ORDER BY ip LIMIT ?2`
-  ).bind(now, cap).all();
-  return results ?? [];
+    `SELECT o.ip AS ip,
+            (SELECT COUNT(DISTINCT s.host) FROM sightings s
+              JOIN hosts h ON s.host = h.host
+             WHERE s.ip = o.ip AND s.last_seen > ?2) AS host_count,
+            o.category AS category, o.expires AS expires
+       FROM offenders o
+      WHERE o.expires > ?1
+      ORDER BY o.ip
+      LIMIT ?3`
+  ).bind(now, cutoff, cap + 1).all();
+  const rows = (results ?? []).slice(0, cap);
+  return { rows, truncated: (results ?? []).length > cap };
 }
 ```
 
-- [ ] **Step 4: Run — verify it passes**
-
-Run: `cd hub && npm test -- db-feed`
-Expected: PASS.
+- [ ] **Step 4: Run — verify it passes.** `cd hub && npm test -- db-feed` → PASS (incl. the concurrency case).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add hub/src/db.js hub/test/db-feed.test.js
-git commit -m "feat(swarm-hub): feed query (non-expired, ordered, size-capped)"
+git commit -m "feat(swarm-hub): read-time registry-gated host_count + feed (race-proof)"
 ```
 
 ---
 
-### Task 6: DB — prune expired offenders AND sightings
+### Task 7: DB — prune (offenders + sightings), returns counts
 
 **Files:**
 - Modify: `hub/src/db.js`
 - Test: `hub/test/db-prune.test.js`
 
 **Interfaces:**
-- Produces: `prune(env, {now}): Promise<{offenders, sightings}>` — deletes `offenders WHERE expires <= now` and `sightings WHERE last_seen <= now - TTL`; returns deleted counts.
+- Produces: `prune(env, {now}): Promise<{offenders, sightings}>` — delete `offenders WHERE expires <= now` and `sightings WHERE last_seen <= now-TTL`; return deleted counts (for surfacing).
 
-- [ ] **Step 1: Write the failing test `hub/test/db-prune.test.js`**
+- [ ] **Step 1: `hub/test/db-prune.test.js`**
 
 ```js
 import { env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
-import { contributeOne, prune } from "../src/db.js";
-
+import { contributeOne, prune, registerHost } from "../src/db.js";
 const now = 1_800_000_000;
 
-describe("prune", () => {
-  it("deletes expired offenders and stale sightings, keeps fresh", async () => {
-    const ttl = Number(env.SWARM_TTL);
-    await contributeOne(env, { ip: "5.5.5.5", host: "fresh", category: "a", now });
-    await contributeOne(env, { ip: "6.6.6.6", host: "old", category: "a", now: now - ttl - 100 });
-    const del = await prune(env, { now });
-    expect(del.offenders).toBe(1);   // 6.6.6.6 expired
-    expect(del.sightings).toBe(1);   // 'old' sighting stale
-    const left = await env.DB.prepare("SELECT ip FROM offenders").all();
-    expect(left.results.map(r => r.ip)).toEqual(["5.5.5.5"]);
-  });
+it("prunes expired offenders and stale sightings, keeps fresh", async () => {
+  const ttl = Number(env.SWARM_TTL);
+  await registerHost(env, { host: "boxA", now });
+  await contributeOne(env, { ip: "5.5.5.5", host: "boxA", category: "a", now });
+  await contributeOne(env, { ip: "6.6.6.6", host: "boxA", category: "a", now: now - ttl - 100 });
+  const del = await prune(env, { now });
+  expect(del.offenders).toBe(1);
+  expect(del.sightings).toBe(1);
+  const left = await env.DB.prepare("SELECT ip FROM offenders").all();
+  expect(left.results.map(r => r.ip)).toEqual(["5.5.5.5"]);
 });
 ```
 
-- [ ] **Step 2: Run — verify it fails**
-
-Run: `cd hub && npm test -- db-prune`
-Expected: FAIL — `prune` not exported.
+- [ ] **Step 2: Run — verify it fails.** `cd hub && npm test -- db-prune` → FAIL.
 
 - [ ] **Step 3: Add `prune` to `hub/src/db.js`**
 
@@ -578,10 +643,7 @@ export async function prune(env, { now }) {
 }
 ```
 
-- [ ] **Step 4: Run — verify it passes**
-
-Run: `cd hub && npm test -- db-prune`
-Expected: PASS.
+- [ ] **Step 4: Run — verify it passes.** `cd hub && npm test -- db-prune` → PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -592,308 +654,249 @@ git commit -m "feat(swarm-hub): prune expired offenders + stale sightings"
 
 ---
 
-### Task 7: Router — POST /contribute and GET /feed wired with auth + validation
+### Task 8: Router — /contribute, /register, /feed (auth, validation, caps, bare/json/empty/truncation)
 
 **Files:**
 - Modify: `hub/src/index.js`
 - Test: `hub/test/routes.test.js`
 
 **Interfaces:**
-- Consumes: `contributeOne`, `feedRows` (db.js); `checkAuth` (auth.js); `isValidIp`, `isUnsafeTarget` (validate.js); `env.SWARM_WRITE_TOKEN`, `env.SWARM_READ_TOKEN`.
-- Produces the FROZEN HTTP contract:
-  - `POST /contribute` body `{host_id: string, entries: [{ip, category?, first_local_seen?}]}`; write-token; returns `200 {accepted, rejected}`.
-  - `GET /feed` read-token; default `text/plain` bare `ip\n` lines; `?format=json` → `[{ip,host_count,category,expires}]`; `?limit=N`.
-  - `now` is `Math.floor(Date.now()/1000)`.
+- Consumes: db.js (`contributeOne`, `registerHost`, `feedRows`, `prune`), auth.js (`checkAuth`), validate.js (`isValidIpOrCidr`, `isUnsafeTarget`); `env.SWARM_WRITE_TOKEN`/`SWARM_READ_TOKEN`/`SWARM_ENROLL_TOKEN`, `env.MAX_ENTRIES`, `env.CONTRIBUTE_LIMITER` (optional).
+- Produces the frozen contract (Global Constraints). Body is parsed ONCE per request. `now = Math.floor(Date.now()/1000)`.
 
-- [ ] **Step 1: Write the failing test `hub/test/routes.test.js`**
+- [ ] **Step 1: `hub/test/routes.test.js`**
 
 ```js
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import worker from "../src/index.js";
 
-const call = async (path, init) => {
+const call = async (path, init, envOverride) => {
   const ctx = createExecutionContext();
-  const res = await worker.fetch(new Request("https://hub" + path, init), env, ctx);
+  const res = await worker.fetch(new Request("https://hub" + path, init), envOverride ?? env, ctx);
   await waitOnExecutionContext(ctx);
   return res;
 };
-const W = { authorization: "Bearer test-write", "content-type": "application/json" };
-const R = { authorization: "Bearer test-read" };
+const W = { authorization: "Bearer " + env.SWARM_WRITE_TOKEN, "content-type": "application/json" };
+const R = { authorization: "Bearer " + env.SWARM_READ_TOKEN };
+const E = { authorization: "Bearer " + env.SWARM_ENROLL_TOKEN, "content-type": "application/json" };
 
 describe("routes", () => {
-  it("rejects contribute without the write token", async () => {
-    const res = await call("/contribute", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ host_id: "h", entries: [{ ip: "1.2.3.4" }] }) });
-    expect(res.status).toBe(401);
+  it("contribute rejects a read token; register rejects a write token", async () => {
+    expect((await call("/contribute", { method: "POST", headers: { authorization: "Bearer " + env.SWARM_READ_TOKEN, "content-type": "application/json" }, body: JSON.stringify({ host_id: "h", entries: [{ ip: "1.2.3.4" }] }) })).status).toBe(401);
+    expect((await call("/register", { method: "POST", headers: { authorization: "Bearer " + env.SWARM_WRITE_TOKEN, "content-type": "application/json" }, body: JSON.stringify({ host_id: "h" }) })).status).toBe(401);
   });
 
-  it("rejects a READ token on contribute", async () => {
-    const res = await call("/contribute", { method: "POST",
-      headers: { authorization: "Bearer test-read", "content-type": "application/json" },
-      body: JSON.stringify({ host_id: "h", entries: [{ ip: "1.2.3.4" }] }) });
-    expect(res.status).toBe(401);
-  });
-
-  it("accepts valid entries, rejects malformed/unsafe", async () => {
+  it("register then contribute makes the host count", async () => {
+    expect((await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA", label: "cds1" }) })).status).toBe(200);
     const res = await call("/contribute", { method: "POST", headers: W,
-      body: JSON.stringify({ host_id: "hostA", entries: [
-        { ip: "1.2.3.4", category: "scan" }, { ip: "999.999.999.999" }, { ip: "0.0.0.0/0" }, { ip: "::" }] }) });
+      body: JSON.stringify({ host_id: "boxA", entries: [
+        { ip: "1.2.3.4", category: "scan" }, { ip: "999.999.999.999" }, { ip: "0.0.0.0/0" }] }) });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ accepted: 1, rejected: 3 });
+    expect(await res.json()).toEqual({ accepted: 1, rejected: 2 });   // CIDR ok, garbage+unsafe rejected
+    const feed = await (await call("/feed?format=json", { headers: R })).json();
+    expect(feed.find(r => r.ip === "1.2.3.4").host_count).toBe(1);
   });
 
-  it("feed requires the read token", async () => {
-    const res = await call("/feed");
-    expect(res.status).toBe(401);
-  });
-
-  it("feed returns bare IPs by default and json on request", async () => {
-    await call("/contribute", { method: "POST", headers: W,
-      body: JSON.stringify({ host_id: "hostA", entries: [{ ip: "203.0.113.7", category: "scan" }] }) });
+  it("bare feed lists ip/cidr; empty feed is an empty 200", async () => {
+    await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA" }) });
+    await call("/contribute", { method: "POST", headers: W, body: JSON.stringify({ host_id: "boxA", entries: [{ ip: "203.0.113.7" }, { ip: "198.51.100.0/24" }] }) });
     const bare = await call("/feed", { headers: R });
     expect(bare.headers.get("content-type")).toMatch(/text\/plain/);
-    expect((await bare.text()).trim()).toBe("203.0.113.7");
-    const json = await call("/feed?format=json", { headers: R });
-    const rows = await json.json();
-    expect(rows[0]).toMatchObject({ ip: "203.0.113.7", host_count: 1 });
+    expect((await bare.text()).trim().split("\n").sort()).toEqual(["198.51.100.0/24", "203.0.113.7"]);
+  });
+
+  it("empty feed returns empty 200 (not 404/error)", async () => {
+    const res = await call("/feed", { headers: R });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("");
+  });
+
+  it("rejects an oversized entries batch with 413", async () => {
+    await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA" }) });
+    const many = Array.from({ length: Number(env.MAX_ENTRIES) + 1 }, (_, i) => ({ ip: "10.0." + ((i>>8)&255) + "." + (i&255) }));
+    const res = await call("/contribute", { method: "POST", headers: W, body: JSON.stringify({ host_id: "boxA", entries: many }) });
+    expect(res.status).toBe(413);
+  });
+
+  it("returns 429 when the injected limiter denies", async () => {
+    const denyEnv = { ...env, CONTRIBUTE_LIMITER: { limit: async () => ({ success: false }) } };
+    const res = await call("/contribute", { method: "POST", headers: W,
+      body: JSON.stringify({ host_id: "boxA", entries: [{ ip: "1.2.3.4" }] }) }, denyEnv);
+    expect(res.status).toBe(429);
   });
 });
 ```
 
-- [ ] **Step 2: Run — verify it fails**
+> Note: the 429 test injects a stub `CONTRIBUTE_LIMITER` by passing a custom
+> `env` to `worker.fetch` (the handler receives `env` as a parameter) — this
+> avoids the unsupported "function value in miniflare bindings" path.
 
-Run: `cd hub && npm test -- routes`
-Expected: FAIL — routes return 404.
+- [ ] **Step 2: Run — verify it fails.** `cd hub && npm test -- routes` → FAIL (routes 404).
 
-- [ ] **Step 3: Rewrite `hub/src/index.js` router**
+- [ ] **Step 3: Rewrite `hub/src/index.js`**
 
 ```js
 import { checkAuth } from "./auth.js";
-import { isValidIp, isUnsafeTarget } from "./validate.js";
-import { contributeOne, feedRows, prune } from "./db.js";
+import { isValidIpOrCidr, isUnsafeTarget } from "./validate.js";
+import { contributeOne, registerHost, feedRows, prune } from "./db.js";
 
 const nowSec = () => Math.floor(Date.now() / 1000);
+function json(obj, status = 200, headers = {}) {
+  return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json", ...headers } });
+}
+async function readJson(request) { try { return await request.json(); } catch { return null; } }
 
 async function handleContribute(request, env) {
   if (!checkAuth(request, env.SWARM_WRITE_TOKEN)) return json({ error: "unauthorized" }, 401);
-  let body;
-  try { body = await request.json(); } catch { return json({ error: "bad json" }, 400); }
+  if (env.CONTRIBUTE_LIMITER) {
+    const key = request.headers.get("cf-connecting-ip") || "unknown";
+    const { success } = await env.CONTRIBUTE_LIMITER.limit({ key });
+    if (!success) return json({ error: "rate limited" }, 429);
+  }
+  const body = await readJson(request);
   const entries = Array.isArray(body?.entries) ? body.entries : null;
   const host = typeof body?.host_id === "string" ? body.host_id : null;
   if (!entries || !host) return json({ error: "host_id + entries required" }, 400);
-
+  if (entries.length > Number(env.MAX_ENTRIES)) return json({ error: "too many entries" }, 413);
   const now = nowSec();
   let accepted = 0, rejected = 0;
   for (const e of entries) {
     const ip = e?.ip;
-    if (typeof ip !== "string" || !isValidIp(ip) || isUnsafeTarget(ip)) { rejected++; continue; }
+    if (typeof ip !== "string" || !isValidIpOrCidr(ip) || isUnsafeTarget(ip)) { rejected++; continue; }
     await contributeOne(env, { ip, host, category: e.category, now });
     accepted++;
   }
   return json({ accepted, rejected }, 200);
 }
 
+async function handleRegister(request, env) {
+  if (!checkAuth(request, env.SWARM_ENROLL_TOKEN)) return json({ error: "unauthorized" }, 401);
+  const body = await readJson(request);
+  const host = typeof body?.host_id === "string" ? body.host_id : null;
+  if (!host) return json({ error: "host_id required" }, 400);
+  await registerHost(env, { host, label: body.label, now: nowSec() });
+  return json({ enrolled: host }, 200);
+}
+
 async function handleFeed(request, env) {
   if (!checkAuth(request, env.SWARM_READ_TOKEN)) return json({ error: "unauthorized" }, 401);
   const url = new URL(request.url);
-  const limit = url.searchParams.get("limit");
-  const rows = await feedRows(env, { now: nowSec(), limit });
-  if (url.searchParams.get("format") === "json") return json(rows, 200);
+  const { rows, truncated } = await feedRows(env, { now: nowSec(), limit: url.searchParams.get("limit") });
+  const headers = truncated ? { "x-swarm-truncated": "true" } : {};
+  if (url.searchParams.get("format") === "json") return json(rows, 200, headers);
   const body = rows.map(r => r.ip).join("\n") + (rows.length ? "\n" : "");
-  return new Response(body, { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
-}
-
-function json(obj, status) {
-  return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
+  return new Response(body, { status: 200, headers: { "content-type": "text/plain; charset=utf-8", ...headers } });
 }
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/health") return json({ ok: true }, 200);
-    if (request.method === "POST" && url.pathname === "/contribute") return handleContribute(request, env);
-    if (request.method === "GET" && url.pathname === "/feed") return handleFeed(request, env);
+    const m = request.method;
+    if (m === "GET" && url.pathname === "/health") return json({ ok: true });
+    if (m === "POST" && url.pathname === "/contribute") return handleContribute(request, env);
+    if (m === "POST" && url.pathname === "/register") return handleRegister(request, env);
+    if (m === "GET" && url.pathname === "/feed") return handleFeed(request, env);
     return new Response("not found", { status: 404 });
   },
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(prune(env, { now: nowSec() }));
+    ctx.waitUntil(prune(env, { now: nowSec() }).then(
+      (d) => console.log(`swarm prune: ${d.offenders} offenders, ${d.sightings} sightings`),
+      (err) => console.error(`swarm prune FAILED: ${err?.message || err}`)   // surfaced, not swallowed
+    ));
   },
 };
 ```
 
-- [ ] **Step 4: Run — verify it passes (and re-run the whole suite)**
+- [ ] **Step 4: Run — verify it passes + full suite green**
 
 Run: `cd hub && npm test`
-Expected: PASS (all files: health, validate, auth, db-*, routes).
+Expected: PASS (health, validate, auth, db-register, db-contribute, db-feed, db-prune, routes).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add hub/src/index.js hub/test/routes.test.js
-git commit -m "feat(swarm-hub): contribute + feed routes with auth, validation, bare/json"
+git commit -m "feat(swarm-hub): routes (contribute/register/feed) with auth, caps, empty/truncation, IP-keyed rate limit + surfaced prune"
 ```
 
 ---
 
-### Task 8: Rate limiting on /contribute
-
-**Files:**
-- Modify: `hub/wrangler.toml` (add a rate-limit binding)
-- Modify: `hub/src/index.js`
-- Test: `hub/test/ratelimit.test.js`
-
-**Interfaces:**
-- Consumes: `env.CONTRIBUTE_LIMITER` (Workers Rate Limiting binding).
-- Produces: `POST /contribute` returns `429` when the limiter (keyed by `host_id`) is exceeded, bounding a leaked-write-token attacker.
-
-- [ ] **Step 1: Add the binding to `hub/wrangler.toml`**
-
-```toml
-[[unsafe.bindings]]
-name = "CONTRIBUTE_LIMITER"
-type = "ratelimit"
-namespace_id = "1001"
-simple = { limit = 60, period = 60 }   # 60 contribute calls/min per host_id
-```
-
-- [ ] **Step 2: Add the test binding to `hub/vitest.config.js` miniflare bindings**
-
-Add to the `miniflare.bindings` object a stub limiter that the test can drive:
-```js
-// in vitest.config.js miniflare block:
-//   ratelimits are not emulated by miniflare; inject a controllable stub instead:
-bindings: {
-  SWARM_WRITE_TOKEN: "test-write",
-  SWARM_READ_TOKEN: "test-read",
-  CONTRIBUTE_LIMITER: { limit: async () => ({ success: globalThis.__RL_OK ?? true }) },
-},
-```
-
-- [ ] **Step 3: Write the failing test `hub/test/ratelimit.test.js`**
-
-```js
-import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { describe, it, expect, afterEach } from "vitest";
-import worker from "../src/index.js";
-
-afterEach(() => { globalThis.__RL_OK = true; });
-
-it("returns 429 when the limiter denies", async () => {
-  globalThis.__RL_OK = false;
-  const ctx = createExecutionContext();
-  const res = await worker.fetch(new Request("https://hub/contribute", {
-    method: "POST",
-    headers: { authorization: "Bearer test-write", "content-type": "application/json" },
-    body: JSON.stringify({ host_id: "noisy", entries: [{ ip: "1.2.3.4" }] }),
-  }), env, ctx);
-  await waitOnExecutionContext(ctx);
-  expect(res.status).toBe(429);
-});
-```
-
-- [ ] **Step 4: Run — verify it fails**
-
-Run: `cd hub && npm test -- ratelimit`
-Expected: FAIL — currently returns 200.
-
-- [ ] **Step 5: Enforce the limiter in `handleContribute` (after auth, before work)**
-
-Insert into `handleContribute` in `hub/src/index.js`, immediately after the auth check:
-```js
-  const host = typeof (await request.clone().json().catch(() => ({})))?.host_id === "string"
-    ? (await request.clone().json()).host_id : "unknown";
-  if (env.CONTRIBUTE_LIMITER) {
-    const { success } = await env.CONTRIBUTE_LIMITER.limit({ key: host });
-    if (!success) return json({ error: "rate limited" }, 429);
-  }
-```
-(Keep the existing body parse below; the clone avoids consuming the stream twice. If cleaner, parse the body ONCE at the top of the handler and pass `host`/`entries` down — refactor accordingly so the body is read a single time.)
-
-- [ ] **Step 6: Run — verify it passes + full suite green**
-
-Run: `cd hub && npm test`
-Expected: PASS all.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add hub/wrangler.toml hub/vitest.config.js hub/src/index.js hub/test/ratelimit.test.js
-git commit -m "feat(swarm-hub): per-host rate limit on contribute"
-```
-
----
-
-### Task 9: Deploy docs + provisioning (README)
+### Task 9: Deploy runbook (README)
 
 **Files:**
 - Create: `hub/README.md`
 
-**Interfaces:** none (docs). Produces the operator runbook to stand up a private hub.
+**Interfaces:** none (docs).
 
-- [ ] **Step 1: Write `hub/README.md`**
+- [ ] **Step 1: `hub/README.md`**
 
 ````markdown
 # Swatter Swarm Hub
 
-A self-hosted Cloudflare Worker + D1 that aggregates your fleet's confirmed
-offenders and serves the merged, decaying blocklist back to your boxes. One hub
-per operator; your boxes only ever talk to YOUR hub.
+A self-hosted Cloudflare Worker + D1 that aggregates YOUR fleet's confirmed
+offenders and serves the merged, decaying blocklist back. One hub per operator;
+your boxes only talk to your hub.
 
-## Deploy (about 5 minutes)
+## Deploy (~5 min)
 
 ```bash
 cd hub
 npm install
+wrangler d1 create swatter-swarm            # copy database_id into wrangler.toml
+wrangler d1 migrations apply swatter-swarm --remote
 
-# 1. Create the D1 database and copy the printed database_id into wrangler.toml
-wrangler d1 create swatter-swarm
+# three secrets — generate long random strings
+wrangler secret put SWARM_WRITE_TOKEN       # publishers (POST /contribute)
+wrangler secret put SWARM_READ_TOKEN        # consumers  (GET /feed)
+wrangler secret put SWARM_ENROLL_TOKEN      # operator only (POST /register)
 
-# 2. Apply the schema
-wrangler d1 execute swatter-swarm --file=./schema.sql --remote
-
-# 3. Set the two tokens (generate long random strings; keep them safe)
-wrangler secret put SWARM_WRITE_TOKEN   # publishers use this
-wrangler secret put SWARM_READ_TOKEN    # consumers use this
-
-# 4. Deploy
 wrangler deploy
 ```
 
-The Worker URL it prints is your `SWARM_HUB_URL`. On each Swatter box set
-`SWARM_HUB_URL`, drop the write token in `SWARM_WRITE_TOKEN_FILE` (publishers)
-and the read token in `SWARM_READ_TOKEN_FILE` (all consumers), then
-`SWARM_ENABLE="true"`.
+The printed URL is your `SWARM_HUB_URL`.
 
-## Endpoints
+## Enroll each box (once)
 
-- `POST /contribute` (write token) — `{host_id, entries:[{ip,category?}]}`
-- `GET /feed` (read token) — bare `ip` per line; `?format=json` for metadata
+Only ENROLLED host_ids count toward corroboration, so a leaked write token can't
+fake a fleet. On each box, after setting `SWARM_HUB_URL` + the write/read tokens:
+
+```bash
+swatter swarm enroll            # POSTs /register with the enroll token
+```
+
+## Contract
+
+- `POST /contribute` (write) — `{host_id, entries:[{ip,category?}]}` (ip = IP or CIDR)
+- `POST /register` (enroll) — `{host_id, label?}`
+- `GET /feed` (read) — bare `ip`/`cidr` per line; `?format=json` for `host_count`
+  (required for `corroborated-block`); `X-Swarm-Truncated: true` if capped
 - `GET /health` — `{ok:true}`
 
 ## Maintenance
 
-- A daily cron (04:17 UTC) prunes expired entries. `SWARM_TTL` (wrangler.toml
-  `[vars]`, default 7d) controls decay.
-- Rotate a leaked token: `wrangler secret put SWARM_WRITE_TOKEN` (or READ) and
-  redeploy; update the token files on your boxes.
+- Daily cron (04:17 UTC) prunes expired entries; `SWARM_TTL` (`[vars]`, 7d) is
+  hub-authoritative. Rotate a leaked token via `wrangler secret put` + redeploy.
 ````
 
 - [ ] **Step 2: Commit**
 
 ```bash
 git add hub/README.md
-git commit -m "docs(swarm-hub): deploy runbook"
+git commit -m "docs(swarm-hub): deploy + enroll runbook"
 ```
 
 ---
 
 ## Self-Review
 
-- **Spec coverage:** §4.2 (contribute/feed/prune, D1, host_count, TTL, dual tokens, rate limit, size cap) → Tasks 1–8. §5 (schema) → Task 1. §10 (packaging/README) → Task 9. Server-side validation (§4.1/§7) → Task 2. IPv6 → Task 2 tests. Feed format (Blocker #1) → Task 7 bare/json split. Auth read/write split (§4.4) → Tasks 3,7. Prune sightings (Major) → Task 6. Concurrency (Major) → Task 4 atomic batch. **Gap:** feed pagination cursor (§4.2) is only size-capped here, not cursor-paginated — acceptable for Phase-1 fleet scale (FEED_MAX=50k); noted as a fast-follow, not a task.
-- **Placeholder scan:** none — every code/test step has full content. Task 8 Step 5 asks the implementer to consolidate the body-parse (single read); that's a concrete refactor instruction, not a placeholder.
-- **Type consistency:** `contributeOne`/`feedRows`/`prune`/`checkAuth`/`isValidIp`/`isUnsafeTarget` names + signatures are identical across the tasks that define and consume them. The HTTP contract (`{host_id, entries:[{ip,category}]}`, bare feed, `?format=json`) matches what the host-side plan will consume.
+- **Spec coverage (v3):** contribute/register/feed/prune → Tasks 4–8. Read-time registry-gated `host_count` (§4.2/§5/§6) → Task 6 (+ concurrency + registry-gate + TTL tests). IP-or-CIDR (§4.2) → Task 2 + Task 5/8. Three tokens (§4.4) → Tasks 3,8 + README. Empty-feed-is-empty-200 (§4.2) → Task 8. Payload cap + truncation signalling (§4.2) → Task 8/6. Connecting-IP rate limit (§4.2) → Task 8. Prune + failure surfacing (§4.2/§12) → Tasks 7,8. Schema (§5) → Task 1 migration. Packaging/enroll (§10) → Task 9. **Gap:** cursor pagination beyond `FEED_MAX` is signalled (`X-Swarm-Truncated`) but not implemented — documented fast-follow, acceptable at single-operator fleet scale.
+- **Placeholder scan:** none. Task 1 Step 5 has an explicit fallback note (not a placeholder — a concrete alternative if the migration API differs). The 429 test uses env-injection (a real, supported mechanism), not the unsupported function-binding.
+- **Type consistency:** `registerHost`/`contributeOne`/`feedRows`(`{rows,truncated}`)/`prune`(`{offenders,sightings}`)/`checkAuth`/`isValidIpOrCidr`/`isUnsafeTarget` names + shapes are identical across defining and consuming tasks. Contract (`{host_id, entries:[{ip,category}]}`, `{host_id,label}`, bare/json feed, `X-Swarm-Truncated`) matches what the host-side plan will consume.
 
 ## Execution Handoff
 
-This plan builds subsystem 1 of 2. After it's green + deployed, the host-side plan (`…-swatter-swarm-host.md`) implements the bash publish/consume/provider/allowlist against this frozen contract.
+Subsystem 1 of 2. After green + deployed + a box enrolled, the host-side plan
+(`…-swatter-swarm-host.md`, to be written) implements the bash `provider_swarm`,
+publish, consume (bare feed → clear-on-empty; json → `host_count`), the fleet
+allowlist, and `swatter swarm enroll`/`disable` against this frozen contract.
