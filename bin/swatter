@@ -83,6 +83,9 @@ cmd_scan() {
     swatter_intel_init
     log_info "swatter scan start (mode=${SWATTER_MODE})"
     swatter_scan
+    # Fleet publish: delta of this run's confirmed perm bans, inside the scan
+    # lock (spec §4.1). Fail-soft — a hub outage must never fail the scan.
+    swatter_swarm_publish || true
 }
 
 cmd_status() {
@@ -253,6 +256,10 @@ cmd_refresh_feeds() {
     # Intel feeds. All-feeds-failed propagates so cron can alert.
     swatter_intel_init
     swatter_intel_refresh_all || rc=1
+
+    # Corroborated-block sweep (opt-in): acts on the JUST-refreshed swarm meta,
+    # entirely through _swatter_execute_block. No-op unless configured.
+    swatter_swarm_sweep || true
 
     # Re-run Cloudflare posture detection now that ranges are fresh. Only matters
     # for CF_MODE=auto, but caching it always keeps `status`/`test-config`
