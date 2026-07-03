@@ -172,4 +172,115 @@ swatter_swarm_sweep() {
     (( n > 0 )) && log_info "swarm sweep: ${n} corroborated block(s) applied"
     return 0
 }
-cmd_swarm()             { log_error "swarm: not yet implemented"; return 2; }
+# swatter swarm {enroll|status|disable|purge} — lives in the lib (not bin/) so
+# tests can drive it directly, same as cmd_origin_lock.
+cmd_swarm() {
+    local action="${1:-status}"; shift || true
+    local assume_yes=0 arg
+    for arg in "$@"; do
+        case "$arg" in
+            --yes|--force) assume_yes=1 ;;
+            *) log_warn "swarm: ignoring unknown flag '${arg}'" ;;
+        esac
+    done
+
+    case "$action" in
+        enroll)
+            _swarm_enabled || { log_error "swarm: set SWARM_ENABLE=true + SWARM_HUB_URL first"; return 1; }
+            [[ -n "${SWARM_ENROLL_TOKEN_FILE:-}" ]] || { log_error "swarm enroll: SWARM_ENROLL_TOKEN_FILE not set (operator-held token)"; return 1; }
+            local host_id label cfg rtmp code
+            host_id="$(swatter_swarm_host_id)" || return 1
+            # Sanitize before hand-built JSON: hostnames can carry bytes JSON
+            # can't (review). Safe charset only, bounded length.
+            label="$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo unknown)"
+            label="$(printf '%s' "$label" | tr -cd 'A-Za-z0-9._-' | cut -c1-64)"
+            [[ -n "$label" ]] || label="unknown"
+            cfg="$(_swarm_curl_cfg_token "${SWARM_ENROLL_TOKEN_FILE}")" || return 1
+            printf 'header = "Content-Type: application/json"\n' >> "$cfg"
+            rtmp="$(mktemp "${TMPDIR:-/tmp}/swatter-swarmreg.XXXXXX")" || { rm -f "$cfg"; return 1; }
+            printf '{"host_id":"%s","label":"%s"}' "$host_id" "$label" > "${rtmp}.req"
+            code="$(curl --max-time 15 -sS -K "$cfg" -o "$rtmp" -w '%{http_code}' \
+                         --data-binary "@${rtmp}.req" "${SWARM_HUB_URL%/}/register" 2>/dev/null)"
+            local crc=$?
+            rm -f "$cfg" "${rtmp}.req"
+            if (( crc != 0 )) || [[ "$code" != "200" ]]; then
+                rm -f "$rtmp"; log_error "swarm enroll FAILED (http ${code:-none} rc=${crc})"; return 1
+            fi
+            rm -f "$rtmp"
+            log_info "swarm enroll ok — host_id ${host_id} registered"
+            echo "enrolled: ${host_id} (label: ${label})"
+            echo "This box now counts toward fleet corroboration. Keep the enroll token OFF this box unless it re-enrolls."
+            ;;
+        status)
+            local feed="${STATE_DIR}/feeds/swarm.txt" meta="${STATE_DIR}/feeds/swarm.meta.json"
+            local cursor_file="${STATE_DIR}/swarm.publish.cursor"
+            echo "Swarm (fleet reputation sharing)"
+            if _swarm_enabled; then echo "  enabled:     true"; else echo "  enabled:     ${SWARM_ENABLE:-false} (inert)"; fi
+            echo "  hub:         ${SWARM_HUB_URL:-<unset>}"
+            echo "  action:      ${SWARM_ACTION:-boost} (min corroboration: ${SWARM_MIN_CORROBORATION:-2})"
+            echo "  publish:     ${SWARM_PUBLISH:-true} (cursor: $( [[ -s "$cursor_file" ]] && cat "$cursor_file" || echo none))"
+            echo "  host_id:     $( [[ -s "${STATE_DIR}/swarm.host_id" ]] && tr -d '[:space:]' < "${STATE_DIR}/swarm.host_id" || echo '<not created — created on first publish/enroll>')"
+            if [[ " ${INTEL_PROVIDERS:-} " != *" swarm "* ]]; then
+                echo "  consume:     INACTIVE — add 'swarm' to INTEL_PROVIDERS in ${SWATTER_CONF} to consume the feed" >&2
+            fi
+            if [[ -s "$feed" ]]; then
+                local age
+                age=$(( ($(swatter_now) - $(stat_mtime "$feed" || echo 0)) / 3600 ))
+                echo "  feed:        $(grep -c . "$feed") entries, ${age}h old (${feed})"
+            else
+                echo "  feed:        empty/absent"
+            fi
+            [[ -s "$meta" && "${SWATTER_HAVE_JQ}" -eq 1 ]] \
+                && echo "  meta:        $(jq 'length' "$meta" 2>/dev/null || echo '?') rows (host_count sidecar)"
+            if _swarm_enabled && [[ "${SWATTER_HAVE_CURL}" -eq 1 ]]; then
+                local hcode
+                hcode="$(curl --max-time 10 -sS -o /dev/null -w '%{http_code}' "${SWARM_HUB_URL%/}/health" 2>/dev/null)"
+                echo "  hub health:  $( [[ "$hcode" == "200" ]] && echo ok || echo "UNREACHABLE (http ${hcode:-none})" )"
+            fi
+            ;;
+        disable)
+            rm -f "${STATE_DIR}/feeds/swarm.txt" "${STATE_DIR}/feeds/swarm.meta.json" \
+                  "${STATE_DIR}/swarm.publish.cursor"
+            rm -rf "${STATE_DIR}/intel/swarm"
+            log_info "swarm disable: feed, meta, intel cache and publish cursor removed"
+            echo "swarm state cleared — no stale/poisoned feed can act on this box."
+            if [[ "${SWARM_ENABLE:-false}" == "true" ]]; then
+                echo "NOTE: SWARM_ENABLE is still \"true\" in ${SWATTER_CONF} — set it to \"false\" (and remove 'swarm' from INTEL_PROVIDERS) to stop refresh/publish re-creating state." >&2
+            fi
+            ;;
+        purge)
+            # Destructive ON THE HUB: removes every sighting this host_id ever
+            # contributed (spec §13, bad-publish recovery). Needs the WRITE token.
+            _swarm_enabled || { log_error "swarm: set SWARM_ENABLE=true + SWARM_HUB_URL first"; return 1; }
+            if (( ! assume_yes )); then
+                if [[ -t 0 ]]; then
+                    local reply
+                    read -r -p "Purge ALL of this host's contributions from the hub? Type 'yes' to confirm: " reply
+                    [[ "$reply" == "yes" ]] || { log_error "swarm purge: not confirmed — nothing sent"; return 3; }
+                else
+                    log_error "swarm purge requires --yes (or an interactive confirm)"
+                    return 3
+                fi
+            fi
+            local host_id cfg rtmp code
+            host_id="$(swatter_swarm_host_id)" || return 1
+            cfg="$(_swarm_curl_cfg_token "${SWARM_WRITE_TOKEN_FILE}")" || return 1
+            printf 'header = "Content-Type: application/json"\n' >> "$cfg"
+            rtmp="$(mktemp "${TMPDIR:-/tmp}/swatter-swarmpurge.XXXXXX")" || { rm -f "$cfg"; return 1; }
+            printf '{"host_id":"%s"}' "$host_id" > "${rtmp}.req"
+            code="$(curl --max-time 15 -sS -K "$cfg" -o "$rtmp" -w '%{http_code}' \
+                         --data-binary "@${rtmp}.req" "${SWARM_HUB_URL%/}/purge" 2>/dev/null)"
+            local crc=$?
+            rm -f "$cfg" "${rtmp}.req"
+            if (( crc != 0 )) || [[ "$code" != "200" ]]; then
+                rm -f "$rtmp"; log_error "swarm purge FAILED (http ${code:-none} rc=${crc})"; return 1
+            fi
+            cat "$rtmp"; echo; rm -f "$rtmp"
+            log_info "swarm purge ok — this host's contributions removed from the hub"
+            ;;
+        *)
+            log_error "swarm: unknown subcommand '${action}' (enroll|status|disable|purge)"
+            return 2
+            ;;
+    esac
+}
