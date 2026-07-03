@@ -395,7 +395,8 @@ swatter export-bans /tmp/bans.txt       # write perm-ban list to file (or stdout
 swatter import-bans /tmp/bans.txt       # block each listed IP as perm on another host
 ```
 
-`import-bans` skips IPs on the never-block list and any malformed entries — safe
+`import-bans` skips IPs on the never-block list, any malformed entries, and
+catastrophic targets (a `/0` or an unspecified address like `0.0.0.0`) — safe
 to pipe from an untrusted source. Use `export-bans` in a cron and `import-bans`
 on the receiving hosts to keep ban lists in sync across a fleet.
 
@@ -493,6 +494,12 @@ All the knobs live in `/etc/swatter/swatter.conf`:
   crime — your clients do it every day. The brute-force floor only trips on
   repeated *failed* attempts (errors or POST floods), so a site owner logging in
   and working in wp-admin can never be blocked for it.
+- **Only real, sane addresses ever reach the firewall.** Every block target is
+  strictly validated at the sink — not just the scan path but the direct router,
+  the Cloudflare plane, and `import-bans` — so a malformed token parsed from a
+  hostile log line can't reach `csf`/`ipset`/the CF API. Catastrophic-but-valid
+  targets are refused too: a `/0` (whole-internet deny) or an unspecified address
+  (`0.0.0.0`, `::`) is never blocked, even from an untrusted `import-bans` file.
 - **Full audit + appeal.** `swatter why <ip>` shows exactly what triggered a block;
   `swatter unblock <ip> [--perm-allow]` reverses it on both planes.
 - **Failures are loud, never silent.** A block or unblock that a backend
