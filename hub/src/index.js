@@ -1,6 +1,6 @@
 import { checkAuth } from "./auth.js";
 import { isValidIpOrCidr, isUnsafeTarget } from "./validate.js";
-import { contributeMany, registerHost, isEnrolled, feedRows, prune } from "./db.js";
+import { contributeMany, registerHost, isEnrolled, feedRows, prune, purgeHost } from "./db.js";
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 // ONE host_id rule for /register AND /contribute (Grok review: register
@@ -64,6 +64,16 @@ async function handleRegister(request, env) {
   return json({ enrolled: host }, 200);
 }
 
+async function handlePurge(request, env) {
+  if (!checkAuth(request, env.SWARM_WRITE_TOKEN)) return json({ error: "unauthorized" }, 401);
+  if (bodyTooLarge(request)) return json({ error: "body too large" }, 413);
+  const body = await readJson(request);
+  const host = validHostId(body?.host_id) ? body.host_id : null;
+  if (!host) return json({ error: "valid host_id required" }, 400);
+  const d = await purgeHost(env, { host });
+  return json({ purged_sightings: d.sightings, purged_offenders: d.offenders }, 200);
+}
+
 async function handleFeed(request, env) {
   if (!checkAuth(request, env.SWARM_READ_TOKEN)) return json({ error: "unauthorized" }, 401);
   const url = new URL(request.url);
@@ -81,6 +91,7 @@ export default {
     if (m === "GET" && url.pathname === "/health") return json({ ok: true });
     if (m === "POST" && url.pathname === "/contribute") return handleContribute(request, env);
     if (m === "POST" && url.pathname === "/register") return handleRegister(request, env);
+    if (m === "POST" && url.pathname === "/purge") return handlePurge(request, env);
     if (m === "GET" && url.pathname === "/feed") return handleFeed(request, env);
     return new Response("not found", { status: 404 });
   },
