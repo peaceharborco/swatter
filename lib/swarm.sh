@@ -123,6 +123,16 @@ swatter_swarm_publish() {
     done
 
     printf '%s' "$max_ts" > "$cursor_file"
+    # Digest audit (read by the nightly Swarm plane; never on the hot path).
+    # ts = publish wall-clock so the digest's "now - window" filter counts a
+    # catch-up flush of old bans as tonight's contribution (NOT max_ts, which is
+    # the ledger ts of the sent rows).
+    local plog="${STATE_DIR}/swarm.publish.log"
+    printf '{"ts":%s,"count":%s}\n' "$(swatter_now)" "${#ips[@]}" >> "$plog"
+    # Bound it: keep the last 2000 lines (years of nightly publishes).
+    if [[ "$(wc -l < "$plog" 2>/dev/null || echo 0)" -gt 2000 ]]; then
+        tail -2000 "$plog" > "${plog}.tmp" 2>/dev/null && mv "${plog}.tmp" "$plog"
+    fi
     log_info "swarm publish: ${#ips[@]} confirmed ban(s) contributed (cursor=${max_ts})"
 }
 
@@ -257,9 +267,9 @@ cmd_swarm() {
             ;;
         disable)
             rm -f "${STATE_DIR}/feeds/swarm.txt" "${STATE_DIR}/feeds/swarm.meta.json" \
-                  "${STATE_DIR}/swarm.publish.cursor"
+                  "${STATE_DIR}/swarm.publish.cursor" "${STATE_DIR}/swarm.publish.log"
             rm -rf "${STATE_DIR}/intel/swarm"
-            log_info "swarm disable: feed, meta, intel cache and publish cursor removed"
+            log_info "swarm disable: feed, meta, intel cache, publish cursor and publish log removed"
             echo "swarm state cleared — no stale/poisoned feed can act on this box."
             if [[ "${SWARM_ENABLE:-false}" == "true" ]]; then
                 echo "NOTE: SWARM_ENABLE is still \"true\" in ${SWATTER_CONF} — set it to \"false\" (and remove 'swarm' from INTEL_PROVIDERS) to stop refresh/publish re-creating state." >&2

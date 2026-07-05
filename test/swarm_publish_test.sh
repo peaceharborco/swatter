@@ -110,6 +110,23 @@ done
 unset -f swatter_now
 swatter_swarm_publish 2>/dev/null
 check chunk-posts "$(grep -c '"host_id"' "$POSTS")" "2"
+
+# 8) the publish audit line: exists, counts sent IPs, and stamps PUBLISH time
+#    (swatter_now at publish), NOT the ledger max_ts of the sent rows.
+#    Case 7 wiped the ledger (: > jsonl) and left the cursor at 7000, so seed one
+#    fresh ban above the cursor at an OLD ledger ts, then publish LATER.
+PUBLOG="${STATE_DIR}/swarm.publish.log"; rm -f "$PUBLOG"; : > "$POSTS"
+swatter_now() { echo 7200; }   # ledger ts of the new ban (> cursor 7000 => sent)
+swatter_store_record 203.0.113.200 perm csf 0 90 "ban audit" 0
+unset -f swatter_now
+swatter_now() { echo 9999; }   # publish wall-clock — LATER than any ledger ts
+swatter_swarm_publish 2>/dev/null
+unset -f swatter_now
+check pub-audit-exists     "$( [[ -s "$PUBLOG" ]] && echo yes || echo no )" "yes"
+check pub-audit-count      "$(tail -1 "$PUBLOG" | grep -c '"count":1')"     "1"
+check pub-audit-ts-publish "$(tail -1 "$PUBLOG" | grep -c '"ts":9999')"     "1"
+check pub-audit-not-maxts  "$(tail -1 "$PUBLOG" | grep -c '"ts":7200')"     "0"
+
 unset -f curl
 
 echo "----------------------------------------"
