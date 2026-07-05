@@ -68,3 +68,17 @@ The plan's **factual grounding is sound** — line anchors, the "no publish audi
 - Task 1 gap is real: publish writes only the cursor + a `log_info`; no audit/count persisted anywhere.
 - `.reason` is a top-level field in `decisions.jsonl` (`lib/score.sh:66`); `startswith` *would* match successful rows (the problem is it misses the prefixed ones — B3).
 - Non-interference invariant holds: `_report_grade` reads only `ERR_*`/`RPT_ACTED`/`OL_HITS`; the silence gate reads only `RPT_ACTED`/`RPT_EXEMPT`/`ERR_GENUINE`. No `SWARM_*` leaks in. A swarm-only night stays silent.
+
+---
+
+## Round 2 — re-check of the revised plan (both models again)
+
+Both models re-verified the round-1 fixes and probed for new defects. Both again returned **"not safe as written"** — but this time only three items survived, two of them real regressions the revision introduced. All now fixed (verified by Claude against `test/swarm_publish_test.sh`, `test/report_test.sh`, and `_report_render_html`):
+
+- **R2-B1 — HTML style vars didn't exist.** `[both]` My round-1 HTML card used `$line`/`$f_muted`/`$amber` — none are declared in `_report_render_html`. The real in-scope vars are `$bdr` (border), `$h3` (label), `$f_h` (value font), `$pine` (value color), `$ink`/`$slate` (body), `$ember` (warning); `esc()` for the summary. **Fixed** in Step 6 before the round-2 reviews finished (they read the pre-fix commit). Verified against the Bad-Actors/Origin-Lock/Server-Errors card args (`lib/report.sh:310/316/335`).
+
+- **R2-B2 — Task 1 test asserted a bogus `ts`.** `[both]` The publish fixture `unset -f swatter_now` before every publish (`swarm_publish_test.sh:49/53/110`), so the old `"ts":56xx` assertion could never match, and worse, `$(swatter_now)` in the impl would emit an *empty* `ts` in that harness. **Fixed:** Task 1 Step 1 is now a self-contained case that re-stubs `swatter_now` with a ledger ts (7200) distinct from the publish ts (9999) and asserts the audit records **9999, not 7200** — which actually proves the M1 publish-time semantics. Inserted above `unset -f curl` (`:113`).
+
+- **R2-B3 (new integration break) — `_swarm_enabled` unavailable in `report_test.sh`.** `[both]` The harness sources only `common.sh`+`report.sh` and runs `swatter_report_build` in its earliest cases; once the builder calls `_swarm_enabled` (from `swarm.sh`, never sourced here) every pre-existing case breaks with `command not found`. **Fixed:** Task 2 Step 1a adds a `_swarm_enabled` stub to the shared setup beside the existing section stubs (`report_test.sh:34-36`), defaulting off — mirroring how the harness already stubs the other planes.
+
+**Confirmed correct by both models in round 2:** the `.evidence.swarm` selector (every dispatched sweep path forwards `ev` to `_swatter_audit`, incl. novhost/failed/cap — `lib/score.sh:131/140/153`); the content-only gather/render split vs. origin-lock; `$swfile`/`cutoff`/`log` scoping; the both-files staleness loop (bash-3.2-safe, no wrong-skip of old files in prod); the jq degrade path; and the silence source-guard `awk` range brackets `report.sh:473-478` with zero `SWARM` inside. Both round-2 VERDICTs: the core mechanics are sound; only the three items above blocked — now resolved.

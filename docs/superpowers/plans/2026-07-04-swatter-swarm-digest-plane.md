@@ -67,22 +67,28 @@
 **Interfaces:**
 - Produces: `${STATE_DIR}/swarm.publish.log` — append-only JSONL, one line per successful publish: `{"ts":<publish_wall_clock>,"count":<n_ips>}`. **`ts` is `$(swatter_now)` at publish time, not the ban ledger's `max_ts`** — the digest windows on "now − 24h", so a catch-up publish flushing week-old bans must still register as tonight's contribution. Trimmed to the last 2000 lines to stay bounded.
 
-- [ ] **Step 1: Write the failing test** — add to `test/swarm_publish_test.sh`, *after* its existing successful-publish case (the fixture has already seeded the ledger, stubbed `curl` to return `{"…","enrolled":true}`, and set `SWATTER_MODE=enforce`). The prior case already ran one publish, so a publish log line should exist; assert its shape and that `ts` is publish-time, not a ban ts:
+- [ ] **Step 1: Write the failing test** — add a **self-contained case** to `test/swarm_publish_test.sh`, inserted **before the `unset -f curl` on the last line of case 7** (`:113`) so the curl mock + `enforce` mode are still live. Critical: the fixture `unset -f swatter_now` after every seed (`:49/:53/:110`), so you must **re-stub `swatter_now` yourself** — and deliberately stub the *ledger* ts and the *publish* ts to **different** values so the assertion proves the audit records publish-time, not `max_ts`:
 
 ```bash
-# --- publish writes an audit line on success (for the digest plane) ---
-# (the successful-publish case above already drove swatter_swarm_publish under
-#  the enforce/curl/enrolled fixture; this asserts the audit it left behind)
-PUBLOG="${STATE_DIR}/swarm.publish.log"
-check pub-audit-exists "$( [[ -s "$PUBLOG" ]] && echo yes || echo no )" "yes"
-check pub-audit-count  "$(tail -1 "$PUBLOG" | grep -c '"count":')" "1"
-# ts is publish wall-clock (swatter_now was stubbed to 5600+ at publish), NOT
-# the sent rows' max ledger ts (5000) — guards the catch-up-publish semantics.
-check pub-audit-ts-is-now "$(tail -1 "$PUBLOG" | grep -Eco '"ts":56[0-9][0-9]')" "1"
+# 8) the publish audit line: exists, counts sent IPs, and stamps PUBLISH time
+#    (swatter_now at publish), NOT the ledger max_ts of the sent rows.
+#    Case 7 wiped the ledger (: > jsonl) and left the cursor at 7000, so seed one
+#    fresh ban above the cursor at an OLD ledger ts, then publish LATER.
+PUBLOG="${STATE_DIR}/swarm.publish.log"; rm -f "$PUBLOG"; : > "$POSTS"
+swatter_now() { echo 7200; }   # ledger ts of the new ban (> cursor 7000 => sent)
+swatter_store_record 203.0.113.200 perm csf 0 90 "ban audit" 0
+unset -f swatter_now
+swatter_now() { echo 9999; }   # publish wall-clock — LATER than any ledger ts
+swatter_swarm_publish 2>/dev/null
+unset -f swatter_now
+check pub-audit-exists     "$( [[ -s "$PUBLOG" ]] && echo yes || echo no )" "yes"
+check pub-audit-count      "$(tail -1 "$PUBLOG" | grep -c '"count":1')"     "1"
+check pub-audit-ts-publish "$(tail -1 "$PUBLOG" | grep -c '"ts":9999')"     "1"
+check pub-audit-not-maxts  "$(tail -1 "$PUBLOG" | grep -c '"ts":7200')"     "0"
 ```
 
 - [ ] **Step 2: Run it, verify it fails** — `bash test/swarm_publish_test.sh`
-Expected: FAIL — `pub-audit-exists: want='yes' got='no'`.
+Expected: FAIL — `pub-audit-exists: want='yes' got='no'` (the audit write does not exist yet). Note: the case must sit **above** `unset -f curl` (`:113`); if placed after, `swatter_swarm_publish` finds no `curl` mock and never reaches the cursor/audit write.
 
 - [ ] **Step 3: Implement** — in `lib/swarm.sh`, immediately after the success cursor write (`:125`):
 
@@ -140,11 +146,16 @@ EOF
 
 - [ ] **Step 0: Verify the pre-block marker is `evidence.swarm`** (30-second grounding). The sweep dispatches every corroborated candidate through `_swatter_execute_block` with `ev={"swarm":true,"hosts":N}` (`lib/swarm.sh:180`), which `_swatter_audit` writes verbatim to the top-level `.evidence` field (`lib/score.sh:66`). Confirm on a box with swarm history: `jq -c 'select(.evidence.swarm==true) | {reason,evidence}' "${LOG_DIR}/decisions.jsonl" | head`. **Do not filter on `.reason`** — the novhost/failed/cap paths prefix it (`"no_target_vhost … swarm-corroborated …"`, `"block_failed …"` — `lib/score.sh:131/140/153`), so a `startswith("swarm-corroborated")` selector silently under-counts. `.evidence.swarm` is stamped on every dispatched row.
 
-- [ ] **Step 1: Write the failing test** — add to `test/report_test.sh` (mirrors its hermetic style; it already stubs `swatter_now` to `1782396000` at `:14` and sets `SWATTER_HAVE_JQ=1` at `:33`):
+- [ ] **Step 1a: Stub `_swarm_enabled` in the shared setup** (REQUIRED, do this first). `report_test.sh` sources only `common.sh` + `report.sh` (`:6-7`) and drives `swatter_report_build` in its *earliest* cases (`:40`, `:48`, …) — but once Task 2 wires `_swarm_enabled` into the builder, those pre-existing cases would hit `_swarm_enabled: command not found` (it lives in `swarm.sh`, which the harness never sources). Mirror how the harness already stubs the other planes (`swatter_errors_section` / `swatter_originlock_section` at `:34-36`): add, right beside them, a stub identical to the real gate (`lib/swarm.sh:10-12`) so it defaults **off** (SWARM_ENABLE unset) and existing cases are unaffected:
+
+```bash
+_swarm_enabled() { [[ "${SWARM_ENABLE:-false}" == "true" && -n "${SWARM_HUB_URL:-}" ]]; }
+```
+
+- [ ] **Step 1b: Write the failing test** — add the swarm-plane block to `test/report_test.sh` (mirrors its hermetic style; it already stubs `swatter_now` to `1782396000` at `:14` and sets `SWATTER_HAVE_JQ=1` at `:33`). No `source lib/swarm.sh` needed — `swatter_swarm_section` and `_report_summary_swarm` live in `report.sh` (already sourced), and `_swarm_enabled` is the Step 1a stub, toggled via `SWARM_ENABLE`:
 
 ```bash
 # --- Swarm plane: present only when enabled; never touches grade/verdict/silence ---
-source "${ROOT}/lib/swarm.sh"
 STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/swatter-rptsw.XXXXXX")"; mkdir -p "${STATE_DIR}/feeds"
 NOW="$(swatter_now)"
 printf '198.51.100.7\n198.51.100.8\n' > "${STATE_DIR}/feeds/swarm.txt"
@@ -282,18 +293,19 @@ _report_summary_swarm() {
     rm -f "$swfile"
 ```
 
-- [ ] **Step 6: Render the HTML plane** in `_report_render_html`, after the Server-Errors card (`:334`). Reuse the **exact** Server-Errors `printf '<table role="presentation" …>'` idiom and its in-scope style vars (`$line`, `$f_muted`, `$f_b`, `$ink`, and the same muted/amber colors that card uses — confirm the names in scope, don't invent). Headline number = fleet IPs consumed; the full summary rides as a muted sub-line (reuses `_report_summary_swarm`, so text and HTML never drift):
+- [ ] **Step 6: Render the HTML plane** in `_report_render_html`, after the Server-Errors card (`lib/report.sh:334`). Copy the Server-Errors card verbatim and swap the label/value — the in-scope style vars there are **`$bdr`** (row border), **`$h3`** (label style), **`$f_h`** (value font), **`$pine`** (value color), **`$ink`** (summary text), **`$slate`**/**`$ember`** (muted / warning) — there is **no** `$line`/`$f_muted`/`$amber`. Run the summary through `esc()` like the siblings do. Headline number = fleet IPs consumed; the full summary rides as a sub-line (reuses `_report_summary_swarm`, so text and HTML never drift):
 
 ```bash
     if _swarm_enabled; then
         printf '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-top:1px solid %s;"><tr><td style="padding-top:14px;%s">Swarm</td><td style="padding-top:14px;%s;font-weight:700;font-size:20px;color:%s;text-align:right;">%s</td></tr></table>' \
-            "$line" "$f_muted" "$f_b" "$ink" "${SWARM_FEED_N:-0}"
-        printf '<div style="%s;font-size:12px;margin-top:4px;">%s</div>' "$f_muted" "$(_report_summary_swarm)"
-        (( ${SWARM_STALE:-0} )) && printf '<div style="font-size:12px;color:%s;margin-top:2px;">Feed stale — shown for information only.</div>' "$amber"
+            "$bdr" "$h3" "$f_h" "$pine" "${SWARM_FEED_N:-0}"
+        printf '<div style="font-size:13px;color:%s;margin-top:5px;line-height:1.55;">%s</div>' \
+            "$ink" "$(_report_summary_swarm | esc)"
+        (( ${SWARM_STALE:-0} )) && printf '<div style="font-size:12px;color:%s;margin-top:6px;">Feed stale &mdash; shown for information only.</div>' "$ember"
     fi
 ```
 
-(`$amber` is the brass/amber accent the digest already uses for warnings, e.g. `#C48A2E`; use whatever the errors/origin-lock cards use — do not hardcode a new hex.)
+(All six vars — `$bdr`, `$h3`, `$f_h`, `$pine`, `$ink`, `$ember` — and `esc()` are declared at the top of `_report_render_html` and used by the existing plane cards; do not hardcode a hex.)
 
 - [ ] **Step 7: Confirm the invariant.** Do NOT edit `_report_grade` (`:375`), `_report_verdict` (`:361`), or the silence check (`:476`). Grep them to be sure no `SWARM_*` sneaks in.
 
