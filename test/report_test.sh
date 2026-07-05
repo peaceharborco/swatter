@@ -34,6 +34,10 @@ SWATTER_HAVE_JQ=1; SWATTER_MODE="enforce"
 swatter_errors_section()    { ERR_GENUINE=0 ERR_FATAL=0; echo "(errors section)"; }
 swatter_originlock_section(){ OL_HITS="${FAKE_OL:-0}"; echo "(origin-lock section)"; }
 _ol_digest_should_render()  { local h="${1:-0}"; case "${ORIGIN_LOCK_DIGEST:-auto}" in on) return 0;; off) return 1;; *) (( h > 0 ));; esac; }
+# _swarm_enabled lives in swarm.sh, which this hermetic harness never sources.
+# Stub it identically to the real gate so the builder's swarm calls resolve;
+# defaults OFF (SWARM_ENABLE unset) so pre-existing cases are unaffected.
+_swarm_enabled() { [[ "${SWARM_ENABLE:-false}" == "true" && -n "${SWARM_HUB_URL:-}" ]]; }
 
 # 1 plane: abuse only (error digest off, no origin-lock hits).
 ERROR_DIGEST_ENABLE="false"; ORIGIN_LOCK_DIGEST="auto"; FAKE_OL=0
@@ -138,6 +142,45 @@ ERR_FATAL=0 ERR_GENUINE=20 OL_HITS=0 RPT_ACTED=0 REPORT_WINDOW=24h REPORT_TRIAGE
 check reco-hint "$(printf '%s' "$RPT_RECO" | grep -c '/server-logs')" "1"
 ERR_FATAL=0 ERR_GENUINE=20 OL_HITS=0 RPT_ACTED=0 REPORT_WINDOW=24h REPORT_TRIAGE_HINT=""; _report_grade
 check reco-generic "$(printf '%s' "$RPT_RECO" | grep -c 'server-logs')" "0"
+
+# --- Swarm plane: present only when enabled; never touches grade/verdict/silence ---
+SW_ST="$(mktemp -d "${TMPDIR:-/tmp}/swatter-rptsw.XXXXXX")"; mkdir -p "${SW_ST}/feeds"
+SWNOW="$(swatter_now)"
+printf '198.51.100.7\n198.51.100.8\n' > "${SW_ST}/feeds/swarm.txt"
+printf '[{"ip":"198.51.100.7","host_count":3}]\n' > "${SW_ST}/feeds/swarm.meta.json"
+printf '{"ts":%s,"count":4}\n' "$SWNOW" > "${SW_ST}/swarm.publish.log"
+SW_LOG="${SW_ST}/decisions.jsonl"
+# Two dispatched sweep rows: one clean reason, one novhost-PREFIXED reason. Both
+# carry evidence.swarm=true, so the evidence-based selector must count BOTH (2);
+# a .reason startswith would wrongly count only the clean one (regression guard).
+printf '{"ts":%s,"ip":"185.220.101.1","action":"temp","reason":"swarm-corroborated hosts=3","evidence":{"swarm":true,"hosts":3}}\n' "$SWNOW"  > "$SW_LOG"
+printf '{"ts":%s,"ip":"185.220.101.2","action":"temp","reason":"no_target_vhost action=temp swarm-corroborated hosts=2","evidence":{"swarm":true,"hosts":2}}\n' "$SWNOW" >> "$SW_LOG"
+SW_CUT=$(( SWNOW - 86400 ))
+SW_STATE_SAVE="${STATE_DIR:-}"; STATE_DIR="$SW_ST"
+
+# Disabled → the section is a silent no-op (empty body).
+SWARM_ENABLE=false
+check swplane-off "$(swatter_swarm_section 24h "$SW_CUT" "$SW_LOG" | grep -c .)" "0"
+
+# Enabled → section sets globals; the summary line renders them. Assert on full,
+# fixed-string phrases (grep -Fc) so digits can't false-match a substring.
+SWARM_ENABLE=true SWARM_HUB_URL="https://hub.example" SWARM_MAX_AGE_DAYS=3
+swatter_swarm_section 24h "$SW_CUT" "$SW_LOG" >/dev/null   # sets SWARM_* globals
+sum="$(_report_summary_swarm)"
+check swplane-feed    "$(printf '%s' "$sum" | grep -Fc 'Consuming 2 fleet IP(s)')" "1"
+check swplane-preblk  "$(printf '%s' "$sum" | grep -Fc '2 pre-blocked')"           "1"
+check swplane-contrib "$(printf '%s' "$sum" | grep -Fc '4 contributed')"           "1"
+
+# grade/verdict identical with the plane's globals set vs unset
+RPT_ACTED=0 RPT_EXEMPT=0 ERR_GENUINE=0 ERR_FATAL=0 OL_HITS=0
+_report_grade; g0="$RPT_GRADE"; v0="$(_report_verdict | cut -f1)"
+SWARM_FEED_N=99 SWARM_PREBLOCKED=99 SWARM_CONTRIB=99
+_report_grade; check swplane-nograde "$RPT_GRADE" "$g0"
+check swplane-noverdict "$(_report_verdict | cut -f1)" "$v0"
+# Silence invariant as a SOURCE-level guard (robust to line drift): the silence
+# gate's body must reference no SWARM_* global.
+check swplane-silence-clean "$(awk '/Stay silent only when BOTH planes/,/return 0/' "${ROOT}/lib/report.sh" | grep -c SWARM)" "0"
+STATE_DIR="$SW_STATE_SAVE"; SWARM_ENABLE=false; rm -rf "$SW_ST"
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"

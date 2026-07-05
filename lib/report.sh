@@ -53,6 +53,7 @@ swatter_report_build() {
     RPT_ACTED=0 RPT_PERM=0 RPT_TEMP=0 RPT_CF=0 RPT_DIRECT=0 RPT_EXEMPT=0 RPT_WATCH=0 RPT_FAILED=0 RPT_FAIL_CAUSE=""
     ERR_TOTAL=0 ERR_FATAL=0 ERR_GENUINE=0 ERR_NOISE=0
     OL_HITS=0 OL_IPS=0 OL_P80=0 OL_P443=0 OL_MODE="" OL_TOP_ROWS=""
+    SWARM_FEED_N=0 SWARM_STALE=0 SWARM_PREBLOCKED=0 SWARM_CONTRIB=0 SWARM_LAST_PUB="none" SWARM_COUNTS_OK=1
 
     # Gather ALL THREE planes first (via redirection so their RPT_*/OL_*/ERR_*
     # counters persist in this shell — a command substitution would run in a
@@ -70,6 +71,11 @@ swatter_report_build() {
         swatter_errors_section "$window" > "$errfile"
         errsec="$(cat "$errfile")"
         rm -f "$errfile"
+    fi
+    local swfile=""
+    if _swarm_enabled; then
+        swfile="$(mktemp "${TMPDIR:-/tmp}/swatter-swsec.XXXXXX")"
+        swatter_swarm_section "$window" "$cutoff" "$log" > "$swfile"
     fi
 
     _report_grade   # sets RPT_GRADE / RPT_GRADE_WORD / RPT_GRADE_HEADLINE / RPT_GRADE_SUB / RPT_RECO
@@ -106,6 +112,15 @@ swatter_report_build() {
         echo
         printf '%s\n' "$errsec"
     fi
+
+    if _swarm_enabled; then
+        echo
+        echo "========================  Swarm  ================================"
+        echo
+        _report_summary_swarm
+        [[ -s "$swfile" ]] && cat "$swfile"
+    fi
+    rm -f "$swfile"
 
     echo
     echo "------------------------------------------------------------------"
@@ -337,6 +352,15 @@ _report_render_html() {
             "$ink" "$(_report_summary_errors | esc)" "$slate" "${ERR_GENUINE:-0}" "$efc" "${ERR_FATAL:-0}"
     fi
 
+    # Swarm (gated) — informational; headline = fleet IPs consumed, summary sub-line.
+    if _swarm_enabled; then
+        printf '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-top:1px solid %s;"><tr><td style="padding-top:14px;%s">Swarm</td><td style="padding-top:14px;%s;font-weight:700;font-size:20px;color:%s;text-align:right;">%s</td></tr></table>' \
+            "$bdr" "$h3" "$f_h" "$pine" "${SWARM_FEED_N:-0}"
+        printf '<div style="font-size:13px;color:%s;margin-top:5px;line-height:1.55;">%s</div>' \
+            "$ink" "$(_report_summary_swarm | esc)"
+        (( ${SWARM_STALE:-0} )) && printf '<div style="font-size:12px;color:%s;margin-top:6px;">Feed stale &mdash; shown for information only.</div>' "$ember"
+    fi
+
     # Help line.
     printf '<p style="font-size:12px;color:%s;margin:18px 0 0;">On The Server: <code style="font-family:ui-monospace,Menlo,monospace;background:%s;padding:1px 5px;border-radius:4px;">swatter why &lt;ip&gt;</code> &mdash; <i>Why An IP Was Flagged</i> &middot; <code style="font-family:ui-monospace,Menlo,monospace;background:%s;padding:1px 5px;border-radius:4px;">swatter unblock &lt;ip&gt;</code> &mdash; <i>Lift A Block</i></p>' \
         "$slate" "$panel" "$panel"
@@ -419,6 +443,68 @@ _report_summary_actors() {
     fi
     echo "Automated attackers${off}. ${RPT_CF:-0} stopped at Cloudflare's edge, ${RPT_DIRECT:-0} blocked at the server.${spared}"
 }
+# Swarm plane (informational — never escalates the grade, never breaks silence).
+# Reads only local swarm state; no hub call at report time. Content-only like
+# swatter_originlock_section: sets SWARM_* globals + emits the stale note (if any);
+# _report_summary_swarm prints the one-liner in the render step. $2/$3 optional so
+# standalone callers get sane defaults.
+swatter_swarm_section() {
+    _swarm_enabled || return 0
+    local window="${1:-${REPORT_WINDOW:-24h}}" cutoff="${2:-}" log="${3:-${LOG_DIR}/decisions.jsonl}"
+    [[ -n "$cutoff" ]] || cutoff=$(( $(swatter_now) - $(_report_window_secs "$window") ))
+    local feed="${STATE_DIR}/feeds/swarm.txt" meta="${STATE_DIR}/feeds/swarm.meta.json"
+    local plog="${STATE_DIR}/swarm.publish.log" cur="${STATE_DIR}/swarm.publish.cursor"
+    local now; now="$(swatter_now)"
+
+    # Intel received: feed size + staleness. Staleness = the OLDER of swarm.txt
+    # and swarm.meta.json (the sweep skips on stale META, so a fresh feed alone
+    # is not "fresh"). stat_mtime is the repo's portable mtime helper.
+    SWARM_FEED_N=0; [[ -s "$feed" ]] && SWARM_FEED_N="$(grep -c . "$feed" 2>/dev/null)"
+    SWARM_STALE=0
+    local f m oldest=0
+    for f in "$feed" "$meta"; do
+        [[ -s "$f" ]] || continue
+        m="$(stat_mtime "$f" 2>/dev/null || echo "$now")"
+        (( m < now )) || continue          # future mtime (test stubs a past now) => treat as fresh
+        (( now - m > oldest )) && oldest=$(( now - m ))
+    done
+    (( oldest > ${SWARM_MAX_AGE_DAYS:-3} * 86400 )) && SWARM_STALE=1
+
+    # The two JSON-derived counts require jq. Without it, flag them unavailable
+    # rather than silently showing 0 (feed size + staleness still render).
+    SWARM_PREBLOCKED=0 SWARM_CONTRIB=0 SWARM_COUNTS_OK=1
+    if [[ "${SWATTER_HAVE_JQ:-0}" -eq 1 ]]; then
+        # Corroborated pre-blocks in-window. Match evidence.swarm (stamped on
+        # EVERY dispatched row), NOT .reason (prefixed on novhost/failed paths).
+        [[ -s "$log" ]] && SWARM_PREBLOCKED="$(jq -c "select(.ts >= ${cutoff} and (.evidence.swarm == true))" "$log" 2>/dev/null | grep -c . )"
+        # Contribution made in-window (sum of counts from the publish audit).
+        [[ -s "$plog" ]] && SWARM_CONTRIB="$(jq -s "map(select(.ts >= ${cutoff}))|map(.count)|add // 0" "$plog" 2>/dev/null)"
+        [[ -n "$SWARM_CONTRIB" ]] || SWARM_CONTRIB=0   # empty jq output => 0
+    else
+        SWARM_COUNTS_OK=0
+    fi
+    SWARM_LAST_PUB="none"; [[ -s "$cur" ]] && SWARM_LAST_PUB="$(tr -d '[:space:]' < "$cur")"
+
+    # Body: an amber note only when stale (information only — grade is unaffected).
+    (( ${SWARM_STALE:-0} )) && echo "  NOTE: feed stale (> ${SWARM_MAX_AGE_DAYS:-3}d) — shown for information only; the report grade is unaffected."
+}
+
+_report_summary_swarm() {
+    if (( ${SWARM_COUNTS_OK:-1} )); then
+        printf 'Consuming %s fleet IP(s) · %s pre-blocked (corroborated) · %s contributed this window' \
+            "${SWARM_FEED_N:-0}" "${SWARM_PREBLOCKED:-0}" "${SWARM_CONTRIB:-0}"
+    else
+        printf 'Consuming %s fleet IP(s) · pre-block/contribution counts unavailable (jq not installed)' \
+            "${SWARM_FEED_N:-0}"
+    fi
+    # Last contribution, when we have ever published — portable epoch->date.
+    if [[ "${SWARM_LAST_PUB:-none}" != "none" ]]; then
+        local when; when="$(date -u -d "@${SWARM_LAST_PUB}" '+%Y-%m-%d' 2>/dev/null || date -u -r "${SWARM_LAST_PUB}" '+%Y-%m-%d' 2>/dev/null)"
+        [[ -n "$when" ]] && printf ' · last contributed %s' "$when"
+    fi
+    printf '.\n'
+}
+
 _report_summary_origin() {
     local disp="all dropped at the firewall before reaching a site"
     [[ "${OL_MODE:-}" == log* ]] && disp="logged in dry-run mode — not yet enforced"
