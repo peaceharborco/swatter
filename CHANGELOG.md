@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.1] - 2026-07-05
+
+### Added
+- **Nightly digest Swarm plane (informational).** When `SWARM_ENABLE=true`, the
+  nightly report gains a fourth plane summarizing fleet reputation activity:
+  fleet IPs consumed from the shared feed (with a stale-feed note when either the
+  feed or its `host_count` sidecar is older than `SWARM_MAX_AGE_DAYS`),
+  corroborated pre-blocks taken this window (counted from `decisions.jsonl` on the
+  `evidence.swarm` marker that is stamped on every dispatched sweep row — robust
+  to the reason-prefix the novhost/failed/cap paths add), confirmed bans
+  contributed back this window, and the last-contributed date. Rendered in both
+  text and HTML. Reads only local swarm state at report time (no hub call), and
+  sets only `SWARM_*` report globals — it never escalates the report grade or
+  breaks silent-when-quiet (enforced by runtime and source-level regression
+  tests). Degrades to an explicit note instead of silent zeros on a box without
+  `jq`.
+- **Publish audit (`swarm.publish.log`).** `swatter_swarm_publish` now appends a
+  bounded `{"ts","count"}` line per successful contribution, stamped with publish
+  wall-clock time so a catch-up flush of old bans still counts as tonight's
+  contribution. The digest reads it for an exact "contributed this window";
+  `swatter swarm disable` clears it alongside the cursor.
+
 ## [2.7.0] - 2026-07-03
 
 ### Added

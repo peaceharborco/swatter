@@ -421,7 +421,7 @@ on the receiving hosts to keep ban lists in sync across a fleet.
 ## Nightly digest — swat errors, bad actors *and* bypass attempts
 
 `swatter report` emails one nightly digest, delivered as a structured HTML
-report (verdict line → stat tiles → per-plane tables), covering up to three
+report (verdict line → stat tiles → per-plane tables), covering up to four
 planes of server health:
 
 - **Bad actors** — blocks taken (perm/temp), grouped by offense type, bad-path
@@ -438,6 +438,14 @@ planes of server health:
   top sources tagged attacker/legit. `auto` shows it only when there are hits, so
   it stays invisible for operators who don't run the lock; `ORIGIN_LOCK_LOG`
   selects the syslog source.
+- **Swarm** *(shown when `SWARM_ENABLE=true`)* — an informational plane summarizing
+  what the fleet gave and got: fleet IPs consumed from the shared feed (with a
+  stale-feed note when the feed is older than `SWARM_MAX_AGE_DAYS`), corroborated
+  pre-blocks taken this window, confirmed bans contributed back this window, and
+  the date of the last contribution. It reads only local swarm state at report
+  time (no hub call) and is purely informational — it never changes the report
+  grade or breaks the silent-when-quiet behavior, and it degrades to a note (not
+  silent zeros) on a box without `jq`.
 
 It stays silent on a genuinely quiet window. Delivery is pluggable —
 `sendmail` (default), **SendGrid** (free tier 100/day), or **Brevo** (free tier
