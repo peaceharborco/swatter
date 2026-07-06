@@ -6,9 +6,9 @@
 #
 # Config (swatter.conf; OFF by default so the public build alerts nobody):
 #   ALERT_SMS_METHOD      "twilio" to enable; "" = off
-#   ALERT_SMS_GRADES      grades that trigger (default "D F")
+#   ALERT_SMS_GRADES      statuses that trigger (default "RED")
 #   ALERT_SMS_TO          destination number, E.164 (+1555...)
-#   ALERT_SMS_DEDUP_HOURS suppress a duplicate same-grade text within N hours (default 6)
+#   ALERT_SMS_DEDUP_HOURS suppress a duplicate same-status text within N hours (default 6)
 #   TWILIO_SID / TWILIO_TOKEN_FILE / TWILIO_FROM   Twilio credentials (token from a 0400 file)
 
 # swatter_send_sms <to> <body> — dispatch on ALERT_SMS_METHOD. Returns nonzero on
@@ -56,16 +56,16 @@ _alert_sms_twilio() {
 # the RPT_GRADE* globals set by _report_grade. Fail-soft: ALWAYS returns 0 so a
 # broken alert never breaks the report.
 #   normal : fires only when RPT_GRADE is in ALERT_SMS_GRADES, with dedup.
-#   --test : fires regardless of grade, "[TEST] "-prefixed, bypassing grade + dedup
-#            (so an operator can verify Twilio setup without waiting for a real F).
+#   --test : fires regardless of status, "[TEST] "-prefixed, bypassing status + dedup
+#            (so an operator can verify Twilio setup without waiting for a real RED).
 swatter_alert_on_grade() {
     local test_mode=0; [[ "${1:-}" == "--test" ]] && test_mode=1
     [[ -n "${ALERT_SMS_METHOD:-}" && -n "${ALERT_SMS_TO:-}" ]] || return 0   # alerting off
 
-    local grade="${RPT_GRADE:-A}"
+    local grade="${RPT_GRADE:-GREEN}"
     if (( ! test_mode )); then
-        # Only the configured grades trigger.
-        case " ${ALERT_SMS_GRADES:-D F} " in *" ${grade} "*) ;; *) return 0 ;; esac
+        # Only the configured statuses trigger.
+        case " ${ALERT_SMS_GRADES:-RED} " in *" ${grade} "*) ;; *) return 0 ;; esac
         # Dedup: same grade already alerted within the window?
         local statef="${STATE_DIR:-/var/lib/swatter}/last-sms-alert"
         local now win; now="$(swatter_now)"; win=$(( ${ALERT_SMS_DEDUP_HOURS:-6} * 3600 ))
@@ -81,7 +81,7 @@ swatter_alert_on_grade() {
 
     local host; host="$(hostname -f 2>/dev/null || hostname)"
     local prefix=""; (( test_mode )) && prefix="[TEST] "
-    local body="${prefix}Swatter ${host}: Grade ${grade} (${RPT_GRADE_WORD:-}). ${RPT_RECO:-}"
+    local body="${prefix}Swatter ${host}: Status ${grade} (${RPT_GRADE_WORD:-}). ${RPT_RECO:-}"
     swatter_send_sms "${ALERT_SMS_TO}" "$body" || log_warn "alerts: SMS send failed (report unaffected)"
     return 0
 }

@@ -87,10 +87,11 @@ check html-ph-manrope  "$(printf '%s' "$html" | grep -c 'Manrope,Helvetica')" "1
 check html-ph-division "$(printf '%s' "$html" | grep -c 'a division of <a href="https://peaceharbor.com"')" "1"
 check html-ph-no-emoji  "$(printf '%s' "$html" | grep -cE '🪰|🛡️|🔒|🩺')" "0"
 check html-ph-no-legacy "$(printf '%s' "$html" | grep -cE '#545d69|#c0392b|#1f8a4c|#B26A00|#2a6b7c|#1b1f24')" "0"
-# Grade card: letter B (state above is 198 blocks, 0 errors -> Review), legend, recommendation.
-check html-grade-word   "$(printf '%s' "$html" | grep -c 'Review')" "1"
-check html-grade-legend "$(printf '%s' "$html" | grep -c 'A All Clear')" "1"
-check html-reco         "$(printf '%s' "$html" | grep -c 'Skim the sections below')" "1"
+# Status card: GREEN / All Clear (state above is 198 blocks, 0 errors -> Swatter working), legend, recommendation.
+check html-status-word   "$(printf '%s' "$html" | grep -c 'All Clear')" "1"
+check html-status-token  "$(printf '%s' "$html" | grep -c 'GREEN')" "1"
+check html-status-legend "$(printf '%s' "$html" | grep -c 'Green All Clear')" "1"
+check html-reco          "$(printf '%s' "$html" | grep -c 'Skim the sections below')" "1"
 # Section summaries + the renamed Non-Fatal wording.
 check html-actors-sum   "$(printf '%s' "$html" | grep -c 'Automated attackers')" "1"
 check html-nonfatal     "$(printf '%s' "$html" | grep -c 'Non-Fatal')" "1"
@@ -129,14 +130,17 @@ tbody="$(swatter_report_build 24h)"
 check text-footer-division "$(printf '%s' "$tbody" | grep -c 'Peace Harbor Studios — a division of Peace Harbor Companies')" "1"
 check text-footer-gh    "$(printf '%s' "$tbody" | grep -c 'github.com/peaceharborco/swatter')" "1"
 
-# Grade logic — worst signal wins. (f=fatal e=non-fatal ol=origin b=blocks)
-_grade() { ERR_FATAL="$1" ERR_GENUINE="$2" OL_HITS="$3" RPT_ACTED="$4" REPORT_WINDOW=24h REPORT_TRIAGE_HINT=""; _report_grade; printf '%s' "$RPT_GRADE"; }
-check grade-A "$(_grade 0 0 0 0)"      "A"
-check grade-B "$(_grade 0 26 0 165)"   "B"   # today's sample: routine noise + blocks
-check grade-blocks-stay-B "$(_grade 0 0 0 900)" "B"   # a big attack Swatter handled is still B
-check grade-C "$(_grade 0 120 0 0)"    "C"   # elevated non-fatal errors
-check grade-D "$(_grade 0 350 0 0)"    "D"   # error flood
-check grade-F "$(_grade 2 5 0 0)"      "F"   # any fatal wins
+# Status logic — traffic light, worst signal wins. (f=fatal e=non-fatal ol=origin b=blocks)
+_grade() { ERR_FATAL="$1" ERR_GENUINE="$2" OL_HITS="$3" RPT_ACTED="$4" REPORT_WINDOW=24h REPORT_TRIAGE_HINT="" REPORT_GRADE_FORCE=""; _report_grade; printf '%s' "$RPT_GRADE"; }
+check status-quiet-green   "$(_grade 0 0 0 0)"      "GREEN"    # nothing at all
+check status-noise-green   "$(_grade 0 26 0 165)"   "GREEN"    # routine noise + blocks stay green
+check status-blocks-green  "$(_grade 0 0 0 900)"    "GREEN"    # a big attack Swatter handled is still green
+check status-elevated-yellow "$(_grade 0 120 0 0)"  "YELLOW"   # elevated non-fatal errors (was C)
+check status-flood-yellow  "$(_grade 0 350 0 0)"    "YELLOW"   # error flood (was D)
+check status-fatal-red     "$(_grade 2 5 0 0)"      "RED"      # any fatal wins
+# Forced override lets an operator preview any status regardless of data.
+check status-force-red     "$(ERR_FATAL=0 ERR_GENUINE=0 OL_HITS=0 RPT_ACTED=0 REPORT_GRADE_FORCE=red _report_grade; printf '%s' "$RPT_GRADE")" "RED"
+check status-force-yellow  "$(ERR_FATAL=0 ERR_GENUINE=0 OL_HITS=0 RPT_ACTED=0 REPORT_GRADE_FORCE=YELLOW _report_grade; printf '%s' "$RPT_GRADE")" "YELLOW"
 # Recommendation adapts to the triage hint (public default = blank -> generic wording).
 ERR_FATAL=0 ERR_GENUINE=20 OL_HITS=0 RPT_ACTED=0 REPORT_WINDOW=24h REPORT_TRIAGE_HINT="/server-logs"; _report_grade
 check reco-hint "$(printf '%s' "$RPT_RECO" | grep -c '/server-logs')" "1"

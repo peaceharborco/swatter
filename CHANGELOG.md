@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-07-06
+
+### Changed
+- **Nightly report grade is now a traffic light (GREEN / YELLOW / RED), replacing
+  the A–F letter scale.** The old five-letter card collapsed onto three statuses
+  the way an operator actually reads it: **GREEN** = A/B (nothing actionable —
+  blocks and origin-lock hits live here, since they are Swatter working, not a
+  problem), **YELLOW** = C/D (elevated non-fatal error volume worth a look), and
+  **RED** = F (a fatal error — a service or app may be down). The underlying
+  thresholds are unchanged (`REPORT_GRADE_C_ERRORS`, `REPORT_GRADE_D_ERRORS`
+  keep their names and still tune the YELLOW entry point and its "investigate"
+  vs "act now" wording). Both renderers updated: the text digest leads with
+  `STATUS: GREEN — All Clear`, and the HTML email shows a lit traffic-light lamp
+  (pine-green / brass / ember) in the hero tile with a matching legend.
+- **SMS alerts now trigger on RED.** `ALERT_SMS_GRADES` default moved from
+  `"D F"` to `"RED"` (server config updated in place); the alert body reads
+  `Status RED (Act Now).` A custom set may still include `YELLOW`. Dedup and the
+  `--test` bypass are unchanged.
+
+### Added
+- **`REPORT_GRADE_FORCE=green|yellow|red`** overrides the computed status so an
+  operator can preview any status (drives the `--test` path to send one email
+  per status and to fire the RED SMS on demand). Never affects a real nightly run.
+
 ## [2.7.1] - 2026-07-05
 
 ### Added

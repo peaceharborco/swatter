@@ -30,7 +30,7 @@ check fromname-no-parens "$(case "${REPORT_FROM_NAME}" in *'('*|*')'*) echo bad;
 check fromname-brackets  "$(case "${REPORT_FROM_NAME}" in 'Swatter ['*']') echo ok;; *) echo no;; esac)" "ok"
 # SMS grade-alert defaults: OFF out of the box, sensible trigger grades + dedup.
 check alert-sms-off      "${ALERT_SMS_METHOD}" ""
-check alert-sms-grades   "${ALERT_SMS_GRADES}" "D F"
+check alert-sms-grades   "${ALERT_SMS_GRADES}" "RED"
 check alert-sms-dedup    "${ALERT_SMS_DEDUP_HOURS}" "6"
 check intel-has-blde    "$(case " ${INTEL_PROVIDERS} " in *' blocklist_de '*) echo yes;; *) echo no;; esac)" "yes"
 check abl-conf-default   "${ABUSEIPDB_BLOCKLIST_CONFIDENCE}" "90"

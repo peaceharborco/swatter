@@ -83,7 +83,7 @@ swatter_report_build() {
     echo "Swatter Nightly Report — $(hostname -f 2>/dev/null || hostname)"
     echo "Window: last ${window}  (mode: ${SWATTER_MODE})"
     echo
-    echo "GRADE ${RPT_GRADE} — ${RPT_GRADE_WORD}:  ${RPT_GRADE_HEADLINE}"
+    echo "STATUS: ${RPT_GRADE} — ${RPT_GRADE_WORD}:  ${RPT_GRADE_HEADLINE}"
     echo "${RPT_GRADE_SUB}"
     echo "-> ${RPT_RECO}"
     echo
@@ -266,12 +266,13 @@ _report_render_html() {
     local bdr='#E3DCCB' panel='#FBF9F4' ember='#8C3B2E' lake='#2A5A6B'
     local h3="${f_h};font-weight:600;font-size:14.5px;color:${pine};"
 
-    # Grade badge/tile colors: Info / Warn / Critical per the template.
-    local gbg gfg
+    # Status badge/tile colors + traffic-light lamp: Info / Warn / Critical per
+    # the template. `lamp` is the solid lit-lamp color shown in the hero tile.
+    local gbg gfg lamp
     case "${RPT_GRADE_LEVEL:-green}" in
-        red)   gbg="#F3E4E0"; gfg="$ember" ;;
-        amber) gbg="#F7EBD4"; gfg="#7A5313" ;;
-        *)     gbg="$cream";  gfg="$pine" ;;
+        red)           gbg="#F3E4E0"; gfg="$ember";   lamp="$ember" ;;
+        yellow|amber)  gbg="#F7EBD4"; gfg="#7A5313";  lamp="#C48A2E" ;;
+        *)             gbg="$cream";  gfg="$pine";    lamp="#2F855A" ;;
     esac
 
     # Recommendation — the triage hint (if any) is shown as type-this code, never a link.
@@ -296,7 +297,7 @@ _report_render_html() {
 
     # Title block: grade badge -> title -> meta line.
     printf '<tr><td align="center" style="padding:22px 28px 4px;%s;">' "$f_b"
-    printf '<span style="display:inline-block;%s;font-size:11px;font-weight:700;border-radius:4px;padding:3px 9px;background:%s;color:%s;border:1px solid %s;">Grade %s &middot; %s</span>' \
+    printf '<span style="display:inline-block;%s;font-size:11px;font-weight:700;border-radius:4px;padding:3px 9px;background:%s;color:%s;border:1px solid %s;">Status %s &middot; %s</span>' \
         "$f_h" "$gbg" "$gfg" "$bdr" "${RPT_GRADE}" "$(printf '%s' "${RPT_GRADE_WORD}" | esc)"
     printf '<p style="%s;font-weight:600;font-size:19px;color:%s;margin:10px 0 4px;">Swatter Nightly Report</p>' "$f_h" "$ink"
     printf '<p style="font-size:13px;color:%s;margin:0;">%s &middot; Last %s &middot; Mode %s</p>' \
@@ -308,13 +309,13 @@ _report_render_html() {
 
     # Grade hero: letter tile + headline / sub / recommendation.
     printf '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0"><tr>'
-    printf '<td width="88" style="vertical-align:top;"><div style="width:88px;height:88px;border-radius:10px;background:%s;border:1px solid %s;text-align:center;padding-top:14px;box-sizing:border-box;"><div style="%s;font-size:40px;font-weight:700;color:%s;line-height:1;">%s</div><div style="%s;font-size:11.5px;font-weight:700;color:%s;margin-top:4px;">%s</div></div></td>' \
-        "$gbg" "$bdr" "$f_h" "$gfg" "${RPT_GRADE}" "$f_h" "$gfg" "$(printf '%s' "${RPT_GRADE_WORD}" | esc)"
+    printf '<td width="88" style="vertical-align:top;"><div style="width:88px;height:88px;border-radius:10px;background:%s;border:1px solid %s;text-align:center;padding-top:16px;box-sizing:border-box;"><div style="width:38px;height:38px;border-radius:50%%;background:%s;margin:0 auto;line-height:38px;"></div><div style="%s;font-size:11px;font-weight:700;letter-spacing:0.4px;color:%s;margin-top:7px;text-transform:uppercase;">%s</div></div></td>' \
+        "$gbg" "$bdr" "$lamp" "$f_h" "$gfg" "$(printf '%s' "${RPT_GRADE}" | esc)"
     printf '<td style="vertical-align:top;padding-left:18px;">'
     printf '<div style="%s;font-weight:600;font-size:16px;color:%s;">%s</div><div style="font-size:13px;color:%s;margin-top:4px;line-height:1.55;">%s</div><div style="font-size:13px;color:%s;margin-top:10px;line-height:1.5;"><b>&rarr;</b> %s</div>' \
         "$f_h" "$ink" "$(printf '%s' "${RPT_GRADE_HEADLINE}" | esc)" "$slate" "$(printf '%s' "${RPT_GRADE_SUB}" | esc)" "$gfg" "$reco"
     printf '</td></tr></table>'
-    printf '<p style="font-size:11.5px;color:%s;margin:12px 0 0;">A All Clear &middot; B Review &middot; C Investigate &middot; D Act Now &middot; F Fatal / Outage</p>' "$slate"
+    printf '<p style="font-size:11.5px;color:%s;margin:12px 0 0;"><span style="color:#2F855A;">&#9679;</span> Green All Clear &middot; <span style="color:#C48A2E;">&#9679;</span> Yellow Investigate &middot; <span style="color:%s;">&#9679;</span> Red Fatal / Outage</p>' "$slate" "$ember"
 
     # Bad Actors.
     local bf=""
@@ -393,40 +394,82 @@ _report_verdict() {
     printf '%s\t%s · %s' "$level" "$lead" "$tail"
 }
 
-# Report-card grade (A–F) + recommendation. Worst signal wins. Sets the RPT_GRADE*
-# / RPT_RECO globals both renderers read. The grade decides whether the report
-# tells the operator to run their triage command (REPORT_TRIAGE_HINT).
+# Report status (traffic light: GREEN / YELLOW / RED) + recommendation. Worst
+# signal wins. Sets the RPT_GRADE* / RPT_RECO globals both renderers read. The
+# status decides whether the report tells the operator to run their triage
+# command (REPORT_TRIAGE_HINT).
+#
+#   GREEN  — nothing actionable. Blocks and origin-lock hits live here: they're
+#            Swatter working, not a problem, so they never leave GREEN.
+#   YELLOW — elevated non-fatal error volume worth a look (was C/D).
+#   RED    — a fatal error: a service or app may be down (was F).
+#
+# REPORT_GRADE_FORCE=green|yellow|red overrides the computed tier so an operator
+# can preview any status (used by the --test path to send one email per status
+# and to fire the RED SMS on demand). It never affects a real nightly run.
 _report_grade() {
     local f="${ERR_FATAL:-0}" e="${ERR_GENUINE:-0}" b="${RPT_ACTED:-0}" ol="${OL_HITS:-0}"
     local win="${REPORT_WINDOW:-24h}" hint="${REPORT_TRIAGE_HINT:-}"
     local dE="${REPORT_GRADE_D_ERRORS:-300}" cE="${REPORT_GRADE_C_ERRORS:-100}"
 
-    # Worst signal wins. Blocks never escalate past B — they're Swatter working.
-    if   (( f > 0 ));  then RPT_GRADE=F; RPT_GRADE_WORD="Fatal";       RPT_GRADE_LEVEL=red
-    elif (( e >= dE )); then RPT_GRADE=D; RPT_GRADE_WORD="Act Now";     RPT_GRADE_LEVEL=red
-    elif (( e >= cE )); then RPT_GRADE=C; RPT_GRADE_WORD="Investigate"; RPT_GRADE_LEVEL=amber
-    elif (( b > 0 || e > 0 || ol > 0 )); then RPT_GRADE=B; RPT_GRADE_WORD="Review"; RPT_GRADE_LEVEL=amber
-    else                RPT_GRADE=A; RPT_GRADE_WORD="All Clear";   RPT_GRADE_LEVEL=green
+    local force; force="$(printf '%s' "${REPORT_GRADE_FORCE:-}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$force" == green || "$force" == yellow || "$force" == red ]]; then
+        RPT_GRADE_LEVEL="$force"
+    elif (( f > 0 ));   then RPT_GRADE_LEVEL=red      # fatal → outage
+    elif (( e >= cE )); then RPT_GRADE_LEVEL=yellow   # elevated error volume
+    else                     RPT_GRADE_LEVEL=green    # blocks/origin-lock are Swatter working
     fi
+
+    # RPT_GRADE is the status word both renderers and the SMS alert key on.
+    case "$RPT_GRADE_LEVEL" in
+        red)    RPT_GRADE=RED;    RPT_GRADE_WORD="Act Now" ;;
+        yellow) RPT_GRADE=YELLOW; RPT_GRADE_WORD="Investigate" ;;
+        *)      RPT_GRADE=GREEN;  RPT_GRADE_WORD="All Clear" ;;
+    esac
 
     local es; es="$( (( e == 1 )) || echo s )"    # pluralizers
     local bs; bs="$( (( b == 1 )) || echo s )"
     local fs; fs="$( (( f == 1 )) || echo s )"
     local recap="${e} non-fatal error${es} and ${b} block${bs} in the last ${win}."
-    case "$RPT_GRADE" in
-        A) RPT_GRADE_HEADLINE="All Clear — Nothing To Do";       RPT_GRADE_SUB="A quiet ${win}: no errors and nothing that needed action." ;;
-        B) RPT_GRADE_HEADLINE="Worth A Look — Nothing's On Fire"; RPT_GRADE_SUB="${recap} No fatal errors, no outage." ;;
-        C) RPT_GRADE_HEADLINE="Worth Investigating";              RPT_GRADE_SUB="${recap} No fatal errors, but the volume is above routine." ;;
-        D) RPT_GRADE_HEADLINE="Needs Attention";                  RPT_GRADE_SUB="${recap} A high error count — check it before it escalates." ;;
-        F) RPT_GRADE_HEADLINE="Action Needed";                    RPT_GRADE_SUB="${f} fatal error${fs} — a service or app may be down." ;;
+    case "$RPT_GRADE_LEVEL" in
+        green)
+            if (( f == 0 && e == 0 && b == 0 && ol == 0 )); then
+                RPT_GRADE_HEADLINE="All Clear — Nothing To Do"
+                RPT_GRADE_SUB="A quiet ${win}: no errors and nothing that needed action."
+            else
+                RPT_GRADE_HEADLINE="All Clear — Nothing's On Fire"
+                RPT_GRADE_SUB="${recap} No fatal errors, no outage — just Swatter doing its job."
+            fi ;;
+        yellow)
+            if (( e >= dE )); then
+                RPT_GRADE_HEADLINE="Needs Attention"
+                RPT_GRADE_SUB="${recap} A high error count — check it before it escalates."
+            else
+                RPT_GRADE_HEADLINE="Worth Investigating"
+                RPT_GRADE_SUB="${recap} No fatal errors, but the volume is above routine."
+            fi ;;
+        red)
+            RPT_GRADE_HEADLINE="Action Needed"
+            RPT_GRADE_SUB="${f} fatal error${fs} — a service or app may be down." ;;
     esac
 
-    case "$RPT_GRADE" in
-        A) RPT_RECO="No action needed." ;;
-        B) [[ -n "$hint" ]] && RPT_RECO="Skim the sections below; run ${hint} if anything stands out." || RPT_RECO="Skim the sections below when you have a moment." ;;
-        C) [[ -n "$hint" ]] && RPT_RECO="Run ${hint} to triage." || RPT_RECO="Review the sections below to triage." ;;
-        D) [[ -n "$hint" ]] && RPT_RECO="Run ${hint} now to triage." || RPT_RECO="Investigate now." ;;
-        F) [[ -n "$hint" ]] && RPT_RECO="Run ${hint} now — ${f} fatal error${fs}." || RPT_RECO="Investigate the ${f} fatal error${fs} now." ;;
+    case "$RPT_GRADE_LEVEL" in
+        green)
+            if (( f == 0 && e == 0 && b == 0 && ol == 0 )); then
+                RPT_RECO="No action needed."
+            elif [[ -n "$hint" ]]; then
+                RPT_RECO="Skim the sections below; run ${hint} if anything stands out."
+            else
+                RPT_RECO="Skim the sections below when you have a moment."
+            fi ;;
+        yellow)
+            if (( e >= dE )); then
+                [[ -n "$hint" ]] && RPT_RECO="Run ${hint} now to triage." || RPT_RECO="Investigate now."
+            else
+                [[ -n "$hint" ]] && RPT_RECO="Run ${hint} to triage." || RPT_RECO="Review the sections below to triage."
+            fi ;;
+        red)
+            [[ -n "$hint" ]] && RPT_RECO="Run ${hint} now — ${f} fatal error${fs}." || RPT_RECO="Investigate the ${f} fatal error${fs} now." ;;
     esac
 }
 
