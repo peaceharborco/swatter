@@ -256,7 +256,7 @@ _report_render_html() {
     # Title-case the first letter (bash 3.2-safe — no ${x^}).
     local _tc; _tc() { local s="$1"; [[ -z "$s" ]] && return 0; printf '%s%s' "$(printf '%s' "${s:0:1}" | tr 'a-z' 'A-Z')" "${s:1}"; }
 
-    local logo="${REPORT_LOGO_URL:-https://assets.peaceharbor.com/email/ph-lockup-stacked-studios-email-720w.png}"
+    local logo="${REPORT_LOGO_URL:-https://assets.peaceharbor.com/email/ph-lockup-stacked-studios-email-720w-v2.png}"
     local logo_alt="${REPORT_LOGO_ALT:-Peace Harbor Studios}"
 
     # Brand tokens (brand/email-template.md).
@@ -289,7 +289,7 @@ _report_render_html() {
     printf '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%%;background:#ffffff;border:1px solid %s;border-radius:10px;">' "$bdr"
 
     # Header — stacked lockup on the cream field, brass rule.
-    printf '<tr><td align="center" style="background:%s;padding:24px 28px 18px;border-bottom:3px solid #C48A2E;border-radius:10px 10px 0 0;">' "$cream"
+    printf '<tr><td align="center" style="background:%s;padding:24px 28px 18px;border-bottom:3px solid #4A5568;border-radius:10px 10px 0 0;">' "$cream"
     printf '<img src="%s" alt="%s" width="360" style="display:block;width:360px;max-width:80%%;height:auto;">' \
         "$(printf '%s' "$logo" | esc)" "$(printf '%s' "$logo_alt" | esc)"
     printf '</td></tr>'

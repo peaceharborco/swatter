@@ -77,9 +77,9 @@ check html-no-pre   "$(printf '%s' "$html" | grep -c '<pre')" "0"
 # Canonical PH system-email template (peaceharbor repo: brand/email-template.md,
 # owner-approved 2026-07-02) — STUDIOS lockup, brand tokens, division footer,
 # no emoji headings, and none of the legacy pre-template palette.
-check html-ph-lockup   "$(printf '%s' "$html" | grep -c 'ph-lockup-stacked-studios-email-720w.png')" "1"
+check html-ph-lockup   "$(printf '%s' "$html" | grep -c 'ph-lockup-stacked-studios-email-720w-v2.png')" "1"
 check html-ph-alt      "$(printf '%s' "$html" | grep -c 'alt="Peace Harbor Studios"')" "1"
-check html-ph-brass    "$(printf '%s' "$html" | grep -c 'border-bottom:3px solid #C48A2E')" "1"
+check html-ph-rule     "$(printf '%s' "$html" | grep -c 'border-bottom:3px solid #4A5568')" "1"
 check html-ph-cream    "$(printf '%s' "$html" | grep -c 'background:#F4F0E8')" "1"
 check html-ph-card     "$(printf '%s' "$html" | grep -c 'width="600"')" "1"
 check html-ph-sora     "$(printf '%s' "$html" | grep -c 'Sora,Helvetica')" "1"
