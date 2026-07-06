@@ -290,7 +290,7 @@ _report_render_html() {
     printf '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0"><tr><td align="center">'
     printf '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%%;background:#ffffff;border:1px solid %s;border-radius:10px;">' "$bdr"
 
-    # Header — stacked lockup on the cream field, brass rule.
+    # Header — stacked lockup on the cream field, slate rule.
     printf '<tr><td align="center" style="background:%s;padding:24px 28px 18px;border-bottom:3px solid #4A5568;border-radius:10px 10px 0 0;">' "$cream"
     printf '<img src="%s" alt="%s" width="360" style="display:block;width:360px;max-width:80%%;height:auto;">' \
         "$(printf '%s' "$logo" | esc)" "$(printf '%s' "$logo_alt" | esc)"
@@ -316,7 +316,7 @@ _report_render_html() {
     printf '<div style="%s;font-weight:600;font-size:16px;color:%s;">%s</div><div style="font-size:13px;color:%s;margin-top:4px;line-height:1.55;">%s</div><div style="font-size:13px;color:%s;margin-top:10px;line-height:1.5;"><b>&rarr;</b> %s</div>' \
         "$f_h" "$ink" "$(printf '%s' "${RPT_GRADE_HEADLINE}" | esc)" "$slate" "$(printf '%s' "${RPT_GRADE_SUB}" | esc)" "$gfg" "$reco"
     printf '</td></tr></table>'
-    printf '<p style="font-size:11.5px;color:%s;margin:12px 0 0;">🟢 Green All Clear &middot; 🟡 Yellow Investigate &middot; 🔴 Red Fatal / Outage</p>' "$slate"
+    printf '<p style="font-size:11.5px;color:%s;margin:12px 0 0;">🟢 GREEN All Clear &middot; 🟡 YELLOW Investigate &middot; 🔴 RED Fatal / Outage</p>' "$slate"
 
     # Bad Actors.
     local bf=""
