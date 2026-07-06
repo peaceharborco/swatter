@@ -90,6 +90,7 @@ check html-ph-no-legacy "$(printf '%s' "$html" | grep -cE '#545d69|#c0392b|#1f8a
 # Status card: GREEN / All Clear (state above is 198 blocks, 0 errors -> Swatter working), legend, recommendation.
 check html-status-word   "$(printf '%s' "$html" | grep -c 'All Clear')" "1"
 check html-status-token  "$(printf '%s' "$html" | grep -c 'GREEN')" "1"
+check html-status-icon   "$(printf '%s' "$html" | grep -c '🟢')" "1"   # green traffic-light icon present
 check html-status-legend "$(printf '%s' "$html" | grep -c 'Green All Clear')" "1"
 check html-reco          "$(printf '%s' "$html" | grep -c 'Skim the sections below')" "1"
 # Section summaries + the renamed Non-Fatal wording.

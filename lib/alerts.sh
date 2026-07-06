@@ -81,7 +81,12 @@ swatter_alert_on_grade() {
 
     local host; host="$(hostname -f 2>/dev/null || hostname)"
     local prefix=""; (( test_mode )) && prefix="[TEST] "
-    local body="${prefix}Swatter ${host}: Status ${grade} (${RPT_GRADE_WORD:-}). ${RPT_RECO:-}"
+    # Traffic-light icon matching the status (falls back to the report global).
+    local icon="${RPT_GRADE_ICON:-}"
+    if [[ -z "$icon" ]]; then
+        case "$grade" in RED) icon="🔴" ;; YELLOW) icon="🟡" ;; GREEN) icon="🟢" ;; esac
+    fi
+    local body="${prefix}${icon:+$icon }Swatter ${host}: Status ${grade} (${RPT_GRADE_WORD:-}). ${RPT_RECO:-}"
     swatter_send_sms "${ALERT_SMS_TO}" "$body" || log_warn "alerts: SMS send failed (report unaffected)"
     return 0
 }

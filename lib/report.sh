@@ -83,7 +83,7 @@ swatter_report_build() {
     echo "Swatter Nightly Report — $(hostname -f 2>/dev/null || hostname)"
     echo "Window: last ${window}  (mode: ${SWATTER_MODE})"
     echo
-    echo "STATUS: ${RPT_GRADE} — ${RPT_GRADE_WORD}:  ${RPT_GRADE_HEADLINE}"
+    echo "STATUS: ${RPT_GRADE_ICON} ${RPT_GRADE} — ${RPT_GRADE_WORD}:  ${RPT_GRADE_HEADLINE}"
     echo "${RPT_GRADE_SUB}"
     echo "-> ${RPT_RECO}"
     echo
@@ -266,13 +266,14 @@ _report_render_html() {
     local bdr='#E3DCCB' panel='#FBF9F4' ember='#8C3B2E' lake='#2A5A6B'
     local h3="${f_h};font-weight:600;font-size:14.5px;color:${pine};"
 
-    # Status badge/tile colors + traffic-light lamp: Info / Warn / Critical per
-    # the template. `lamp` is the solid lit-lamp color shown in the hero tile.
-    local gbg gfg lamp
+    # Status badge/tile colors + traffic-light icon: Info / Warn / Critical per
+    # the template. `licon` is the emoji lamp (🟢/🟡/🔴) shown in the hero tile,
+    # badge, and legend.
+    local gbg gfg licon="${RPT_GRADE_ICON:-🟢}"
     case "${RPT_GRADE_LEVEL:-green}" in
-        red)           gbg="#F3E4E0"; gfg="$ember";   lamp="$ember" ;;
-        yellow|amber)  gbg="#F7EBD4"; gfg="#7A5313";  lamp="#C48A2E" ;;
-        *)             gbg="$cream";  gfg="$pine";    lamp="#2F855A" ;;
+        red)           gbg="#F3E4E0"; gfg="$ember" ;;
+        yellow|amber)  gbg="#F7EBD4"; gfg="#7A5313" ;;
+        *)             gbg="$cream";  gfg="$pine" ;;
     esac
 
     # Recommendation — the triage hint (if any) is shown as type-this code, never a link.
@@ -297,8 +298,8 @@ _report_render_html() {
 
     # Title block: grade badge -> title -> meta line.
     printf '<tr><td align="center" style="padding:22px 28px 4px;%s;">' "$f_b"
-    printf '<span style="display:inline-block;%s;font-size:11px;font-weight:700;border-radius:4px;padding:3px 9px;background:%s;color:%s;border:1px solid %s;">Status %s &middot; %s</span>' \
-        "$f_h" "$gbg" "$gfg" "$bdr" "${RPT_GRADE}" "$(printf '%s' "${RPT_GRADE_WORD}" | esc)"
+    printf '<span style="display:inline-block;%s;font-size:11px;font-weight:700;border-radius:4px;padding:3px 9px;background:%s;color:%s;border:1px solid %s;">%s Status %s &middot; %s</span>' \
+        "$f_h" "$gbg" "$gfg" "$bdr" "$licon" "${RPT_GRADE}" "$(printf '%s' "${RPT_GRADE_WORD}" | esc)"
     printf '<p style="%s;font-weight:600;font-size:19px;color:%s;margin:10px 0 4px;">Swatter Nightly Report</p>' "$f_h" "$ink"
     printf '<p style="font-size:13px;color:%s;margin:0;">%s &middot; Last %s &middot; Mode %s</p>' \
         "$slate" "$(printf '%s' "$host" | esc)" "$(printf '%s' "${REPORT_WINDOW:-24h}" | esc)" "$(printf '%s' "$(_tc "${SWATTER_MODE:-report}")" | esc)"
@@ -309,13 +310,13 @@ _report_render_html() {
 
     # Grade hero: letter tile + headline / sub / recommendation.
     printf '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0"><tr>'
-    printf '<td width="88" style="vertical-align:top;"><div style="width:88px;height:88px;border-radius:10px;background:%s;border:1px solid %s;text-align:center;padding-top:16px;box-sizing:border-box;"><div style="width:38px;height:38px;border-radius:50%%;background:%s;margin:0 auto;line-height:38px;"></div><div style="%s;font-size:11px;font-weight:700;letter-spacing:0.4px;color:%s;margin-top:7px;text-transform:uppercase;">%s</div></div></td>' \
-        "$gbg" "$bdr" "$lamp" "$f_h" "$gfg" "$(printf '%s' "${RPT_GRADE}" | esc)"
+    printf '<td width="88" style="vertical-align:top;"><div style="width:88px;height:88px;border-radius:10px;background:%s;border:1px solid %s;text-align:center;padding-top:14px;box-sizing:border-box;"><div style="font-size:40px;line-height:1;">%s</div><div style="%s;font-size:11px;font-weight:700;letter-spacing:0.4px;color:%s;margin-top:6px;text-transform:uppercase;">%s</div></div></td>' \
+        "$gbg" "$bdr" "$licon" "$f_h" "$gfg" "$(printf '%s' "${RPT_GRADE}" | esc)"
     printf '<td style="vertical-align:top;padding-left:18px;">'
     printf '<div style="%s;font-weight:600;font-size:16px;color:%s;">%s</div><div style="font-size:13px;color:%s;margin-top:4px;line-height:1.55;">%s</div><div style="font-size:13px;color:%s;margin-top:10px;line-height:1.5;"><b>&rarr;</b> %s</div>' \
         "$f_h" "$ink" "$(printf '%s' "${RPT_GRADE_HEADLINE}" | esc)" "$slate" "$(printf '%s' "${RPT_GRADE_SUB}" | esc)" "$gfg" "$reco"
     printf '</td></tr></table>'
-    printf '<p style="font-size:11.5px;color:%s;margin:12px 0 0;"><span style="color:#2F855A;">&#9679;</span> Green All Clear &middot; <span style="color:#C48A2E;">&#9679;</span> Yellow Investigate &middot; <span style="color:%s;">&#9679;</span> Red Fatal / Outage</p>' "$slate" "$ember"
+    printf '<p style="font-size:11.5px;color:%s;margin:12px 0 0;">🟢 Green All Clear &middot; 🟡 Yellow Investigate &middot; 🔴 Red Fatal / Outage</p>' "$slate"
 
     # Bad Actors.
     local bf=""
@@ -420,11 +421,12 @@ _report_grade() {
     else                     RPT_GRADE_LEVEL=green    # blocks/origin-lock are Swatter working
     fi
 
-    # RPT_GRADE is the status word both renderers and the SMS alert key on.
+    # RPT_GRADE is the status word both renderers and the SMS alert key on;
+    # RPT_GRADE_ICON is the matching traffic-light emoji (🟢/🟡/🔴).
     case "$RPT_GRADE_LEVEL" in
-        red)    RPT_GRADE=RED;    RPT_GRADE_WORD="Act Now" ;;
-        yellow) RPT_GRADE=YELLOW; RPT_GRADE_WORD="Investigate" ;;
-        *)      RPT_GRADE=GREEN;  RPT_GRADE_WORD="All Clear" ;;
+        red)    RPT_GRADE=RED;    RPT_GRADE_WORD="Act Now";     RPT_GRADE_ICON="🔴" ;;
+        yellow) RPT_GRADE=YELLOW; RPT_GRADE_WORD="Investigate"; RPT_GRADE_ICON="🟡" ;;
+        *)      RPT_GRADE=GREEN;  RPT_GRADE_WORD="All Clear";   RPT_GRADE_ICON="🟢" ;;
     esac
 
     local es; es="$( (( e == 1 )) || echo s )"    # pluralizers

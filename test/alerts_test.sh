@@ -39,6 +39,7 @@ check no-send-below-red "$(nsent)" "0"
 : > "$SENT"; rm -f "$TMP/last-sms-alert"; RPT_GRADE=RED; swatter_alert_on_grade; check send-red "$(nsent)" "1"
 has msg-host    "Swatter"
 has msg-status  "Status RED"
+has msg-icon    "🔴"
 has msg-hint    "/server-logs"
 
 # 5. custom trigger set can include YELLOW
