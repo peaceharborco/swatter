@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Email subject leads with the status icon** — `🟢 Report 2026-07-06 - healthy
   · …` — so the traffic light is visible at a glance in the inbox list without
   opening the message.
+- **Email palette refreshed to the 2026-07-05 brand spec.** The header rule moves
+  from brass `#C48A2E` to slate `#4A5568`, and the header lockup now pulls the
+  refreshed R2 render (`REPORT_LOGO_URL` default →
+  `…ph-lockup-stacked-studios-email-720w-v2.png`). Per
+  `brand/email/email-template.md`. Fleet nodes that pin `REPORT_LOGO_URL` to the
+  old key should be repointed on deploy.
 
 ### Added
 - **`REPORT_GRADE_FORCE=green|yellow|red`** overrides the computed status so an
