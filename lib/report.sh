@@ -571,7 +571,8 @@ _report_summary_errors() {
 _report_subject() {
     local d; d="$(date -u -d "@$(swatter_now)" +%F 2>/dev/null || date -u -r "$(swatter_now)" +%F)"
     local v; v="$(_report_verdict)"
-    printf 'Report %s - %s' "$d" "${v#*$'\t'}"
+    # Lead with the traffic-light icon so status is glanceable in the inbox list.
+    printf '%s Report %s - %s' "${RPT_GRADE_ICON:-🟢}" "$d" "${v#*$'\t'}"
 }
 
 # Entry point: swatter report [WINDOW] [--test|--print]

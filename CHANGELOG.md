@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `"D F"` to `"RED"` (server config updated in place); the alert body leads with
   the status emoji — `🔴 Swatter <host>: Status RED (Act Now).` A custom set may
   still include `YELLOW`. Dedup and the `--test` bypass are unchanged.
+- **Email subject leads with the status icon** — `🟢 Report 2026-07-06 - healthy
+  · …` — so the traffic light is visible at a glance in the inbox list without
+  opening the message.
 
 ### Added
 - **`REPORT_GRADE_FORCE=green|yellow|red`** overrides the computed status so an

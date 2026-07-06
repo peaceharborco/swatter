@@ -22,9 +22,9 @@ check verdict-amber "$(_report_verdict | cut -f1)" "amber"
 ERR_GENUINE=4 ERR_FATAL=2
 check verdict-red   "$(_report_verdict | cut -f1)" "red"
 
-# subject: "Report YYYY-MM-DD - <summary>"
-ERR_GENUINE=0 ERR_FATAL=0
-check subject-shape "$(_report_subject 24h)" "Report ${DATE_UTC} - healthy · 198 blocked, 0 FATAL"
+# subject: "<icon> Report YYYY-MM-DD - <summary>" — leads with the status icon.
+ERR_GENUINE=0 ERR_FATAL=0; REPORT_GRADE_FORCE="" _report_grade   # GREEN -> 🟢
+check subject-shape "$(_report_subject 24h)" "🟢 Report ${DATE_UTC} - healthy · 198 blocked, 0 FATAL"
 OL_HITS=253
 check subject-ol "$(_report_subject 24h | grep -c '253 origin-lock')" "1"
 
