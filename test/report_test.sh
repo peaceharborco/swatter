@@ -148,6 +148,34 @@ check reco-hint "$(printf '%s' "$RPT_RECO" | grep -c '/server-logs')" "1"
 ERR_FATAL=0 ERR_GENUINE=20 OL_HITS=0 RPT_ACTED=0 REPORT_WINDOW=24h REPORT_TRIAGE_HINT=""; _report_grade
 check reco-generic "$(printf '%s' "$RPT_RECO" | grep -c 'server-logs')" "0"
 
+# --- Traffic-light boundaries, wording, and subject-icon agreement (v2.8.0) ---
+_setgrade() { ERR_FATAL="$1" ERR_GENUINE="$2" OL_HITS="${3:-0}" RPT_ACTED="${4:-0}" \
+    REPORT_WINDOW=24h REPORT_TRIAGE_HINT="" REPORT_GRADE_FORCE="${5:-}"; _report_grade; }
+# YELLOW starts exactly at REPORT_GRADE_C_ERRORS (100) — 99 is still GREEN.
+_setgrade 0 99  0 0; check bound-99-green    "$RPT_GRADE" "GREEN"
+_setgrade 0 100 0 0; check bound-100-yellow  "$RPT_GRADE" "YELLOW"
+# Flood "act now" wording starts exactly at REPORT_GRADE_D_ERRORS (300) — 299 is not flood.
+_setgrade 0 299 0 0; check bound-299-headline "$RPT_GRADE_HEADLINE" "Worth Investigating"
+_setgrade 0 300 0 0; check bound-300-headline "$RPT_GRADE_HEADLINE" "Needs Attention"
+# Green with genuine errors present must NOT be framed as "just Swatter doing its job".
+_setgrade 0 47 0 165; check green-errors-nojob  "$(printf '%s' "$RPT_GRADE_SUB" | grep -c 'just Swatter doing its job')" "0"
+_setgrade 0 47 0 165; check green-errors-below   "$(printf '%s' "$RPT_GRADE_SUB" | grep -c 'below the volume that needs action')" "1"
+# Green with only blocks (no genuine errors) keeps the "doing its job" framing.
+_setgrade 0 0  0 900; check green-blocks-job    "$(printf '%s' "$RPT_GRADE_SUB" | grep -c 'just Swatter doing its job')" "1"
+# Subject icon agrees with the status tier; a GREEN subject never carries a warning glyph.
+_setgrade 0 50 0 165
+check subj-green-icon    "$(_report_subject 24h | grep -c '^🟢')" "1"
+check subj-green-nowarn  "$(_report_subject 24h | grep -c '⚠')"   "0"   # no ⚠ beside the green lamp
+_setgrade 0 120 0 0; check subj-yellow-icon "$(_report_subject 24h | grep -c '^🟡')" "1"
+_setgrade 2 0   0 0; check subj-red-icon    "$(_report_subject 24h | grep -c '^🔴')" "1"
+# Forced-red preview with zero real fatals: RED tier, but no nonsensical "0 fatal" copy.
+_setgrade 0 0 0 0 red
+check force-red-tier        "$RPT_GRADE" "RED"
+check force-red-no-zerofatal "$(printf '%s %s' "$RPT_GRADE_SUB" "$RPT_RECO" | grep -c '0 fatal')" "0"
+# An unrecognized REPORT_GRADE_FORCE is ignored (warns) and the computed tier stands.
+_setgrade 2 0 0 0 bogus 2>/dev/null; check force-bogus-ignored "$RPT_GRADE" "RED"
+REPORT_GRADE_FORCE=""   # reset the global _setgrade left set, so later cases aren't forced/noisy
+
 # --- Swarm plane: present only when enabled; never touches grade/verdict/silence ---
 SW_ST="$(mktemp -d "${TMPDIR:-/tmp}/swatter-rptsw.XXXXXX")"; mkdir -p "${SW_ST}/feeds"
 SWNOW="$(swatter_now)"

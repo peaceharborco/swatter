@@ -42,6 +42,13 @@ has msg-status  "Status RED"
 has msg-icon    "🔴"
 has msg-hint    "/server-logs"
 
+# 4b. icon source: an explicit RPT_GRADE_ICON is used verbatim; an empty one falls
+# back to deriving the lamp from the status word (both branches of the fallback).
+: > "$SENT"; rm -f "$TMP/last-sms-alert"; RPT_GRADE=RED RPT_GRADE_ICON="🟢" swatter_alert_on_grade
+has msg-icon-explicit "🟢"    # primary path honors the provided icon (even if mismatched)
+: > "$SENT"; rm -f "$TMP/last-sms-alert"; RPT_GRADE=RED RPT_GRADE_ICON="" swatter_alert_on_grade
+has msg-icon-fallback "🔴"    # empty icon -> derived from the RED status word
+
 # 5. custom trigger set can include YELLOW
 : > "$SENT"; rm -f "$TMP/last-sms-alert"; ALERT_SMS_GRADES="YELLOW RED"; RPT_GRADE=YELLOW; swatter_alert_on_grade; check custom-yellow "$(nsent)" "1"
 

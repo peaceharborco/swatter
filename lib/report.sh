@@ -272,7 +272,7 @@ _report_render_html() {
     local gbg gfg licon="${RPT_GRADE_ICON:-🟢}"
     case "${RPT_GRADE_LEVEL:-green}" in
         red)           gbg="#F3E4E0"; gfg="$ember" ;;
-        yellow|amber)  gbg="#F7EBD4"; gfg="#7A5313" ;;
+        yellow)        gbg="#F7EBD4"; gfg="#7A5313" ;;
         *)             gbg="$cream";  gfg="$pine" ;;
     esac
 
@@ -308,7 +308,7 @@ _report_render_html() {
     # Body.
     printf '<tr><td style="padding:14px 28px 24px;%s;font-size:15px;line-height:1.6;color:%s;">' "$f_b" "$ink"
 
-    # Grade hero: letter tile + headline / sub / recommendation.
+    # Status hero: traffic-light tile + headline / sub / recommendation.
     printf '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0"><tr>'
     printf '<td width="88" style="vertical-align:top;"><div style="width:88px;height:88px;border-radius:10px;background:%s;border:1px solid %s;text-align:center;padding-top:14px;box-sizing:border-box;"><div style="font-size:40px;line-height:1;">%s</div><div style="%s;font-size:11px;font-weight:700;letter-spacing:0.4px;color:%s;margin-top:6px;text-transform:uppercase;">%s</div></div></td>' \
         "$gbg" "$bdr" "$licon" "$f_h" "$gfg" "$(printf '%s' "${RPT_GRADE}" | esc)"
@@ -383,11 +383,16 @@ _report_send() {
     swatter_send_email "${REPORT_EMAIL}" "$subject" "$body" "$html"
 }
 
-# Worst-plane-wins severity. Echoes "LEVEL<TAB>SUMMARY" (LEVEL: green|yellow|red).
+# Factual one-line summary for the email subject: "LEVEL<TAB>SUMMARY". The status
+# LAMP (RPT_GRADE_ICON, set by _report_grade on the traffic-light thresholds) is
+# what carries severity in the subject, so the SUMMARY text stays neutral counts
+# — no ⚠, no severity word — to avoid a green lamp sitting beside alarmist text
+# for sub-threshold error volume. The LEVEL field is vestigial (only the summary
+# after the tab is consumed, by _report_subject); kept for the tab contract.
 _report_verdict() {
     local level="green" lead="healthy"
-    if   (( ${ERR_FATAL:-0}   > 0 )); then level="red";    lead="⚠ ${ERR_FATAL} FATAL"
-    elif (( ${ERR_GENUINE:-0} > 0 )); then level="yellow"; lead="⚠ ${ERR_GENUINE} server error(s)"
+    if   (( ${ERR_FATAL:-0}   > 0 )); then level="red";    lead="${ERR_FATAL} FATAL"
+    elif (( ${ERR_GENUINE:-0} > 0 )); then level="yellow"; lead="${ERR_GENUINE} server error(s)"
     fi
     local tail="${RPT_ACTED:-0} blocked"
     (( ${OL_HITS:-0} > 0 )) && tail="${tail} · ${OL_HITS} origin-lock"
@@ -408,14 +413,22 @@ _report_verdict() {
 # REPORT_GRADE_FORCE=green|yellow|red overrides the computed tier so an operator
 # can force a status for a `--test` preview — run it once per status
 # (REPORT_GRADE_FORCE=red swatter report --test) to preview that email and, for
-# red, fire the RED SMS on demand. It never affects a real nightly run.
+# red, fire the RED SMS on demand. It is intended for --test previews and is NOT
+# set during normal operation; note there is no --test guard here, so if it is
+# left set in the environment or swatter.conf it WILL override a real nightly run
+# too — don't persist it. An unrecognized value is ignored (with a warning) and
+# the computed tier stands.
 _report_grade() {
     local f="${ERR_FATAL:-0}" e="${ERR_GENUINE:-0}" b="${RPT_ACTED:-0}" ol="${OL_HITS:-0}"
     local win="${REPORT_WINDOW:-24h}" hint="${REPORT_TRIAGE_HINT:-}"
     local dE="${REPORT_GRADE_D_ERRORS:-300}" cE="${REPORT_GRADE_C_ERRORS:-100}"
 
     local force; force="$(printf '%s' "${REPORT_GRADE_FORCE:-}" | tr '[:upper:]' '[:lower:]')"
-    if [[ "$force" == green || "$force" == yellow || "$force" == red ]]; then
+    if [[ -n "$force" && "$force" != green && "$force" != yellow && "$force" != red ]]; then
+        log_warn "report: ignoring REPORT_GRADE_FORCE='${REPORT_GRADE_FORCE}' (expected green|yellow|red)"
+        force=""
+    fi
+    if [[ -n "$force" ]]; then
         RPT_GRADE_LEVEL="$force"
     elif (( f > 0 ));   then RPT_GRADE_LEVEL=red      # fatal → outage
     elif (( e >= cE )); then RPT_GRADE_LEVEL=yellow   # elevated error volume
@@ -434,17 +447,26 @@ _report_grade() {
     local bs; bs="$( (( b == 1 )) || echo s )"
     local fs; fs="$( (( f == 1 )) || echo s )"
     local recap="${e} non-fatal error${es} and ${b} block${bs} in the last ${win}."
+    # Shared tier predicates, computed once so the headline and recommendation
+    # switches below key on the same conditions and can't drift apart.
+    local quiet=0; (( f == 0 && e == 0 && b == 0 && ol == 0 )) && quiet=1
+    local flood=0; (( e >= dE )) && flood=1
     case "$RPT_GRADE_LEVEL" in
         green)
-            if (( f == 0 && e == 0 && b == 0 && ol == 0 )); then
+            if (( quiet )); then
                 RPT_GRADE_HEADLINE="All Clear — Nothing To Do"
                 RPT_GRADE_SUB="A quiet ${win}: no errors and nothing that needed action."
+            elif (( e > 0 )); then
+                # Genuine errors present but below the alert threshold — don't call
+                # that "just Swatter doing its job" (those are real errors, not blocks).
+                RPT_GRADE_HEADLINE="All Clear — Nothing's On Fire"
+                RPT_GRADE_SUB="${recap} No fatal errors — below the volume that needs action."
             else
                 RPT_GRADE_HEADLINE="All Clear — Nothing's On Fire"
                 RPT_GRADE_SUB="${recap} No fatal errors, no outage — just Swatter doing its job."
             fi ;;
         yellow)
-            if (( e >= dE )); then
+            if (( flood )); then
                 RPT_GRADE_HEADLINE="Needs Attention"
                 RPT_GRADE_SUB="${recap} A high error count — check it before it escalates."
             else
@@ -453,12 +475,17 @@ _report_grade() {
             fi ;;
         red)
             RPT_GRADE_HEADLINE="Action Needed"
-            RPT_GRADE_SUB="${f} fatal error${fs} — a service or app may be down." ;;
+            if (( f > 0 )); then
+                RPT_GRADE_SUB="${f} fatal error${fs} — a service or app may be down."
+            else
+                # Forced-red preview (REPORT_GRADE_FORCE=red with no fatal counted).
+                RPT_GRADE_SUB="A service or app may be down."
+            fi ;;
     esac
 
     case "$RPT_GRADE_LEVEL" in
         green)
-            if (( f == 0 && e == 0 && b == 0 && ol == 0 )); then
+            if (( quiet )); then
                 RPT_RECO="No action needed."
             elif [[ -n "$hint" ]]; then
                 RPT_RECO="Skim the sections below; run ${hint} if anything stands out."
@@ -466,13 +493,17 @@ _report_grade() {
                 RPT_RECO="Skim the sections below when you have a moment."
             fi ;;
         yellow)
-            if (( e >= dE )); then
+            if (( flood )); then
                 [[ -n "$hint" ]] && RPT_RECO="Run ${hint} now to triage." || RPT_RECO="Investigate now."
             else
                 [[ -n "$hint" ]] && RPT_RECO="Run ${hint} to triage." || RPT_RECO="Review the sections below to triage."
             fi ;;
         red)
-            [[ -n "$hint" ]] && RPT_RECO="Run ${hint} now — ${f} fatal error${fs}." || RPT_RECO="Investigate the ${f} fatal error${fs} now." ;;
+            if (( f > 0 )); then
+                [[ -n "$hint" ]] && RPT_RECO="Run ${hint} now — ${f} fatal error${fs}." || RPT_RECO="Investigate the ${f} fatal error${fs} now."
+            else
+                [[ -n "$hint" ]] && RPT_RECO="Run ${hint} now." || RPT_RECO="Investigate now."
+            fi ;;
     esac
 }
 
@@ -531,8 +562,8 @@ swatter_swarm_section() {
     fi
     SWARM_LAST_PUB="none"; [[ -s "$cur" ]] && SWARM_LAST_PUB="$(tr -d '[:space:]' < "$cur")"
 
-    # Body: an amber note only when stale (information only — grade is unaffected).
-    (( ${SWARM_STALE:-0} )) && echo "  NOTE: feed stale (> ${SWARM_MAX_AGE_DAYS:-3}d) — shown for information only; the report grade is unaffected."
+    # Body: a warn-tinted note only when stale (information only — status is unaffected).
+    (( ${SWARM_STALE:-0} )) && echo "  NOTE: feed stale (> ${SWARM_MAX_AGE_DAYS:-3}d) — shown for information only; the report status is unaffected."
 }
 
 _report_summary_swarm() {
@@ -604,9 +635,11 @@ swatter_report() {
     local body; body="$(cat "$bodyfile")"
 
     # Stay silent only when BOTH planes are quiet (no actions, no exemptions, no
-    # genuine server errors) — unless --test.
+    # genuine server errors, no fatal errors) — unless --test. err_fatal is checked
+    # explicitly so a fatal-only window (e.g. a fatal filtered out of the genuine
+    # count as noise) still delivers the RED report instead of being suppressed.
     local err_genuine="${ERR_GENUINE:-0}" err_fatal="${ERR_FATAL:-0}"
-    if (( ! test_mode )) && (( RPT_ACTED == 0 && RPT_EXEMPT == 0 && err_genuine == 0 )); then
+    if (( ! test_mode )) && (( RPT_ACTED == 0 && RPT_EXEMPT == 0 && err_genuine == 0 && err_fatal == 0 )); then
         log_info "report: quiet window (${window}); not sending"
         return 0
     fi
@@ -618,7 +651,7 @@ swatter_report() {
     local html; html="$(_report_render_html "$body")"
     _report_send "$subject" "$body" "$html"
 
-    # Second channel: SMS on a severe grade (D/F by default). Fail-soft — never
+    # Second channel: SMS on a severe status (RED by default). Fail-soft — never
     # blocks the email. --test forces a [TEST] SMS so Twilio setup can be verified.
     if declare -F swatter_alert_on_grade >/dev/null; then
         if (( test_mode )); then swatter_alert_on_grade --test; else swatter_alert_on_grade; fi

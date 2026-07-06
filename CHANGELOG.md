@@ -22,9 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `STATUS: 🟢 GREEN — All Clear`, and the HTML email shows the traffic-light
   emoji (🟢/🟡/🔴) in the hero tile, the status badge, and the legend.
 - **SMS alerts now trigger on RED.** `ALERT_SMS_GRADES` default moved from
-  `"D F"` to `"RED"` (server config updated in place); the alert body leads with
-  the status emoji — `🔴 Swatter <host>: Status RED (Act Now).` A custom set may
-  still include `YELLOW`. Dedup and the `--test` bypass are unchanged.
+  `"D F"` to `"RED"`; the alert body leads with the status emoji — `🔴 Swatter
+  <host>: Status RED (Act Now).` A custom set may still include `YELLOW`. Dedup
+  and the `--test` bypass are unchanged.
+  - **Upgrade note:** the trigger now matches status *words*, not letter grades.
+    If your `swatter.conf` pins a custom `ALERT_SMS_GRADES` with the old letters
+    (e.g. `"D F"`), it will silently stop matching — update it to `RED` (or
+    `"RED YELLOW"`). The shipped default and `swatter.example.conf` are already
+    correct; only hand-edited configs need the change. Note the SMS default no
+    longer pages on a non-fatal error *flood* (old grade D) — that maps to YELLOW
+    now; add `YELLOW` to `ALERT_SMS_GRADES` if you want floods to text you.
 - **Email subject leads with the status icon** — `🟢 Report 2026-07-06 - healthy
   · …` — so the traffic light is visible at a glance in the inbox list without
   opening the message.
@@ -39,7 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`REPORT_GRADE_FORCE=green|yellow|red`** overrides the computed status so an
   operator can force a status for a `--test` preview — run it once per status
   (`REPORT_GRADE_FORCE=red swatter report --test`) to preview that email and, for
-  red, fire the RED SMS on demand. Never affects a real nightly run.
+  red, fire the RED SMS on demand. Intended for previews and not set in normal
+  operation; it has no `--test` guard, so don't leave it set in the environment
+  or `swatter.conf` (it would override a real nightly run too). An unrecognized
+  value is ignored with a warning.
 
 ## [2.7.1] - 2026-07-05
 

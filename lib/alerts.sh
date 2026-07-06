@@ -66,13 +66,13 @@ swatter_alert_on_grade() {
     if (( ! test_mode )); then
         # Only the configured statuses trigger.
         case " ${ALERT_SMS_GRADES:-RED} " in *" ${grade} "*) ;; *) return 0 ;; esac
-        # Dedup: same grade already alerted within the window?
+        # Dedup: same status already alerted within the window?
         local statef="${STATE_DIR:-/var/lib/swatter}/last-sms-alert"
         local now win; now="$(swatter_now)"; win=$(( ${ALERT_SMS_DEDUP_HOURS:-6} * 3600 ))
         if [[ -r "$statef" ]]; then
             local lg lt; read -r lg lt < "$statef" 2>/dev/null || true
             if [[ "$lg" == "$grade" && "${lt:-0}" =~ ^[0-9]+$ ]] && (( now - lt < win )); then
-                log_info "alerts: grade ${grade} SMS deduped (within ${ALERT_SMS_DEDUP_HOURS:-6}h)"
+                log_info "alerts: status ${grade} SMS deduped (within ${ALERT_SMS_DEDUP_HOURS:-6}h)"
                 return 0
             fi
         fi
