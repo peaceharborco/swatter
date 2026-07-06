@@ -383,11 +383,11 @@ _report_send() {
     swatter_send_email "${REPORT_EMAIL}" "$subject" "$body" "$html"
 }
 
-# Worst-plane-wins severity. Echoes "LEVEL<TAB>SUMMARY" (LEVEL: green|amber|red).
+# Worst-plane-wins severity. Echoes "LEVEL<TAB>SUMMARY" (LEVEL: green|yellow|red).
 _report_verdict() {
     local level="green" lead="healthy"
-    if   (( ${ERR_FATAL:-0}   > 0 )); then level="red";   lead="⚠ ${ERR_FATAL} FATAL"
-    elif (( ${ERR_GENUINE:-0} > 0 )); then level="amber"; lead="⚠ ${ERR_GENUINE} server error(s)"
+    if   (( ${ERR_FATAL:-0}   > 0 )); then level="red";    lead="⚠ ${ERR_FATAL} FATAL"
+    elif (( ${ERR_GENUINE:-0} > 0 )); then level="yellow"; lead="⚠ ${ERR_GENUINE} server error(s)"
     fi
     local tail="${RPT_ACTED:-0} blocked"
     (( ${OL_HITS:-0} > 0 )) && tail="${tail} · ${OL_HITS} origin-lock"
@@ -406,8 +406,9 @@ _report_verdict() {
 #   RED    — a fatal error: a service or app may be down (was F).
 #
 # REPORT_GRADE_FORCE=green|yellow|red overrides the computed tier so an operator
-# can preview any status (used by the --test path to send one email per status
-# and to fire the RED SMS on demand). It never affects a real nightly run.
+# can force a status for a `--test` preview — run it once per status
+# (REPORT_GRADE_FORCE=red swatter report --test) to preview that email and, for
+# red, fire the RED SMS on demand. It never affects a real nightly run.
 _report_grade() {
     local f="${ERR_FATAL:-0}" e="${ERR_GENUINE:-0}" b="${RPT_ACTED:-0}" ol="${OL_HITS:-0}"
     local win="${REPORT_WINDOW:-24h}" hint="${REPORT_TRIAGE_HINT:-}"

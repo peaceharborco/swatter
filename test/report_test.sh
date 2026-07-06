@@ -14,11 +14,11 @@ check() { local name="$1" got="$2" want="$3"
 swatter_now() { echo 1782396000; }   # 2026-06-25 (UTC)
 DATE_UTC="$(date -u -d "@1782396000" +%F 2>/dev/null || date -u -r 1782396000 +%F)"
 
-# verdict: green when only blocks, amber when genuine non-FATAL errors, red on FATAL.
+# verdict: green when only blocks, yellow when genuine non-FATAL errors, red on FATAL.
 RPT_PERM=36 RPT_TEMP=162 RPT_ACTED=198 RPT_EXEMPT=0 OL_HITS=0 ERR_GENUINE=0 ERR_FATAL=0
 check verdict-green "$(_report_verdict | cut -f1)" "green"
 ERR_GENUINE=4 ERR_FATAL=0
-check verdict-amber "$(_report_verdict | cut -f1)" "amber"
+check verdict-yellow "$(_report_verdict | cut -f1)" "yellow"
 ERR_GENUINE=4 ERR_FATAL=2
 check verdict-red   "$(_report_verdict | cut -f1)" "red"
 

@@ -31,8 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`REPORT_GRADE_FORCE=green|yellow|red`** overrides the computed status so an
-  operator can preview any status (drives the `--test` path to send one email
-  per status and to fire the RED SMS on demand). Never affects a real nightly run.
+  operator can force a status for a `--test` preview — run it once per status
+  (`REPORT_GRADE_FORCE=red swatter report --test`) to preview that email and, for
+  red, fire the RED SMS on demand. Never affects a real nightly run.
 
 ## [2.7.1] - 2026-07-05
 
