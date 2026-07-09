@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-07-09
+
+### Added
+- **Per-plane enforcement ledger + dual-plane hard-intel blocking.** Swatter now
+  tracks, per IP, which firewall plane (Cloudflare edge vs CSF/ipset direct) an
+  offender is blocked on, in a new `plane_blocks` table. This closes a real gap:
+  an IP permanently blocked only at the Cloudflare edge that then hits the origin
+  **directly** (e.g. a webmail flood on cPanel port 2095, which never transits
+  Cloudflare) is now escalated with a CSF deny instead of being dismissed as
+  "already blocked." Three behaviors ride on it:
+  - **Channel-upgrade** — a perm on one plane, seen on the other, acquires the
+    missing plane (audited `plane-upgrade`).
+  - **Dual-plane hard-intel** — an IP with a hard-intel reputation
+    (`INTEL_HARDBLOCK_MIN`, default 100 — Spamhaus DROP / AbuseIPDB 100, never a
+    legitimate visitor) gets a fresh perm on **both** planes at once, so
+    direct-to-origin ports are covered proactively. New knobs
+    `DUAL_PLANE_HARD_INTEL` (default true) and `INTEL_HARDBLOCK_MIN`.
+  - **Swarm sweep** forces the DIRECT plane, so a fleet-corroborated IP with no
+    local vhost gets a CSF deny instead of a `skipped-novhost` no-op.
+  The never-block + fail-closed gates are unchanged: a Cloudflare edge range can
+  never be CSF-denied, and stale ranges degrade dual-plane to CF-only.
+- **Transient-failure intel caching (`INTEL_RC_TEMPFAIL`).** A provider that hits
+  a quota or transport failure returns exit 75; intel caches only a short
+  negative TTL (`INTEL_FAIL_TTL`, default 300s) instead of poisoning the durable
+  no-data cache for a full cycle. Wired into the AbuseIPDB and GreyNoise
+  providers.
+
+### Fixed
+- **Origin-lock IPv4 outage (fail-open guard bypass).** A `cloudflare.cidr` with
+  only IPv6 ranges still cleared the combined `MIN_RANGES` gate, then installed a
+  v4 DROP guarded by an **empty** ipset — dropping all IPv4 traffic to the web
+  ports. Each family now authorizes only its own DROP from its own ranges.
+- **Origin-lock teardown ordering** — the DROP is now removed before its guarding
+  CF-ACCEPT, closing a brief drop-all window on every standalone apply and disable.
+- **Origin-lock digest** now parses ISO-8601 rsyslog timestamps (year-aware) and
+  counts unrecognized formats rather than silently reporting "no drops."
+- **Cloudflare-plane perm ledger divergence** — a CF "perm" (TTL-emulated, swept
+  at ~3d) was recorded as never-expiring, so after the edge rule was swept the
+  offender was never re-blocked while the ledger claimed a live perm. CF perms are
+  now recorded with their real emulated lifetime.
+- **Local-time log parsing** — Apache/PHP-FPM/MariaDB error logs and the lfd
+  direct-set window are now parsed in the host's local zone instead of being
+  forced to UTC (`common.sh` exports `TZ=UTC` process-wide), fixing mis-windowed
+  errors and misclassified direct-hit evidence on non-UTC hosts.
+- **`ERROR_NOISE` validation** — an empty, whitespace-only, or malformed
+  known-noise regex no longer silently zeros the genuine-error count and hides
+  real errors.
+- **Flatfile ledger correctness** — `is_perm` now honors a later unblock and
+  ignores dry-run perms (parity with the SQLite path); a busy_timeout keeps a
+  concurrent writer from dropping a ledger record.
+- **Report-mode no longer records phantom bans** — a dry-run perm no longer sets
+  `offenders.perm`.
+- **Direct-set temp file** is cleaned each scan (was leaking one `/tmp` file per
+  `*/5` run).
+- **IPv6 ipset blocks fail closed** when `ip6tables` is absent, instead of
+  reporting an unenforced block as handled.
+- **Allowlist** — decimal (non-octal) octet parsing in the Cloudflare never-block
+  check; IPv4-mapped (`::ffff:`, compact and expanded) and unique-local IPv6
+  treated as private; a transient PTR lookup no longer negative-caches a real
+  crawler for 7 days.
+- Hardening across the board: sanitized CSF deny comments, integer-coerced and
+  escaped SQL values, tightened `score.awk` IP validation with C0-control escaping,
+  atomic Cloudflare-range refresh, `curl` secret-config cleanup traps, and cron
+  output routed to a rotated log.
+
 ## [2.8.0] - 2026-07-06
 
 ### Changed
