@@ -30,7 +30,8 @@ provider_abuseipdb() {
     local ip="$1"
     [[ -n "${ABUSEIPDB_KEY}" ]] || return 1
     [[ "${SWATTER_HAVE_CURL}" -eq 1 && "${SWATTER_HAVE_JQ}" -eq 1 ]] || return 1
-    _abuseipdb_quota_ok || { log_debug "abuseipdb daily quota exhausted"; return 1; }
+    # Quota exhausted is TRANSIENT (resets daily) — TEMPFAIL, not durable no-record.
+    _abuseipdb_quota_ok || { log_debug "abuseipdb daily quota exhausted"; return "${INTEL_RC_TEMPFAIL:-75}"; }
 
     # API key via -K config file, never argv (visible in `ps` on a shared box).
     local cfg resp rc score
@@ -39,7 +40,8 @@ provider_abuseipdb() {
         --data-urlencode "ipAddress=${ip}" --data-urlencode "maxAgeInDays=90" \
         -K "$cfg" -H "Accept: application/json" 2>/dev/null)"; rc=$?
     rm -f "$cfg"
-    (( rc == 0 )) || return 1
+    # Transport failure is transient, not an authoritative "no record" — TEMPFAIL.
+    (( rc == 0 )) || return "${INTEL_RC_TEMPFAIL:-75}"
     _abuseipdb_quota_inc
     score="$(printf '%s' "$resp" | jq -r '.data.abuseConfidenceScore // empty' 2>/dev/null)"
     [[ "$score" =~ ^[0-9]+$ ]] || return 1

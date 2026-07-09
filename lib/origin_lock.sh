@@ -395,6 +395,10 @@ swatter_origin_lock_apply() {
         else
             log_warn "origin-lock: ip6tables not found — IPv6 web ports left UNCOVERED (v4 lock only)"
         fi
+    else
+        # Symmetric with the v4 warning above: a v4-only range file leaves v6
+        # web ports uncovered — surface it rather than silently skipping v6.
+        log_warn "origin-lock: no IPv6 CF ranges in ${CLOUDFLARE_IPS_FILE} — IPv6 web ports left UNCOVERED (no v6 DROP built; v4-only lock)"
     fi
 
     # Standalone preamble (lo + allow/monitoring) — only when NOT under csfpre,

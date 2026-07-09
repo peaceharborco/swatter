@@ -231,7 +231,9 @@ swatter_is_never_block() {
     # unwrap it to its embedded v4 so the private/loopback/CIDR checks see the
     # real address rather than treating it as an unrecognized v6 attacker.
     local lip="${ip,,}"
-    if [[ "$lip" == ::ffff:*.*.*.* ]]; then
+    # Both the compact (::ffff:a.b.c.d) and fully-expanded (0:0:0:0:0:ffff:a.b.c.d)
+    # notations getent/host can emit map to the same embedded IPv4.
+    if [[ "$lip" == ::ffff:*.*.*.* || "$lip" == 0:0:0:0:0:ffff:*.*.*.* ]]; then
         ip="${ip##*:}"; lip="${ip,,}"
     fi
 

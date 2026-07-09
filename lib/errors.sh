@@ -45,9 +45,11 @@ _errors_collect_apache() {
     local cutoff="$1" f="${ERROR_LOG}"
     [[ -n "$f" && -s "$f" ]] || return 0
     # Apache stamps its error_log in the host's local time; mktime must interpret
-    # the broken-down fields in that same zone (do NOT force TZ=UTC). emit()
+    # the broken-down fields in that same zone. common.sh exports TZ=UTC process-
+    # wide, so a bare gawk would STILL read the stamps as UTC — unset TZ for this
+    # invocation only (subshell-scoped) so mktime uses /etc/localtime. emit()
     # normalizes to UTC on output.
-    gawk -v cutoff="$cutoff" "${_ERR_AWKLIB}"'
+    ( unset TZ; gawk -v cutoff="$cutoff" "${_ERR_AWKLIB}"'
         {
             if (substr($0,1,1) != "[") next
             c=index($0,"]"); if(c==0) next
@@ -71,7 +73,7 @@ _errors_collect_apache() {
             if(epoch<0||epoch<cutoff) next
             srcid=(host=="")?"apache":"apache/" host
             emit(epoch,level,srcid,after)
-        }' "$f" 2>/dev/null
+        }' "$f" ) 2>/dev/null
 }
 
 # Per-site PHP error_log: [01-Jun-2026 20:01:10 UTC] PHP Fatal error: ...
@@ -104,9 +106,10 @@ _errors_collect_fpm() {
     for f in ${ERROR_FPM_GLOB}; do
         [[ -s "$f" ]] || continue
         phpver="$(printf '%s' "$f" | sed -n 's#.*/ea-php\([0-9][0-9]*\)/.*#php\1#p')"; [[ -n "$phpver" ]] || phpver="php"
-        # PHP-FPM stamps its log in the host's local time (no zone suffix);
-        # interpret it in the system-local zone, not UTC.
-        gawk -v cutoff="$cutoff" -v phpver="$phpver" "${_ERR_AWKLIB}"'
+        # PHP-FPM stamps its log in the host's local time (no zone suffix).
+        # unset TZ (subshell-scoped) so mktime uses /etc/localtime — a bare gawk
+        # would inherit the process-wide TZ=UTC from common.sh and mis-window.
+        ( unset TZ; gawk -v cutoff="$cutoff" -v phpver="$phpver" "${_ERR_AWKLIB}"'
             {
                 if(substr($0,1,1)!="[") next
                 c=index($0,"]"); if(c==0) next
@@ -122,7 +125,7 @@ _errors_collect_fpm() {
                 if(epoch<0||epoch<cutoff) next
                 srcid=(pool=="")?"fpm/" phpver : "fpm/" phpver ":" pool
                 emit(epoch,level,srcid,rest)
-            }' "$f" 2>/dev/null
+            }' "$f" ) 2>/dev/null
     done
 }
 
@@ -131,9 +134,10 @@ _errors_collect_mysql() {
     local cutoff="$1" f
     for f in ${ERROR_MYSQL_GLOB}; do
         [[ -s "$f" ]] || continue
-        # MariaDB stamps its .err in the host's local time; interpret it in the
-        # system-local zone (do NOT force TZ=UTC). emit() re-normalizes to UTC.
-        gawk -v cutoff="$cutoff" "${_ERR_AWKLIB}"'
+        # MariaDB stamps its .err in the host's local time. unset TZ (subshell-
+        # scoped) so mktime uses /etc/localtime instead of the process-wide
+        # TZ=UTC from common.sh. emit() re-normalizes to UTC.
+        ( unset TZ; gawk -v cutoff="$cutoff" "${_ERR_AWKLIB}"'
             {
                 if($0 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] /) next
                 ts=substr($0,1,19); rest=substr($0,20)
@@ -144,7 +148,7 @@ _errors_collect_mysql() {
                 epoch=mktime(a[1]" "a[2]" "a[3]" "a[4]" "a[5]" "a[6]" 0")
                 if(epoch<0||epoch<cutoff) next
                 emit(epoch,level,"mysql",rest)
-            }' "$f" 2>/dev/null
+            }' "$f" ) 2>/dev/null
     done
 }
 
@@ -155,7 +159,9 @@ _errors_collect_mysql() {
 # reject empty and probe-compile the pattern, falling back to a safe default.
 _ERR_NOISE_DEFAULT='prefetch request body failed|error reading status line from remote server|invalid URI path|Invalid method in request|no compatible SSL setup for policy|client denied by server configuration|Error dispatching request to'
 _errors_validate_noise() {
-    if [[ -z "${ERROR_NOISE:-}" ]]; then
+    # Empty OR whitespace-only: `grep -Ev ""` (or an all-space pattern) inverts
+    # away every line, zeroing the genuine-error count. Treat both as empty.
+    if [[ -z "${ERROR_NOISE//[[:space:]]/}" ]]; then
         log_warn "errors: ERROR_NOISE is empty; using built-in noise default"
         ERROR_NOISE="$_ERR_NOISE_DEFAULT"
         return

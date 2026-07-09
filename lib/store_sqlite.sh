@@ -119,16 +119,16 @@ swatter_store_is_perm() {
     else
         # Flatfile JSONL is append-only: a bare grep for a perm row reports an IP
         # as perm even after a LATER unblock cleared it. Replay records in order —
-        # banned on a perm action, cleared on a later unblock — and honor only the
-        # final state (matches the sqlite offenders.perm semantics).
+        # banned on an ENFORCED perm (dry_run=0), cleared on a later unblock — and
+        # honor only the final state (matches the sqlite offenders.perm semantics,
+        # which also bumps perm only on an enforced block).
         local st
         st="$(awk -v ip="$ip" '
-            { a=""; found=0 }
+            { found=0 }
             match($0, /"ip":"[^"]*"/) { if (substr($0, RSTART+6, RLENGTH-7)==ip) found=1 }
             found {
-                match($0, /"action":"[^"]*"/)
-                a=substr($0, RSTART+10, RLENGTH-11)
-                if (a=="perm") state=1
+                a=""; match($0, /"action":"[^"]*"/) && a=substr($0, RSTART+10, RLENGTH-11)
+                if (a=="perm") { if ($0 ~ /"dry_run":0/) state=1 }
                 else if (a=="unblock") state=0
             }
             END { print state+0 }' "$(_swatter_jsonl)" 2>/dev/null)"

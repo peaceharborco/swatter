@@ -101,6 +101,9 @@ swatter_store_record 9.9.9.9 perm cloudflare 0 90 "flat perm" 0
 check flat-perm-set "$(rc swatter_store_is_perm 9.9.9.9)" "yes"
 swatter_store_record 9.9.9.9 unblock none 0 0 "flat unblock" 0
 check flat-perm-cleared "$(rc swatter_store_is_perm 9.9.9.9)" "no"
+# flatfile is_perm ignores a DRY-RUN perm (report mode) — parity with sqlite.
+swatter_store_record 9.9.9.10 perm cloudflare 0 90 "flat dry perm" 1
+check flat-dry-not_perm "$(rc swatter_store_is_perm 9.9.9.10)" "no"
 STORE=sqlite
 
 echo "----------------------------------------"

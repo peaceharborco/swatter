@@ -25,7 +25,9 @@ provider_greynoise() {
     local ip="$1"
     [[ -n "${GREYNOISE_KEY:-}" ]] || return 1
     [[ "${SWATTER_HAVE_CURL}" -eq 1 && "${SWATTER_HAVE_JQ}" -eq 1 ]] || return 1
-    _greynoise_quota_ok || { log_debug "greynoise daily quota exhausted"; return 1; }
+    # Quota exhausted is TRANSIENT (resets daily) — return TEMPFAIL so intel caches
+    # only a short negative TTL, not a full-cache-cycle durable no-record.
+    _greynoise_quota_ok || { log_debug "greynoise daily quota exhausted"; return "${INTEL_RC_TEMPFAIL:-75}"; }
 
     # API key via -K config file, never argv (visible in `ps` on a shared box).
     local cfg resp rc
@@ -33,7 +35,9 @@ provider_greynoise() {
     resp="$(curl --max-time 5 -fsS "${GREYNOISE_URL}/${ip}" \
         -K "$cfg" -H "Accept: application/json" 2>/dev/null)"; rc=$?
     rm -f "$cfg"
-    (( rc == 0 )) || return 1
+    # Transport failure (timeout/5xx/network) is transient, not an authoritative
+    # "no record" — TEMPFAIL so a blip doesn't blind the provider for a full TTL.
+    (( rc == 0 )) || return "${INTEL_RC_TEMPFAIL:-75}"
     _greynoise_quota_inc
     [[ -n "$resp" ]] || return 1
 

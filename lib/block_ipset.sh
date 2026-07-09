@@ -43,7 +43,11 @@ swatter_ipset_setup() {
     else
         log_warn "ip6tables not found — IPv6 ipset blocks will NOT be enforced (v4 only)"
     fi
-    log_info "ipset backend ready (sets ${SWATTER_IPSET_V4}/${SWATTER_IPSET_V6} + DROP rules)"
+    if (( rc == 0 )); then
+        log_info "ipset backend ready (sets ${SWATTER_IPSET_V4}/${SWATTER_IPSET_V6} + DROP rules)"
+    else
+        log_error "ipset backend setup incomplete — a DROP rule failed; sets NOT fully enforced"
+    fi
     return "$rc"
 }
 
