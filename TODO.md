@@ -2,7 +2,14 @@
 
 ## Metrics: wire node_exporter textfile collector into monitoring (parked 2026-07-09)
 
-**Status:** on hold — decision pending.
+**Status:** DECIDED 2026-07-09 — **skip (option 3)**. Keeping NetData as the box
+monitor; not installing node_exporter. The nightly email report + `/server-logs`
+already surface everything the `.prom` metrics would show, so putting them on the
+NetData dashboard is pure redundancy. Metrics step stays disabled (no-op) on cds1.
+If we ever revisit (e.g. 2nd box / unified dashboards), prefer exposing the
+metrics over a local HTTP endpoint scraped by NetData's `go.d/prometheus`
+collector — no node_exporter daemon needed. Do NOT pick option 2 (dir-only): it
+writes a `.prom` file nothing consumes.
 
 Swatter emits node_exporter *textfile* format to
 `/var/lib/node_exporter/textfile_collector/swatter.prom` (`METRICS_FILE`,
