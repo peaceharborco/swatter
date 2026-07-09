@@ -68,11 +68,20 @@ _swatter_audit() {
         >> "$f" 2>/dev/null || log_error "audit write FAILED (${f}): decision '${3}' for ${1} NOT recorded"
 }
 
-# Execute a decided block on the right plane. Reads/updates the run-scoped
-# globals _SW_TOTAL_BLOCKS / SWATTER_RUN_ACTED. Echoes nothing; audits + records.
-#   _swatter_execute_block <ip> <action> <ttl> <folded> <reason> <ev> <rep> <novhost> <top_vhost> <healthy>
-_swatter_execute_block() {
-    local ip="$1" action="$2" ttl="$3" folded="$4" reason="$5" ev="$6" rep="$7" novhost="$8" top_vhost="$9" healthy="${10}"
+# Apply a decided block on an EXPLICIT plane. Runs all the shared gates (valid/
+# safe target, never_block, MAX_BLOCKS_PER_RUN breaker), the DIRECT vs VIA_CF
+# backend call, and the shared success/skip/fail audit tail. Every block path
+# (normal, and — later — upgrade/dual-plane/swarm) funnels through here so the
+# gates and counters are enforced in exactly one place.
+#   _swatter_apply_plane <ip> <plane:DIRECT|VIA_CF> <action> <ttl> <reason>
+#                        <top_vhost> <healthy> <folded> <ev> <rep> [audit_action]
+# Reads/updates the run-scoped globals _SW_TOTAL_BLOCKS / SWATTER_RUN_ACTED.
+# Echoes nothing; audits + records. audit_action (optional) overrides the action
+# label shown in the success audit (default = action) so an upgrade can surface
+# as 'plane-upgrade' while still recording action=perm/temp.
+_swatter_apply_plane() {
+    local ip="$1" plane="$2" action="$3" ttl="$4" reason="$5" top_vhost="$6" healthy="$7" \
+          folded="$8" ev="$9" rep="${10}" audit_action="${11:-$3}"
     SWATTER_LAST_BACKEND_ERR=""   # per-IP: a backend failure below sets it; no cross-IP bleed
     # Strict validity + safe-target gate, FIRST. score.awk's charset pre-filter
     # admits tokens like 999.999.999.999 or '::::' (harmless bytes, but not
@@ -95,7 +104,6 @@ _swatter_execute_block() {
         SWATTER_RUN_BREAKER=1
         _swatter_audit "$ip" "$folded" "skipped-cap" "none" 0 "circuit_breaker" "$ev" "$rep"; return 1
     fi
-    local plane; plane="$(swatter_classify "$ip" "$novhost")"
     # Backend return-code protocol — defined once in lib/common.sh (SWATTER_RC_*),
     # consumed here: 0 => did=1 (real action); RC_CAP => skipped-cap;
     # RC_CONFIG => skipped-config; RC_NOVHOST => skipped-novhost; other => failed.
@@ -122,8 +130,11 @@ _swatter_execute_block() {
         swatter_store_sighting_clear "$ip"
         swatter_store_record "$ip" "$action" "$channel" "$ttl" "$folded" "$reason" \
             "$([[ "${SWATTER_MODE}" == "enforce" ]] && echo 0 || echo 1)"
+        # Per-plane ledger — written ONLY on an enforced block (never dry-run/report),
+        # mirroring swatter_store_record's dry_run==0 path. sqlite-only; flatfile no-op.
+        [[ "${SWATTER_MODE}" == "enforce" ]] && swatter_store_plane_set "$ip" "$channel" "$action" "$ttl"
         swatter_abuseipdb_report "$ip" "$ev" "$reason"
-        _swatter_audit "$ip" "$folded" "$action" "$channel" "$ttl" "$reason" "$ev" "$rep"
+        _swatter_audit "$ip" "$folded" "$audit_action" "$channel" "$ttl" "$reason" "$ev" "$rep"
     elif (( rc == SWATTER_RC_CAP )); then
         # Backend hit its per-run deny cap (a deliberate throttle) — not a failure.
         # Mirror the MAX_BLOCKS_PER_RUN skipped-cap above so a high-volume incident
@@ -164,6 +175,16 @@ _swatter_execute_block() {
         _swatter_audit "$ip" "$folded" "failed" "$channel" "$ttl" "$fail_reason" "$ev_failed" "$rep"
     fi
     return 0
+}
+
+# Execute a decided block on the right plane. Classifies the IP once, then
+# delegates to _swatter_apply_plane, which runs all the gates + backend calls.
+# Reads/updates the run-scoped globals _SW_TOTAL_BLOCKS / SWATTER_RUN_ACTED.
+#   _swatter_execute_block <ip> <action> <ttl> <folded> <reason> <ev> <rep> <novhost> <top_vhost> <healthy>
+_swatter_execute_block() {
+    local ip="$1" action="$2" ttl="$3" folded="$4" reason="$5" ev="$6" rep="$7" novhost="$8" top_vhost="$9" healthy="${10}"
+    local plane; plane="$(swatter_classify "$ip" "$novhost")"
+    _swatter_apply_plane "$ip" "$plane" "$action" "$ttl" "$reason" "$top_vhost" "$healthy" "$folded" "$ev" "$rep"
 }
 
 # Main scan.

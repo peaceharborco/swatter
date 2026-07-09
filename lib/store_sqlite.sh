@@ -40,6 +40,11 @@ CREATE TABLE IF NOT EXISTS sightings(
   worst_score INTEGER DEFAULT 0, last_ts INTEGER,
   PRIMARY KEY (ip, bucket));
 CREATE INDEX IF NOT EXISTS ix_sightings_ip ON sightings(ip);
+CREATE TABLE IF NOT EXISTS plane_blocks(
+  ip TEXT NOT NULL, plane TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  PRIMARY KEY (ip, plane));
 SQL
         )"; _irc=$?
         if (( _irc != 0 )); then
@@ -177,6 +182,7 @@ swatter_store_unblock() {
     swatter_store_record "$ip" "unblock" "none" 0 0 "manual unblock" 0
     local sip; sip="$(_sql_escape "$ip")"
     [[ "${STORE}" == "sqlite" ]] && _sql "UPDATE offenders SET perm=0 WHERE ip='${sip}';"
+    swatter_store_plane_clear "$ip"
 }
 
 # --- low-and-slow persistence (sqlite only; flatfile no-ops) ----------------
@@ -213,6 +219,56 @@ swatter_store_sighting_sweep() {
     [[ "${STORE}" == "sqlite" ]] || return 0
     local cutoff; cutoff=$(( $(swatter_now) - wdays*86400 ))
     _sql "DELETE FROM sightings WHERE last_ts<${cutoff};"
+}
+
+# --- per-plane enforcement state (sqlite only; flatfile no-ops) -------------
+# Tracks which enforcement planes (DIRECT csf/ipset, VIA_CF cloudflare) currently
+# hold a block for an IP, so the enforce path can tell perm vs temp and whether a
+# block is still live without re-deriving it from the action ledger.
+swatter_store_plane_set() {
+    local ip="$1" plane="$2" kind="$3" ttl="$4"
+    _store_ip_ok "$ip" || return 0
+    [[ "${STORE}" == "sqlite" ]] || return 0
+    local now exp sip splane skind
+    now="$(swatter_now)"
+    if [[ "$kind" == "perm" ]]; then exp=0; else exp=$(( now + ${ttl:-0} )); fi
+    sip="$(_sql_escape "$ip")"; splane="$(_sql_escape "$plane")"; skind="$(_sql_escape "$kind")"
+    _sql "INSERT INTO plane_blocks(ip,plane,kind,expires_at)
+          VALUES('${sip}','${splane}','${skind}',${exp})
+          ON CONFLICT(ip,plane) DO UPDATE SET
+            kind=CASE WHEN excluded.kind='perm' OR plane_blocks.kind='perm'
+                      THEN 'perm' ELSE 'temp' END,
+            expires_at=CASE WHEN excluded.kind='perm' OR plane_blocks.kind='perm'
+                            THEN 0 ELSE MAX(plane_blocks.expires_at, excluded.expires_at) END;"
+}
+
+swatter_store_is_perm_on() {
+    local ip="$1" plane="$2"
+    _store_ip_ok "$ip" || return 1
+    [[ "${STORE}" == "sqlite" ]] || return 1
+    local sip splane n; sip="$(_sql_escape "$ip")"; splane="$(_sql_escape "$plane")"
+    # Fail CLOSED: a DB error yields empty stdout — treat non-numeric as 0 (not
+    # blocked) so the caller re-attempts the block rather than silently skipping.
+    n="$(_sqlq "SELECT COUNT(*) FROM plane_blocks WHERE ip='${sip}' AND plane='${splane}' AND kind='perm';")"
+    [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 ))
+}
+
+swatter_store_active_on() {
+    local ip="$1" plane="$2"
+    _store_ip_ok "$ip" || return 1
+    [[ "${STORE}" == "sqlite" ]] || return 1
+    local now sip splane n; now="$(swatter_now)"
+    sip="$(_sql_escape "$ip")"; splane="$(_sql_escape "$plane")"
+    # Fail CLOSED on a DB error (empty stdout) — see swatter_store_is_perm_on.
+    n="$(_sqlq "SELECT COUNT(*) FROM plane_blocks WHERE ip='${sip}' AND plane='${splane}' AND (kind='perm' OR expires_at>${now});")"
+    [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 ))
+}
+
+swatter_store_plane_clear() {
+    local ip="$1"; _store_ip_ok "$ip" || return 0
+    [[ "${STORE}" == "sqlite" ]] || return 0
+    local sip; sip="$(_sql_escape "$ip")"
+    _sql "DELETE FROM plane_blocks WHERE ip='${sip}';"
 }
 
 # Echo permanently-banned IPs, one per line (source for `swatter export-bans`).

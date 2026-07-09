@@ -17,6 +17,7 @@ SWATTER_HAVE_JQ=1; SWATTER_MODE="enforce"; MAX_BLOCKS_PER_RUN=100
 _SW_TOTAL_BLOCKS=0; SWATTER_RUN_BREAKER=0; SWATTER_RUN_ACTED=0; CF_MODE="direct"; DIRECT_BACKEND="csf"
 
 swatter_store_sighting_clear() { :; }; swatter_store_record() { :; }; swatter_abuseipdb_report() { :; }
+swatter_store_plane_set() { :; }
 swatter_is_never_block()  { return 1; }        # not exempt
 swatter_classify()        { echo "CF"; }       # -> cloudflare plane (non-DIRECT)
 swatter_cf_manages_plane(){ return 0; }
