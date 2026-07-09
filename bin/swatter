@@ -418,6 +418,10 @@ cmd_import_bans() {
         if nb="$(swatter_is_never_block "$ip")"; then log_info "import-bans: skip never-block ${ip} (${nb})"; continue; fi
         if swatter_block_direct_perm "$ip" "imported ban"; then
             swatter_store_record "$ip" perm "$channel" 0 90 "imported ban" "$dry"
+            # Record the per-plane ledger row too (enforced imports only) so a
+            # later scan sees this IP as perm on the DIRECT plane and does not
+            # re-dispatch it (swarm) or treat it as a legacy backfill (scan).
+            [[ "$dry" == 0 ]] && swatter_store_plane_set "$ip" "$channel" perm 0
             n=$(( n + 1 ))
         fi
     done < "$file"

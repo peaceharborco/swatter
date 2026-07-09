@@ -95,6 +95,15 @@ MAX_BLOCKS_PER_RUN=25
 MAX_CSF_DENIES_PER_RUN=10
 ALLOWLIST_MAX_AGE_DAYS=7
 
+# Dual-plane hard-intel blocking: an IP whose threat-intel reputation is at or
+# above INTEL_HARDBLOCK_MIN (Spamhaus DROP / AbuseIPDB emit 100) is never a
+# legitimate visitor, so a fresh PERM block is applied on BOTH planes — the
+# Cloudflare edge (proxied traffic) AND CSF (direct-to-origin on any port,
+# incl. cPanel service ports). never_block + fail-closed still gate the CSF leg,
+# so a CF edge range can never be CSF-denied. Set false to keep single-plane.
+DUAL_PLANE_HARD_INTEL=true
+INTEL_HARDBLOCK_MIN=100
+
 OPERATOR_IPS=""
 OPERATOR_ALLOW_FILE="/etc/swatter/allow.cidr"
 MONITORING_RANGES_FILE="/etc/swatter/monitoring.cidr"

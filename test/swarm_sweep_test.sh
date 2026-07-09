@@ -25,10 +25,11 @@ SWARM_ALLOW_FILE="${STATE_DIR}/swarm.allow.cidr"; printf '5.5.5.5\n' > "$SWARM_A
 META="${STATE_DIR}/feeds/swarm.meta.json"
 
 # The sweep must route EVERY block through the gate choke — stub records calls.
-# score.sh is NOT sourced here (it drags the whole scan surface), so stub its
-# two helpers the sweep uses (Grok review: v1 forgot _swatter_pick_ttl).
+# score.sh is NOT sourced here (it drags the whole scan surface), so stub the
+# helpers the sweep uses. The sweep forces the DIRECT plane, so the stub records
+# ip/plane/action/reason ($1/$2/$3/$5 of _swatter_apply_plane).
 BLOCKS="${STATE_DIR}/blocks"; : > "$BLOCKS"
-_swatter_execute_block() { printf '%s %s %s %s\n' "$1" "$2" "$3" "$5" >> "$BLOCKS"; return 0; }
+_swatter_apply_plane() { printf '%s %s %s %s\n' "$1" "$2" "$3" "$5" >> "$BLOCKS"; return 0; }
 _swatter_pick_ttl() { echo 3600; }
 swatter_failclosed_active() { return 1; }   # healthy
 
@@ -42,7 +43,7 @@ EOF
 touch "$META"
 
 swatter_swarm_sweep 2>/dev/null; check sweep-rc "$?" "0"
-check sweep-corroborated "$(grep -c '^1.2.3.4 temp' "$BLOCKS")" "1"     # hc=3 >= 2 -> temp block
+check sweep-corroborated "$(grep -c '^1.2.3.4 DIRECT temp' "$BLOCKS")" "1"  # hc=3 >= 2 -> DIRECT temp block
 check sweep-below-threshold "$(grep -c '^2.3.4.5' "$BLOCKS")" "0"       # hc=1 < 2 -> untouched
 check sweep-fleet-allow "$(grep -c '^5.5.5.5' "$BLOCKS")" "0"           # canary never swept
 check sweep-reason "$(grep -c 'swarm-corroborated hosts=3' "$BLOCKS")" "1"
@@ -77,6 +78,28 @@ touch "$META"
 swatter_swarm_sweep 2>/dev/null
 check sweep-consume-inactive "$(grep -c . "$BLOCKS" || true)" "0"
 INTEL_PROVIDERS="swarm"
+
+# --- sqlite skip path (production default) ---------------------------------
+# The sqlite branch skips on DIRECT-plane coverage (active_on), NOT global perm,
+# so a CF-perm-ONLY IP must still be swept (gets its DIRECT/CSF deny), while an
+# IP already covered on the DIRECT plane is skipped.
+if command -v sqlite3 >/dev/null 2>&1; then
+    SD_SQL="$(mktemp -d "${TMPDIR:-/tmp}/swatter-sws-sql.XXXXXX")"; mkdir -p "$SD_SQL/feeds"
+    ( STATE_DIR="$SD_SQL"; STORE=sqlite; DIRECT_BACKEND=csf; swatter_store_init
+      META_SQL="${SD_SQL}/feeds/swarm.meta.json"
+      # 1.2.3.4 = perm on cloudflare ONLY -> must fall through and get DIRECT temp.
+      swatter_store_record 1.2.3.4 perm cloudflare 0 90 seed 0; swatter_store_plane_set 1.2.3.4 cloudflare perm 0
+      # 9.9.9.9 = already perm on the DIRECT plane -> must be skipped.
+      swatter_store_record 9.9.9.9 perm csf 0 90 seed 0; swatter_store_plane_set 9.9.9.9 csf perm 0
+      : > "$BLOCKS"
+      printf '[{"ip":"1.2.3.4","host_count":3,"category":null,"expires":99},{"ip":"9.9.9.9","host_count":3,"category":null,"expires":99}]' > "$META_SQL"; touch "$META_SQL"
+      swatter_swarm_sweep 2>/dev/null
+      grep -c '^1.2.3.4 DIRECT temp' "$BLOCKS" > "$SD_SQL/cf_only"
+      grep -c '^9.9.9.9' "$BLOCKS" > "$SD_SQL/direct_perm" )
+    check sqlite-cf-perm-only-swept "$(cat "$SD_SQL/cf_only")" "1"   # CF-perm-only -> DIRECT temp added
+    check sqlite-direct-perm-skipped "$(cat "$SD_SQL/direct_perm")" "0"  # already DIRECT-perm -> skipped
+    rm -rf "$SD_SQL"
+fi
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"

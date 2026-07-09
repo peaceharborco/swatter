@@ -137,15 +137,17 @@ swatter_swarm_publish() {
 }
 
 # Opt-in proactive sweep (SWARM_ACTION=corroborated-block): temp-block feed IPs
-# corroborated by >= SWARM_MIN_CORROBORATION distinct enrolled hosts. EVERY
-# block routes through _swatter_execute_block — never a raw block path — so
-# never-block/classify/unsafe/cap/fail-closed/audit ALL apply (spec §8).
-# Requires the json sidecar (frozen obligation 2); jq-gated.
-# Cadence (locked): re-issues temp for still-corroborated IPs each daily
-# refresh — keep-alive while corroborated, natural decay when dropped from the
-# feed (ladder TTL caps at 3d > daily cadence). Report mode dry-runs through
-# the backends exactly like scan/import-bans (dry_run=1 records — a preview,
-# and dry temps never escalate or publish).
+# corroborated by >= SWARM_MIN_CORROBORATION distinct enrolled hosts. A fleet IP
+# has no local traffic here, so EVERY block is forced onto the DIRECT plane via
+# _swatter_apply_plane — never a raw block path — so never-block/unsafe/cap/
+# fail-closed/audit ALL apply (spec §8). Requires the json sidecar (frozen
+# obligation 2); jq-gated.
+# Cadence: an IP already covered on the DIRECT plane (perm, or a still-live temp)
+# is skipped; otherwise a temp is (re)issued each daily refresh — keep-alive
+# while corroborated, natural decay when dropped from the feed (ladder TTL caps
+# at 3d > daily cadence). A CF-perm-only IP is NOT skipped, so fleet
+# corroboration can add the CSF deny the CF block never gave it. Report mode
+# dry-runs through the backends exactly like scan/import-bans.
 swatter_swarm_sweep() {
     _swarm_enabled || return 0
     [[ "${SWARM_ACTION:-boost}" == "corroborated-block" ]] || return 0
@@ -177,22 +179,30 @@ swatter_swarm_sweep() {
         [[ "$hc" =~ ^[0-9]+$ ]] || continue
         swatter_is_valid_ip_or_cidr "$ip" || continue
         # Fleet canary consult (spec §4.5) — cheap pre-filter; never-block and
-        # the rest are re-checked inside _swatter_execute_block.
+        # the rest are re-checked inside _swatter_apply_plane.
         [[ -s "${SWARM_ALLOW_FILE:-}" ]] && _ip_in_cidr_file "$ip" "${SWARM_ALLOW_FILE}" && continue
-        swatter_store_is_perm "$ip" && continue
+        # Skip only if already covered on the DIRECT plane (the plane the sweep
+        # acts on). A CF-perm-only IP falls through so fleet corroboration can add
+        # its CSF deny — direct-to-origin coverage the CF block never gave it.
+        # Flatfile has no per-plane ledger: fall back to the global-perm skip.
+        if [[ "${STORE:-sqlite}" == "sqlite" ]]; then
+            swatter_store_active_on "$ip" "${DIRECT_BACKEND:-csf}" && continue
+        else
+            swatter_store_is_perm "$ip" && continue
+        fi
         score=$(( ${SWARM_BASE_SCORE:-70} + 15 * (hc - 1) )); (( score > 100 )) && score=100
         prior="$(swatter_store_recent_temp_count "$ip")"
         ttl="$(_swatter_pick_ttl "$prior")"
-        # No local traffic => no top_vhost: CF-plane targets audit skipped-novhost;
-        # the sweep protects the DIRECT plane (same posture as import-bans).
-        # rep=$score: the swarm score IS this block's reputation input.
-        _swatter_execute_block "$ip" temp "$ttl" "$score" \
-            "swarm-corroborated hosts=${hc}" "{\"swarm\":true,\"hosts\":${hc}}" \
-            "$score" 0 "" "$healthy" && n=$(( n + 1 ))
+        # No local traffic => force the DIRECT plane explicitly (a re-classify would
+        # pick VIA_CF and audit skipped-novhost). never_block + fail-closed still
+        # gate the CSF deny inside the helper. rep=$score: the swarm score IS this
+        # block's reputation input.
+        _swatter_apply_plane "$ip" "DIRECT" temp "$ttl" "swarm-corroborated hosts=${hc}" \
+            "" "$healthy" "$score" "{\"swarm\":true,\"hosts\":${hc}}" "$score" && n=$(( n + 1 ))
     done < <(jq -r --argjson n "${SWARM_MIN_CORROBORATION:-2}" \
                 '.[] | select((.host_count // 0) >= $n) | [.ip, .host_count] | @tsv' "$meta" 2>/dev/null)
-    # "dispatched", not "applied": _swatter_execute_block returns 0 for every
-    # attempted path incl. skipped-novhost/failed — decisions.jsonl has truth.
+    # "dispatched", not "applied": _swatter_apply_plane audits every attempted
+    # path incl. skipped-*/failed — decisions.jsonl has the true outcome.
     (( n > 0 )) && log_info "swarm sweep: ${n} corroborated candidate(s) dispatched through the block gate (outcomes in decisions.jsonl)"
     return 0
 }

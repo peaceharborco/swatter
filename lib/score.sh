@@ -133,7 +133,10 @@ _swatter_apply_plane() {
         # Per-plane ledger — written ONLY on an enforced block (never dry-run/report),
         # mirroring swatter_store_record's dry_run==0 path. sqlite-only; flatfile no-op.
         [[ "${SWATTER_MODE}" == "enforce" ]] && swatter_store_plane_set "$ip" "$channel" "$action" "$ttl"
-        swatter_abuseipdb_report "$ip" "$ev" "$reason"
+        # Report to AbuseIPDB once per IP: only the primary block (audit_action ==
+        # action). An upgrade / dual-plane second leg carries a distinct
+        # audit_action, so it records + blocks but does not re-report the same IP.
+        [[ "$audit_action" == "$action" ]] && swatter_abuseipdb_report "$ip" "$ev" "$reason"
         _swatter_audit "$ip" "$folded" "$audit_action" "$channel" "$ttl" "$reason" "$ev" "$rep"
     elif (( rc == SWATTER_RC_CAP )); then
         # Backend hit its per-run deny cap (a deliberate throttle) — not a failure.
@@ -185,6 +188,87 @@ _swatter_execute_block() {
     local ip="$1" action="$2" ttl="$3" folded="$4" reason="$5" ev="$6" rep="$7" novhost="$8" top_vhost="$9" healthy="${10}"
     local plane; plane="$(swatter_classify "$ip" "$novhost")"
     _swatter_apply_plane "$ip" "$plane" "$action" "$ttl" "$reason" "$top_vhost" "$healthy" "$folded" "$ev" "$rep"
+}
+
+# Plane-aware replacement for the old global "already perm -> noop" short-circuit.
+# Given the plane the current evidence points to (want_ch = its firewall channel):
+#   * already perm on THAT plane  -> audit noop-perm, return 0 (caller continues)
+#   * perm on some OTHER plane     -> UPGRADE: add a perm block on this plane too
+#                                     (audits plane-upgrade), return 0
+#   * not perm on any plane        -> return 1 (caller runs the normal block path)
+# Keyed on the PER-PLANE ledger (plane_blocks), never on global offenders.perm,
+# so a phantom dry-run perm / legacy import can't drive a noop→upgrade loop. A
+# live TEMP is deliberately NOT a noop (is_perm_on is perm-only), so the temp->
+# perm escalation ladder still runs. For a hard-intel IP already perm on the
+# evidence plane, a missing OTHER plane is healed here (retries a dual-plane leg
+# that failed earlier under fail-closed / cap).
+#   _swatter_perm_gate <ip> <plane> <want_ch> <folded> <reason> <ev> <rep> <top_vhost> <healthy>
+_swatter_perm_gate() {
+    local ip="$1" plane="$2" want_ch="$3" folded="$4" reason="$5" ev="$6" rep="$7" top_vhost="$8" healthy="$9"
+    # Flatfile store OR report mode: no trustworthy per-plane ledger (plane_set is
+    # sqlite + enforce only). Preserve the original global-perm noop so a preview
+    # or flatfile run never loops on phantom upgrades.
+    if [[ "${STORE:-sqlite}" != "sqlite" || "${SWATTER_MODE}" != "enforce" ]]; then
+        swatter_store_is_perm "$ip" || return 1
+        _swatter_audit "$ip" "$folded" "noop-perm" "none" 0 "$reason" "$ev" "$rep"; return 0
+    fi
+
+    local other other_ch hard=0
+    if [[ "$plane" == "DIRECT" ]]; then other="VIA_CF"; other_ch="cloudflare"
+    else other="DIRECT"; other_ch="${DIRECT_BACKEND:-csf}"; fi
+    [[ "${DUAL_PLANE_HARD_INTEL:-true}" == "true" && "$rep" =~ ^[0-9]+$ ]] \
+        && (( rep >= ${INTEL_HARDBLOCK_MIN:-100} )) && hard=1
+
+    if swatter_store_is_perm_on "$ip" "$want_ch"; then
+        # Already perm on the evidence plane. For hard-intel, ensure the OTHER
+        # plane is covered too — heals a dual-plane leg that failed earlier.
+        if (( hard )) && ! swatter_store_is_perm_on "$ip" "$other_ch"; then
+            _swatter_apply_plane "$ip" "$other" "perm" 0 "dual-plane ${reason}" \
+                "$top_vhost" "$healthy" "$folded" "$ev" "$rep" "dual-plane"
+        else
+            _swatter_audit "$ip" "$folded" "noop-perm" "none" 0 "$reason" "$ev" "$rep"
+        fi
+        return 0
+    fi
+
+    if swatter_store_is_perm_on "$ip" "$other_ch"; then
+        # Perm on the other plane, evidence now points here -> upgrade onto this
+        # plane. Both planes are then covered, so no separate dual-plane needed.
+        _swatter_apply_plane "$ip" "$plane" "perm" 0 "plane-upgrade ${reason}" \
+            "$top_vhost" "$healthy" "$folded" "$ev" "$rep" "plane-upgrade"
+        return 0
+    fi
+
+    if swatter_store_is_perm "$ip"; then
+        # offenders.perm=1 but NO plane_blocks row on either plane — a legacy
+        # import (bin/swatter import-bans) or a perm predating this feature.
+        # Backfill: perm on the evidence plane now, plus the other plane for
+        # hard-intel, restoring per-plane coverage.
+        _swatter_apply_plane "$ip" "$plane" "perm" 0 "plane-upgrade ${reason}" \
+            "$top_vhost" "$healthy" "$folded" "$ev" "$rep" "plane-upgrade"
+        (( hard )) && _swatter_maybe_dual_plane "$ip" "$plane" "perm" "$folded" "$reason" "$ev" "$rep" "$top_vhost" "$healthy"
+        return 0
+    fi
+
+    return 1   # not perm on any plane -> caller runs the temp/perm ladder
+}
+
+# After a fresh PERM on $plane, a hard-intel IP (reputation >= INTEL_HARDBLOCK_MIN
+# — Spamhaus DROP / AbuseIPDB 100, never a real visitor) also gets the OTHER plane
+# so direct-to-origin ports are covered too. Fired regardless of whether the
+# primary leg succeeded: if the primary was DIRECT and fail-closed (stale CF
+# ranges), this still places the CF block — degrading to CF-only rather than
+# neither plane. never_block + the fail-closed gate inside _swatter_apply_plane
+# still ensure a CF edge range can never be CSF-denied.
+#   _swatter_maybe_dual_plane <ip> <plane> <action> <folded> <reason> <ev> <rep> <top_vhost> <healthy>
+_swatter_maybe_dual_plane() {
+    local ip="$1" plane="$2" action="$3" folded="$4" reason="$5" ev="$6" rep="$7" top_vhost="$8" healthy="$9"
+    [[ "${DUAL_PLANE_HARD_INTEL:-true}" == "true" ]] || return 0
+    [[ "$action" == "perm" ]] || return 0
+    [[ "$rep" =~ ^[0-9]+$ ]] && (( rep >= ${INTEL_HARDBLOCK_MIN:-100} )) || return 0
+    local other; other=$([[ "$plane" == "DIRECT" ]] && echo "VIA_CF" || echo "DIRECT")
+    _swatter_apply_plane "$ip" "$other" "perm" 0 "dual-plane ${reason}" \
+        "$top_vhost" "$healthy" "$folded" "$ev" "$rep" "dual-plane"
 }
 
 # Main scan.
@@ -264,18 +348,23 @@ swatter_scan() {
 
         # Honeypot -> instant perm (skip the ladder).
         if (( is_honeypot )); then
-            if swatter_store_is_perm "$ip"; then
-                _swatter_audit "$ip" "$folded" "noop-perm" "none" 0 "$reason" "$ev" "$rep"; continue
-            fi
-            _swatter_execute_block "$ip" "perm" 0 "$folded" "honeypot ${reason}" "$ev" "$rep" "$novhost" "$top_vhost" "$healthy"
+            local hp_plane hp_want
+            hp_plane="$(swatter_classify "$ip" "$novhost")"
+            hp_want=$([[ "$hp_plane" == "DIRECT" ]] && echo "${DIRECT_BACKEND:-csf}" || echo "cloudflare")
+            _swatter_perm_gate "$ip" "$hp_plane" "$hp_want" "$folded" "$reason" "$ev" "$rep" "$top_vhost" "$healthy" && continue
+            _swatter_apply_plane "$ip" "$hp_plane" "perm" 0 "honeypot ${reason}" \
+                "$top_vhost" "$healthy" "$folded" "$ev" "$rep"
+            _swatter_maybe_dual_plane "$ip" "$hp_plane" "perm" "$folded" "honeypot ${reason}" "$ev" "$rep" "$top_vhost" "$healthy"
             continue
         fi
 
         if (( folded >= SCORE_TEMP )); then
-            if swatter_store_is_perm "$ip"; then
-                log_debug "${ip} already perm-blocked; skipping"
-                _swatter_audit "$ip" "$folded" "noop-perm" "none" 0 "$reason" "$ev" "$rep"; continue
-            fi
+            local plane want_ch
+            plane="$(swatter_classify "$ip" "$novhost")"
+            want_ch=$([[ "$plane" == "DIRECT" ]] && echo "${DIRECT_BACKEND:-csf}" || echo "cloudflare")
+            # Plane-aware perm gate: noop only if already perm on the evidence's
+            # plane; upgrade if perm elsewhere; else fall through to the ladder.
+            _swatter_perm_gate "$ip" "$plane" "$want_ch" "$folded" "$reason" "$ev" "$rep" "$top_vhost" "$healthy" && continue
             local prior; prior="$(swatter_store_recent_temp_count "$ip")"
             [[ "$prior" =~ ^[0-9]+$ ]] || prior=0
             local action ttl=0
@@ -286,7 +375,9 @@ swatter_scan() {
                     (( ttl < CRITICAL_TTL_FLOOR )) && ttl="${CRITICAL_TTL_FLOOR}"
                 fi
             fi
-            _swatter_execute_block "$ip" "$action" "$ttl" "$folded" "$reason" "$ev" "$rep" "$novhost" "$top_vhost" "$healthy"
+            _swatter_apply_plane "$ip" "$plane" "$action" "$ttl" "$reason" \
+                "$top_vhost" "$healthy" "$folded" "$ev" "$rep"
+            _swatter_maybe_dual_plane "$ip" "$plane" "$action" "$folded" "$reason" "$ev" "$rep" "$top_vhost" "$healthy"
         else
             # WATCH band: low-and-slow accrual + escalation.
             _swatter_audit "$ip" "$folded" "watch" "none" 0 "$reason" "$ev" "$rep"
