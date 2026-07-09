@@ -724,3 +724,12 @@ MIT © [Peace Harbor Studios](https://studios.peaceharbor.com). See [LICENSE](LI
 Contributions welcome — new firewall backends (ipset/nftables), an nginx log
 parser, and additional intel providers all slot into the existing adapter
 interfaces.
+
+### Acknowledgements
+
+Swatter is developed with AI pair-programming and adversarial review baked into
+the workflow: [Claude](https://claude.com) (Anthropic) as the primary
+development partner, with [Grok](https://x.ai) (xAI) and
+[Cursor](https://cursor.com) serving as independent adversarial reviewers on
+plans, risky changes, and pre-release audits. Their reviews are credited as
+`Co-Authored-By` trailers in the git history.
