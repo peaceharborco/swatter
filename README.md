@@ -41,10 +41,20 @@ Swatter is built around this. For every offender it decides:
   → block at **CSF**. Safe: the socket really is the attacker.
 - **Via Cloudflare** (came through the proxy) → a **Cloudflare IP Access Rule**
   via API, a **managed challenge** by default — so a false positive means a
-  human solves a challenge, not a lockout. The CSF plane is never touched. The
+  human solves a challenge, not a lockout. The CSF plane is left alone. The
   rule lands per `CF_SCOPE`: `zone` (the single zone hit) or `account` (every
   account at once, so a vhost-rotating scanner can't roam — see below).
 - **Ambiguous** → defaults to the Cloudflare plane (the safe one).
+
+Permanent bans are tracked **per plane**, and the two planes cover each other:
+an IP permed at the Cloudflare edge that later shows up hitting the origin
+directly (say, a webmail flood on a cPanel service port that never transits
+Cloudflare) acquires the missing CSF deny instead of being dismissed as
+"already blocked" — and vice versa. Offenders with a **hard-intel** reputation
+(Spamhaus DROP, AbuseIPDB 100 — never a legitimate visitor; threshold
+`INTEL_HARDBLOCK_MIN`) are permed on **both planes at once**
+(`DUAL_PLANE_HARD_INTEL`, default on), so direct-to-origin ports are covered
+before the attacker tries them.
 
 Cloudflare's own ranges are a hardcoded **never-block** set, re-checked
 immediately before every single block. If the range list ever goes missing or
@@ -146,13 +156,16 @@ reputation feeds before acting:
 - **AbuseIPDB daily blocklist** *(opt-in)* — a once-a-day download of the top abusive
   IPs (reuses your `ABUSEIPDB_KEY`); add `abuseipdb_blocklist` to `INTEL_PROVIDERS`.
 
-Reputation only ever *raises* a borderline score — it never blocks on its own, and
-a failed or offline lookup is simply ignored. Works fully with **zero** API keys.
+Reputation only ever *raises* a borderline score — it never blocks on its own
+(with one deliberate exception: a hard-intel hit on an already-blocked offender
+widens the block to both planes, per above), and a failed or offline lookup is
+simply ignored.
 
 ### Getting your own provider API keys
 
-**Swatter runs fully with zero API keys** — IPsum and Spamhaus need none, and
-every keyed provider degrades silently to "no data" when its key is unset. Add
+**Swatter runs fully with zero API keys** — IPsum, Spamhaus, and the keyless
+list feeds need none, and every keyed provider degrades silently to "no data"
+when its key is unset. Add
 a key only for the providers you want; each is free:
 
 | Provider | Cost | Get a key |
@@ -185,6 +198,10 @@ repo.
 
 `ALERT_REPEAT_TTL` (default 6 h) suppresses repeat alerts for the same IP so a
 sustained attack doesn't flood your inbox or phone.
+
+SMS also pages on the nightly report's status: `ALERT_SMS_GRADES` (default
+`RED`) texts you when the digest lands on 🔴 RED — add `YELLOW` to be paged on
+non-fatal error floods too.
 
 `swatter test-config` reports which channels are active.
 
@@ -421,7 +438,11 @@ on the receiving hosts to keep ban lists in sync across a fleet.
 ## Nightly digest — swat errors, bad actors *and* bypass attempts
 
 `swatter report` emails one nightly digest, delivered as a structured HTML
-report (verdict line → stat tiles → per-plane tables), covering up to four
+report (verdict line → stat tiles → per-plane tables). Each report leads with a
+**traffic-light status** — 🟢 GREEN (all clear: blocks and origin-lock drops
+live here, that's Swatter working), 🟡 YELLOW (elevated non-fatal error volume,
+worth a look), 🔴 RED (a fatal error — a service or app may be down) — shown in
+the subject line so the inbox list reads at a glance. It covers up to four
 planes of server health:
 
 - **Bad actors** — blocks taken (perm/temp), grouped by offense type, bad-path
@@ -558,10 +579,10 @@ swatter allow 203.0.113.7 "office"
 swatter allow 198.51.100.0/24 "client X static range"
 ```
 
-The most embarrassing failure mode of any auto-blocker is banning the customer —
-a site owner fumbling a password and then working in wp-admin can look a lot
-like an attack. Swatter's scoring is built to tell those apart, but your
-operator IPs deserve a guarantee, not a probability.
+An auto-blocker's worst outcome is banning the customer — a site owner fumbling
+a password and then working in wp-admin can look a lot like an attack.
+Swatter's scoring is built to tell those apart, but your operator IPs deserve a
+guarantee, not a probability.
 
 When you trust it, set `SWATTER_MODE="enforce"` in `/etc/swatter/swatter.conf`.
 The installer adds a cron entry that scans every 5 minutes and refreshes feeds
