@@ -212,7 +212,20 @@ _report_grade; check swplane-nograde "$RPT_GRADE" "$g0"
 check swplane-noverdict "$(_report_verdict | cut -f1)" "$v0"
 # Silence invariant as a SOURCE-level guard (robust to line drift): the silence
 # gate's body must reference no SWARM_* global.
-check swplane-silence-clean "$(awk '/Stay silent only when BOTH planes/,/return 0/' "${ROOT}/lib/report.sh" | grep -c SWARM)" "0"
+check swplane-silence-clean "$(awk '/Stay silent only when ALL THREE planes/,/return 0/' "${ROOT}/lib/report.sh" | grep -c SWARM)" "0"
+
+# Silence gate must gate on EVERY plane's counter — an origin-lock-only or
+# backend-failed-only window must not be silently suppressed. Guard the predicate
+# at source level (robust to line drift): the gate condition references all six
+# counters.
+sil_gate="$(awk '/Stay silent only when ALL THREE planes/,/^        return 0/' "${ROOT}/lib/report.sh")"
+gate_cond="$(printf '%s' "$sil_gate" | grep 'test_mode' | grep 'RPT_ACTED')"
+check silence-gate-acted   "$(printf '%s' "$gate_cond" | grep -c 'RPT_ACTED == 0')"  "1"
+check silence-gate-exempt  "$(printf '%s' "$gate_cond" | grep -c 'RPT_EXEMPT == 0')" "1"
+check silence-gate-failed  "$(printf '%s' "$gate_cond" | grep -c 'rpt_failed == 0')" "1"
+check silence-gate-olhits  "$(printf '%s' "$gate_cond" | grep -c 'ol_hits == 0')"    "1"
+check silence-gate-genuine "$(printf '%s' "$gate_cond" | grep -c 'err_genuine == 0')" "1"
+check silence-gate-fatal   "$(printf '%s' "$gate_cond" | grep -c 'err_fatal == 0')"  "1"
 STATE_DIR="$SW_STATE_SAVE"; SWARM_ENABLE=false; rm -rf "$SW_ST"
 
 echo "----------------------------------------"

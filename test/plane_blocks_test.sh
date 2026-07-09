@@ -79,6 +79,30 @@ check flat-active-off   "$(rc swatter_store_active_on  8.8.8.8 csf)" "no"
 check flat-clear-noop   "$(rc swatter_store_plane_clear 8.8.8.8)" "yes"
 STORE=sqlite
 
+# dry-run perm must NOT mark the offender perm or bump temp_count — a report-mode
+# detection is not a live ban (finding [15]).
+swatter_store_record 10.10.10.10 perm cloudflare 0 90 "dry perm" 1
+check dry-perm-not_perm "$(rc swatter_store_is_perm 10.10.10.10)" "no"
+check dry-perm-count "$(sqlite3 "$db" "SELECT perm FROM offenders WHERE ip='10.10.10.10';")" "0"
+swatter_store_record 10.10.10.11 temp csf 3600 50 "dry temp" 1
+check dry-temp-count "$(sqlite3 "$db" "SELECT temp_count FROM offenders WHERE ip='10.10.10.11';")" "0"
+# an enforced perm DOES mark it.
+swatter_store_record 10.10.10.12 perm cloudflare 0 90 "real perm" 0
+check real-perm-is_perm "$(rc swatter_store_is_perm 10.10.10.12)" "yes"
+# non-numeric ttl/score coerced (no SQL abort) — record still lands.
+swatter_store_record 10.10.10.13 temp csf "abc" "xyz" "bad nums" 0
+check coerce-lands "$(sqlite3 "$db" "SELECT COUNT(*) FROM actions WHERE ip='10.10.10.13';")" "1"
+check coerce-ttl-zero "$(sqlite3 "$db" "SELECT ttl FROM actions WHERE ip='10.10.10.13';")" "0"
+
+# flatfile is_perm honors a LATER unblock — not just any historical perm row
+# (finding [2]).
+STORE=flatfile
+swatter_store_record 9.9.9.9 perm cloudflare 0 90 "flat perm" 0
+check flat-perm-set "$(rc swatter_store_is_perm 9.9.9.9)" "yes"
+swatter_store_record 9.9.9.9 unblock none 0 0 "flat unblock" 0
+check flat-perm-cleared "$(rc swatter_store_is_perm 9.9.9.9)" "no"
+STORE=sqlite
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

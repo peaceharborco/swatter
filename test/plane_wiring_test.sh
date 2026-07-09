@@ -69,11 +69,13 @@ _swatter_perm_gate 9.1.1.1 DIRECT csf 100 r '{}' 100 "" 1; check gate-legacy-rc 
 check gate-legacy-upgrade "$(grep -c '^9.1.1.1 DIRECT perm plane-upgrade' "$APPLY")" "1"
 check gate-legacy-dual "$(grep -c '^9.1.1.1 VIA_CF perm dual-plane' "$APPLY")" "1"
 
-# 8. REPORT mode: phantom dry perm (offenders.perm=1, no plane row) -> global noop,
-#    NOT an upgrade loop (M1 regression guard).
+# 8. REPORT mode: a perm IP (from a prior enforced run) gets a quiet GLOBAL noop,
+#    never a per-plane upgrade (report mode can't write plane_blocks). M1 guard.
+#    (A dry-run perm no longer sets offenders.perm at all — store fix — so the
+#    phantom-perm upgrade loop is impossible; here we seed an enforced perm.)
 reset; SD_R="$(mktemp -d "${TMPDIR:-/tmp}/swatter-rep.XXXXXX")"
 ( STATE_DIR="$SD_R"; STORE=sqlite; SWATTER_MODE=report; swatter_store_init
-  swatter_store_record 9.2.2.2 perm csf 0 100 dry 1     # dry perm: offenders.perm=1, no plane row
+  swatter_store_record 9.2.2.2 perm csf 0 100 seed 0    # enforced perm -> offenders.perm=1, no plane row
   _swatter_perm_gate 9.2.2.2 DIRECT csf 100 r '{}' 100 "" 1; echo "rc=$?" > "$SD_R/rc" )
 check gate-report-noop-audit "$(grep -c '^9.2.2.2 noop-perm' "$AUDIT")" "1"
 check gate-report-noapply "$(grep -c . "$APPLY")" "0"; check gate-report-rc "$(cat "$SD_R/rc")" "rc=0"

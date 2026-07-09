@@ -182,6 +182,40 @@ hasnt v6gate-v6-absent  "ip6tables -A INPUT"
 SWATTER_HAVE_IP6TABLES=1
 
 # ===========================================================================
+# 7b. PER-FAMILY DROP gating: a cloudflare.cidr with ONLY v6 ranges (zero v4)
+#     still clears the both-families MIN_RANGES gate — but must NOT install any
+#     v4 rule. An empty cf_origin4 ipset behind a v4 DROP = every IPv4 packet
+#     dropped (total IPv4 origin outage). v6 must build; v4 must be untouched.
+# ===========================================================================
+: > "$CALLS"
+CLOUDFLARE_IPS_FILE="$TMP/v6only.cidr"
+cat > "$CLOUDFLARE_IPS_FILE" <<'EOF'
+2001:db8:1::/48
+2001:db8:2::/48
+2001:db8:3::/48
+EOF
+ORIGIN_LOCK="drop"
+cmd_origin_lock apply --hook=csf --yes >/dev/null 2>&1
+hasnt v6only-no-v4-drop   "iptables -A INPUT -p tcp -m multiport --dports 80,443 -j DROP"
+hasnt v6only-no-v4-accept "cf_origin4 src -j ACCEPT"
+hasnt v6only-no-v4-set    "ipset create cf_origin4"
+has   v6only-v6-drop      "ip6tables -A INPUT -p tcp -m multiport --dports 80,443 -j DROP"
+has   v6only-v6-accept    "ip6tables -A INPUT -p tcp -m multiport --dports 80,443 -m set --match-set cf_origin6 src -j ACCEPT"
+ORIGIN_LOCK="log"
+CLOUDFLARE_IPS_FILE="$TMP/cloudflare.cidr"
+
+# ===========================================================================
+# 7c. TEARDOWN ORDER: the DROP must be deleted BEFORE its guarding CF-ACCEPT.
+#     Deleting the ACCEPT first would leave the DROP standing alone for a live
+#     window = drop-all (Cloudflare included) on every teardown/disable.
+# ===========================================================================
+: > "$CALLS"
+cmd_origin_lock disable >/dev/null 2>&1
+td_drop="$(grep -nF -e 'iptables -D INPUT -p tcp -m multiport --dports 80,443 -j DROP' "$CALLS" | head -1 | cut -d: -f1)"
+td_acc="$( grep -nF -e 'iptables -D INPUT -p tcp -m multiport --dports 80,443 -m set --match-set cf_origin4 src -j ACCEPT' "$CALLS" | head -1 | cut -d: -f1)"
+if [[ -n "$td_drop" && -n "$td_acc" && "$td_drop" -lt "$td_acc" ]]; then PASS=$((PASS+1)); else echo "FAIL teardown-drop-before-accept (drop=${td_drop} acc=${td_acc})"; FAIL=$((FAIL+1)); fi
+
+# ===========================================================================
 # 8. ACME/DCV posture: ports without :80 -> no DCV warning; teardown still
 #    clears the LEGACY /.well-known/ rule an older swatter installed.
 # ===========================================================================
@@ -375,6 +409,27 @@ ORIGIN_LOCK_DIGEST="on"
 check ol-gate-on-zero    "$(_ol_digest_should_render 0 && echo show || echo hide)" "show"
 ORIGIN_LOCK_DIGEST="off"
 check ol-gate-off-hits   "$(_ol_digest_should_render 4 && echo show || echo hide)" "hide"
+
+# ISO-8601 rsyslog stamps: modern rsyslog writes "2026-07-09T10:00:00+00:00 ..."
+# instead of traditional "Jul  9 10:00:00 ...". The window filter must recognize
+# the ISO leading token (year-aware, so exact windowing) OR it silently drops
+# EVERY line -> false "no drops". An unrecognized leading token must be COUNTED,
+# never dropped. A 10-day-old ISO line stays excluded (year-aware).
+_iso_now="$(date -d "@${_now_ts}" +'%Y-%m-%dT%H:%M:%S' 2>/dev/null || date -r "${_now_ts}" +'%Y-%m-%dT%H:%M:%S')"
+_iso_old="$(date -d "@${_old_ts}" +'%Y-%m-%dT%H:%M:%S' 2>/dev/null || date -r "${_old_ts}" +'%Y-%m-%dT%H:%M:%S')"
+{
+    printf '%s+00:00 cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=45.135.232.17 DPT=443 SPT=6000\n' "$_iso_now"
+    printf '%s+00:00 cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=193.32.162.40 DPT=443 SPT=6002\n' "$_iso_now"
+    printf '%s+00:00 cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=10.10.10.10 DPT=443 SPT=6004\n'   "$_iso_old"
+} > "$DIG/messages"
+ORIGIN_LOCK_LOG="$DIG/messages"
+_oltmp="$(mktemp "${TMPDIR:-/tmp}/swatter-oliso.XXXXXX")"; swatter_originlock_section 24h > "$_oltmp"; rm -f "$_oltmp"
+check ol-iso-hits         "$OL_HITS" "2"
+check ol-iso-exclude-old  "$(printf '%s\n' "$OL_TOP_ROWS" | grep -c '10\.10\.10\.10' || true)" "0"
+# Unrecognized leading token must be counted, not dropped.
+printf 'weirdformat cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=5.5.5.5 DPT=443 SPT=6006\n' > "$DIG/messages"
+swatter_originlock_section 24h >/dev/null 2>&1
+check ol-unknown-fmt-counted "$OL_HITS" "1"
 
 # _ol_tag_ip must classify by CIDR CONTAINMENT, not literal string match: a
 # monitoring/allow range (e.g. 198.51.100.0/24) that CONTAINS the source IP has

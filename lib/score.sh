@@ -40,6 +40,9 @@ _swatter_fold_reputation() {
 _swatter_pick_ttl() {
     local prior="$1"; local -a ladder
     read -r -a ladder <<<"${TTL_LADDER}"
+    # An empty ladder would index ladder[-1] on a nonexistent array; fall back to a
+    # sane 1h temp block rather than emit an empty TTL into the backend.
+    (( ${#ladder[@]} == 0 )) && { printf '%s' 3600; return 0; }
     local idx="$prior"
     (( idx >= ${#ladder[@]} )) && idx=$(( ${#ladder[@]} - 1 ))
     printf '%s' "${ladder[$idx]}"
@@ -60,11 +63,18 @@ _swatter_audit() {
     # (same backslash/quote/cntrl neutralization) so the record layer is
     # self-protecting for any future caller that reaches _swatter_audit directly.
     local aip="${1//\\/\\\\}"; aip="${aip//\"/\'}"; aip="${aip//[[:cntrl:]]/}"
+    # score/ttl/reputation are interpolated raw (unquoted) into the JSON. A caller
+    # passing an empty or non-numeric value would produce "score":, — corrupt JSONL
+    # that breaks jq in report.sh/`why`. Default every numeric field to 0 unless it
+    # is a plain integer.
+    local ascore="$2"; [[ "$ascore" =~ ^-?[0-9]+$ ]] || ascore=0
+    local attl="${5:-0}"; [[ "$attl" =~ ^-?[0-9]+$ ]] || attl=0
+    local arep="${8:-0}"; [[ "$arep" =~ ^-?[0-9]+$ ]] || arep=0
     # A failed append must be LOUD (never abort the block path, but never
     # vanish either): blocks landing on the firewall with no decision record
     # silently break caps, repeat-escalation, and every /server-logs count.
     printf '{"ts":%s,"iso":"%s","ip":"%s","score":%s,"action":"%s","channel":"%s","ttl":%s,"reason":"%s","reputation":%s,"mode":"%s","evidence":%s}\n' \
-        "$now" "$(ts)" "$aip" "$2" "$3" "$4" "${5:-0}" "$reason" "${8:-0}" "${SWATTER_MODE}" "$7" \
+        "$now" "$(ts)" "$aip" "$ascore" "$3" "$4" "$attl" "$reason" "$arep" "${SWATTER_MODE}" "$7" \
         >> "$f" 2>/dev/null || log_error "audit write FAILED (${f}): decision '${3}' for ${1} NOT recorded"
 }
 
@@ -300,7 +310,9 @@ swatter_scan() {
     parsed="$(mktemp "${TMPDIR:-/tmp}/swatter-parsed.XXXXXX")"
     scored="$(mktemp "${TMPDIR:-/tmp}/swatter-scored.XXXXXX")"
     # shellcheck disable=SC2064
-    trap "rm -f '$parsed' '$scored'" RETURN
+    # SWATTER_DIRECT_SET is mktemp'd by swatter_build_direct_set above; clean it
+    # here too so a */5 cron doesn't leak one /tmp file per scan.
+    trap "rm -f '$parsed' '$scored' \"\${SWATTER_DIRECT_SET:-}\"" RETURN
 
     swatter_ingest > "$parsed"
     _swatter_run_scorer < "$parsed" | sort -t$'\t' -k2,2nr > "$scored"

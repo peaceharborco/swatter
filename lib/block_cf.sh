@@ -155,7 +155,15 @@ _cf_api() {
 _cf_zone_id() {
     local domain="$1" token="$2"
     local cache="${STATE_DIR}/cf-zones/${domain}"
-    if [[ -f "$cache" ]]; then cat "$cache"; return 0; fi
+    # Honour the positive cache only within a TTL, so a domain moved to a
+    # different CF account re-resolves to its new zone id instead of pinning the
+    # stale one (a rule would otherwise land on the wrong/former zone).
+    if [[ -f "$cache" ]]; then
+        local now mtime age
+        now="$(swatter_now)"; mtime="$(stat_mtime "$cache" 2>/dev/null || echo 0)"
+        age=$(( now - mtime ))
+        if (( age < ${CF_ZONE_CACHE_TTL:-604800} )); then cat "$cache"; return 0; fi
+    fi
     local zid
     zid="$(_cf_api "$token" GET "/zones?name=${domain}&status=active" | jq -r '.result[0].id // empty' 2>/dev/null)"
     [[ -n "$zid" ]] || return 1
@@ -402,6 +410,9 @@ swatter_cf_unblock() {
             rc=1
         fi
     done < "$refs"
+    # Full-file rewrite is safe against a concurrent append: the entrypoint's
+    # flock re-exec (swatter_acquire_lock) serializes every run, so no other
+    # process is appending to cf-rules.tsv while this read+mv runs.
     mv "$keep" "$refs" 2>/dev/null || { rm -f "$keep"; rc=1; }
     (( rc )) && SWATTER_LAST_BACKEND_ERR="cloudflare rule delete failed (ref kept; retry unblock or wait for the expiry sweep)"
     return "$rc"
@@ -445,7 +456,11 @@ swatter_cf_list_rules() {
     local line _CFR_IP _CFR_SCOPE _CFR_SID _CFR_RID _CFR_EXP
     while IFS= read -r line; do
         _cf_parse_ref "$line" || continue
+        # GNU `date -d @epoch` and BSD/macOS `date -r epoch` both tried; a host
+        # with neither just prints the raw epoch (display-only, never load-bearing).
         printf '%-16s %-8s %-34s %-22s %s\n' "${_CFR_IP}" "${_CFR_SCOPE}" "${_CFR_SID}" "${_CFR_RID}" \
-            "$(date -u -d "@${_CFR_EXP}" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "${_CFR_EXP}")"
+            "$(date -u -d "@${_CFR_EXP}" '+%Y-%m-%d %H:%M' 2>/dev/null \
+               || date -u -r "${_CFR_EXP}" '+%Y-%m-%d %H:%M' 2>/dev/null \
+               || echo "${_CFR_EXP}")"
     done < "$refs"
 }

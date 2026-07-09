@@ -66,7 +66,9 @@ swatter_alert_on_grade() {
     if (( ! test_mode )); then
         # Only the configured statuses trigger.
         case " ${ALERT_SMS_GRADES:-RED} " in *" ${grade} "*) ;; *) return 0 ;; esac
-        # Dedup: same status already alerted within the window?
+        # Dedup: same status already alerted within the window? The marker is NOT
+        # written here — a failed send must not suppress the retry. It is recorded
+        # only after swatter_send_sms succeeds, below.
         local statef="${STATE_DIR:-/var/lib/swatter}/last-sms-alert"
         local now win; now="$(swatter_now)"; win=$(( ${ALERT_SMS_DEDUP_HOURS:-6} * 3600 ))
         if [[ -r "$statef" ]]; then
@@ -76,7 +78,6 @@ swatter_alert_on_grade() {
                 return 0
             fi
         fi
-        printf '%s %s\n' "$grade" "$now" > "$statef" 2>/dev/null || true
     fi
 
     local host; host="$(hostname -f 2>/dev/null || hostname)"
@@ -87,6 +88,11 @@ swatter_alert_on_grade() {
         case "$grade" in RED) icon="🔴" ;; YELLOW) icon="🟡" ;; GREEN) icon="🟢" ;; esac
     fi
     local body="${prefix}${icon:+$icon }Swatter ${host}: Status ${grade} (${RPT_GRADE_WORD:-}). ${RPT_RECO:-}"
-    swatter_send_sms "${ALERT_SMS_TO}" "$body" || log_warn "alerts: SMS send failed (report unaffected)"
+    if swatter_send_sms "${ALERT_SMS_TO}" "$body"; then
+        # Record the dedup marker only on a successful send (never in --test mode).
+        (( test_mode )) || printf '%s %s\n' "$grade" "$now" > "$statef" 2>/dev/null || true
+    else
+        log_warn "alerts: SMS send failed (report unaffected)"
+    fi
     return 0
 }

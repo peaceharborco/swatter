@@ -224,10 +224,16 @@ _ol_teardown_family() {
     # which collapses a trailing space — so a LOG entry here would never match, and
     # the rule would linger forever (this is the "only the appended LOG survived"
     # anomaly from the 2026-06-30 incident §4). It gets its own quoted delete loop.
+    # ORDER MATTERS: delete the DROP FIRST, before its guarding CF-ACCEPT / lo /
+    # allow accepts. iptables -D is one rule at a time, so between deletes the
+    # chain is live — if the CF-ACCEPT went first the DROP would briefly stand
+    # ALONE, dropping ALL web traffic (Cloudflare included) for that window on
+    # every standalone teardown-first apply and on disable. DROP gone first =
+    # the residual chain only ever ACCEPTs, never a naked drop-all.
     local rules=(
+        "-p tcp -m multiport --dports ${ports} -j DROP"
         "-p tcp -m multiport --dports ${ports} -m set --match-set ${set} src -j ACCEPT"
         "-p tcp --dport 80 -m string --string /.well-known/ --algo bm -j ACCEPT"
-        "-p tcp -m multiport --dports ${ports} -j DROP"
         "-i lo -p tcp -m multiport --dports ${ports} -j ACCEPT"
     )
     local r tries
@@ -366,12 +372,22 @@ swatter_origin_lock_apply() {
     # Fresh failure accounting for THIS apply.
     _OL_APPLY_ERRS=0; _OL_APPLY_ERR=""
 
-    # Build the v4 set + rules.
-    _ol_build_set "$(_ol_set4)" inet "${_OL_V4}"
-    _ol_rules_family iptables "$(_ol_set4)" "$hook"
+    # Build the v4 set + rules — ONLY when this family actually has a range. The
+    # fail-open MIN_RANGES gate counts BOTH families, so a file with (say) 3 v6
+    # ranges and ZERO v4 ranges passes it — but building v4 here anyway would
+    # install a DROP guarded by an EMPTY cf_origin4 ipset (the src match never
+    # fires), i.e. every IPv4 packet to the web ports dropped: total IPv4 origin
+    # outage. Each family must authorize its OWN DROP from its OWN ranges.
+    if [[ -n "${_OL_V4//[$'\n']/}" ]]; then
+        _ol_build_set "$(_ol_set4)" inet "${_OL_V4}"
+        _ol_rules_family iptables "$(_ol_set4)" "$hook"
+    else
+        log_warn "origin-lock: no IPv4 CF ranges in ${CLOUDFLARE_IPS_FILE} — IPv4 web ports left UNCOVERED (no v4 DROP built; v6-only lock)"
+    fi
 
     # v6 gated on ip6tables presence (warn-and-skip if absent — leaving v6 web
-    # ports uncovered rather than failing the whole apply).
+    # ports uncovered rather than failing the whole apply) AND on having a v6
+    # range (same empty-set DROP-all hazard as v4 above).
     if [[ -n "${_OL_V6//[$'\n']/}" ]]; then
         if [[ "${SWATTER_HAVE_IP6TABLES:-0}" -eq 1 ]]; then
             _ol_build_set "$(_ol_set6)" inet6 "${_OL_V6}"
@@ -612,31 +628,57 @@ swatter_originlock_section() {
     window_secs="$(_report_window_secs "$window")"
     days=$(( window_secs / 86400 + 1 ))
     local now_ts; now_ts="$(swatter_now)"
-    # Build a pipe-separated label string (avoids newline-in-awk-var BSD awk limits).
-    local label_str="" i ts lbl
+    # Build pipe-separated label strings (avoids newline-in-awk-var BSD awk limits)
+    # for BOTH syslog stamp formats we may meet in the log:
+    #   * traditional  "Jul  9 10:00:00 ..."   -> "Mon DD" (yearless)
+    #   * ISO-8601     "2026-07-09T10:00:00 ..." -> "YYYY-MM-DD" (year-aware)
+    # Modern rsyslog defaults to ISO; matching ONLY the traditional label made the
+    # window filter drop every ISO line -> a false "no drops". The ISO labels also
+    # carry the year, so an ISO stamp can be windowed exactly (no prior-year
+    # collision, unlike yearless "Mon DD").
+    local label_str="" iso_str="" i ts lbl iso
     for (( i = 0; i < days; i++ )); do
         ts=$(( now_ts - i * 86400 ))
         lbl="$(date -d "@$ts" +'%b %e' 2>/dev/null || date -r "$ts" +'%b %e')"
+        iso="$(date -d "@$ts" +'%Y-%m-%d' 2>/dev/null || date -r "$ts" +'%Y-%m-%d')"
         # Normalize the double-space produced for single-digit days ("Jun  5" ->
         # "Jun 5") to match awk's $1" "$2 reconstruction which collapses fields.
         lbl="${lbl//  / }"
         label_str+="${lbl}|"
+        iso_str+="${iso}|"
     done
     label_str="${label_str%|}"; # strip trailing pipe
+    iso_str="${iso_str%|}"
 
     local logs; logs="$(_ol_digest_logs)"
     # shellcheck disable=SC2086
     # $logs intentionally word-splits for multi-path glob support
     local raw_hits; raw_hits="$(grep -hE "ORIGIN-LOCK:" $logs 2>/dev/null || true)"
 
-    # Keep only lines whose leading syslog "Mon DD" ($1 " " $2) is in the day set.
+    # Keep only lines whose leading syslog stamp falls inside the day set. The
+    # leading token tells us the format:
+    #   * "YYYY-MM-DD..." (ISO-8601) -> window by full date (year-aware, exact).
+    #   * "Mon" (3-letter month)     -> window by "Mon DD" (yearless; a prior-year
+    #     line sharing the Mon-DD is indistinguishable — an inherent limit of the
+    #     yearless format, tolerable for a digest).
+    #   * anything else              -> COUNT it. A format we don't recognize must
+    #     never silently zero the report ("no drops" when there were drops).
     local hits
-    hits="$(printf '%s\n' "$raw_hits" | awk -v labels="$label_str" '
+    hits="$(printf '%s\n' "$raw_hits" | awk -v labels="$label_str" -v isolabels="$iso_str" '
         BEGIN {
             n = split(labels, a, "|")
             for (i = 1; i <= n; i++) { if (a[i] != "") valid[a[i]] = 1 }
+            m = split(isolabels, b, "|")
+            for (i = 1; i <= m; i++) { if (b[i] != "") isovalid[b[i]] = 1 }
         }
-        NF > 0 { if (($1 " " $2) in valid) print }
+        NF == 0 { next }
+        {
+            if ($1 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/) {
+                if (substr($1, 1, 10) in isovalid) print
+            } else if ($1 ~ /^[A-Z][a-z][a-z]$/) {
+                if (($1 " " $2) in valid) print
+            } else { print }
+        }
     ')"
 
     OL_HITS=$(printf '%s\n' "$hits" | grep -c . || true)

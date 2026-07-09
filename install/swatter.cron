@@ -3,11 +3,15 @@
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 MAILTO=""
 
+# MAILTO="" + redirect to a rotated op log: cron mail is discarded, but scan and
+# refresh output (errors, feed-refresh causes) persists in /var/log/swatter/swatter.log
+# (rotated by /etc/logrotate.d/swatter).
+
 # minute hour dom month dow user  command
-*/5 * * * * root /usr/local/bin/swatter scan
+*/5 * * * * root /usr/local/bin/swatter scan >> /var/log/swatter/swatter.log 2>&1
 
 # Refresh Cloudflare ranges + threat-intel feeds once daily (03:20).
-20 3 * * *  root /usr/local/bin/swatter refresh-feeds
+20 3 * * *  root /usr/local/bin/swatter refresh-feeds >> /var/log/swatter/swatter.log 2>&1
 
 # The nightly report runs from a SEPARATE file, /etc/cron.d/swatter-report, so its
 # CRON_TZ (REPORT_CRON_TZ, e.g. America/Los_Angeles) scopes to the report only and

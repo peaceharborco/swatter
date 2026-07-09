@@ -44,7 +44,10 @@ function emit(epoch,level,src,msg){ gsub(/[ \t\r\n]+/," ",msg); sub(/^ /,"",msg)
 _errors_collect_apache() {
     local cutoff="$1" f="${ERROR_LOG}"
     [[ -n "$f" && -s "$f" ]] || return 0
-    TZ=UTC gawk -v cutoff="$cutoff" "${_ERR_AWKLIB}"'
+    # Apache stamps its error_log in the host's local time; mktime must interpret
+    # the broken-down fields in that same zone (do NOT force TZ=UTC). emit()
+    # normalizes to UTC on output.
+    gawk -v cutoff="$cutoff" "${_ERR_AWKLIB}"'
         {
             if (substr($0,1,1) != "[") next
             c=index($0,"]"); if(c==0) next
@@ -101,7 +104,9 @@ _errors_collect_fpm() {
     for f in ${ERROR_FPM_GLOB}; do
         [[ -s "$f" ]] || continue
         phpver="$(printf '%s' "$f" | sed -n 's#.*/ea-php\([0-9][0-9]*\)/.*#php\1#p')"; [[ -n "$phpver" ]] || phpver="php"
-        TZ=UTC gawk -v cutoff="$cutoff" -v phpver="$phpver" "${_ERR_AWKLIB}"'
+        # PHP-FPM stamps its log in the host's local time (no zone suffix);
+        # interpret it in the system-local zone, not UTC.
+        gawk -v cutoff="$cutoff" -v phpver="$phpver" "${_ERR_AWKLIB}"'
             {
                 if(substr($0,1,1)!="[") next
                 c=index($0,"]"); if(c==0) next
@@ -126,7 +131,9 @@ _errors_collect_mysql() {
     local cutoff="$1" f
     for f in ${ERROR_MYSQL_GLOB}; do
         [[ -s "$f" ]] || continue
-        TZ=UTC gawk -v cutoff="$cutoff" "${_ERR_AWKLIB}"'
+        # MariaDB stamps its .err in the host's local time; interpret it in the
+        # system-local zone (do NOT force TZ=UTC). emit() re-normalizes to UTC.
+        gawk -v cutoff="$cutoff" "${_ERR_AWKLIB}"'
             {
                 if($0 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] /) next
                 ts=substr($0,1,19); rest=substr($0,20)
@@ -140,6 +147,27 @@ _errors_collect_mysql() {
             }' "$f" 2>/dev/null
     done
 }
+
+# The known-noise filter is a user-tunable extended regex fed to `grep -Ev`.
+# An empty value makes `grep -Ev ""` match (and thus invert away) every line,
+# and a malformed regex makes grep exit 2 — either way the genuine-error count
+# silently collapses to zero and real breakage is hidden. Validate once at load:
+# reject empty and probe-compile the pattern, falling back to a safe default.
+_ERR_NOISE_DEFAULT='prefetch request body failed|error reading status line from remote server|invalid URI path|Invalid method in request|no compatible SSL setup for policy|client denied by server configuration|Error dispatching request to'
+_errors_validate_noise() {
+    if [[ -z "${ERROR_NOISE:-}" ]]; then
+        log_warn "errors: ERROR_NOISE is empty; using built-in noise default"
+        ERROR_NOISE="$_ERR_NOISE_DEFAULT"
+        return
+    fi
+    local rc=0
+    printf '' | grep -Eq "${ERROR_NOISE}" 2>/dev/null || rc=$?
+    if (( rc == 2 )); then
+        log_warn "errors: ERROR_NOISE is not a valid regex; using built-in noise default"
+        ERROR_NOISE="$_ERR_NOISE_DEFAULT"
+    fi
+}
+_errors_validate_noise
 
 # Build the "Server errors" digest section on stdout, and set globals:
 #   ERR_TOTAL ERR_FATAL ERR_GENUINE ERR_NOISE
@@ -155,7 +183,15 @@ swatter_errors_section() {
     local win genuine fatal
     win="$(printf '%s\n' "$stream" | grep -E '\] \[(FATAL|ERROR)\]' || true)"
     ERR_TOTAL=$(printf '%s\n' "$win" | grep -c . || true)
-    genuine="$(printf '%s\n' "$win" | grep -Ev "${ERROR_NOISE}" || true)"
+    # grep -Ev exit codes: 0 = kept lines, 1 = no lines kept (all noise),
+    # 2 = regex error. Only 2 is a failure; treat it as "filter nothing" so a
+    # broken pattern can never zero out (hide) genuine errors.
+    local grc=0
+    genuine="$(printf '%s\n' "$win" | grep -Ev "${ERROR_NOISE}")" || grc=$?
+    if (( grc == 2 )); then
+        log_warn "errors: ERROR_NOISE regex failed at filter time; counting all as genuine"
+        genuine="$win"
+    fi
     ERR_GENUINE=$(printf '%s\n' "$genuine" | grep -c . || true)
     fatal="$(printf '%s\n' "$win" | grep -E '\] \[FATAL\]' || true)"
     ERR_FATAL=$(printf '%s\n' "$fatal" | grep -c . || true)

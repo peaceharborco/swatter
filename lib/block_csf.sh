@@ -11,6 +11,10 @@ SWATTER_CSF_DENIES_THIS_RUN=0
 # swatter_csf_temp <ip> <ttl_seconds> <reason>
 swatter_csf_temp() {
     local ip="$1" ttl="$2" reason="$3"
+    # csf writes the comment into csf.deny; strip CR/NL and bound length so a
+    # crafted reason can't inject lines or corrupt the deny file (mirrors the
+    # stderr sanitization below).
+    reason="$(printf '%s' "$reason" | tr -d '\n\r' | cut -c1-120)"
     if (( SWATTER_CSF_DENIES_THIS_RUN >= MAX_CSF_DENIES_PER_RUN )); then
         log_warn "CSF cap reached (${MAX_CSF_DENIES_PER_RUN}); skipping temp deny ${ip}"
         return "$SWATTER_RC_CAP"   # protocol: lib/common.sh
@@ -38,6 +42,10 @@ swatter_csf_temp() {
 # swatter_csf_perm <ip> <reason>
 swatter_csf_perm() {
     local ip="$1" reason="$2"
+    # csf appends the comment to csf.deny; strip CR/NL and bound length so a
+    # crafted reason can't inject lines or corrupt the deny file (mirrors the
+    # stderr sanitization below).
+    reason="$(printf '%s' "$reason" | tr -d '\n\r' | cut -c1-120)"
     if (( SWATTER_CSF_DENIES_THIS_RUN >= MAX_CSF_DENIES_PER_RUN )); then
         log_warn "CSF cap reached (${MAX_CSF_DENIES_PER_RUN}); skipping perm deny ${ip}"
         return "$SWATTER_RC_CAP"   # protocol: lib/common.sh

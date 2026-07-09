@@ -27,18 +27,24 @@ _ipset_save() {
 # Create the sets + DROP rules (idempotent). Run by `swatter setup-ipset`.
 swatter_ipset_setup() {
     [[ "${SWATTER_HAVE_IPSET}" -eq 1 ]] || { log_error "ipset/iptables not found; cannot set up ipset backend"; return 1; }
+    local rc=0
     ipset create "${SWATTER_IPSET_V4}" hash:ip family inet  timeout 0 -exist 2>/dev/null
     ipset create "${SWATTER_IPSET_V6}" hash:ip family inet6 timeout 0 -exist 2>/dev/null
+    # A failed DROP-rule insert leaves the set unenforced — surface it (fail closed),
+    # never silently report the backend ready.
     iptables  -C INPUT -m set --match-set "${SWATTER_IPSET_V4}" src -j DROP 2>/dev/null \
-        || iptables  -I INPUT -m set --match-set "${SWATTER_IPSET_V4}" src -j DROP 2>/dev/null
+        || iptables  -I INPUT -m set --match-set "${SWATTER_IPSET_V4}" src -j DROP 2>/dev/null \
+        || { log_error "iptables DROP rule for ${SWATTER_IPSET_V4} failed — set NOT enforced"; rc=1; }
     # IPv6 DROP rule needs ip6tables; if absent, v6 set members are NOT enforced.
     if [[ "${SWATTER_HAVE_IP6TABLES:-0}" -eq 1 ]]; then
         ip6tables -C INPUT -m set --match-set "${SWATTER_IPSET_V6}" src -j DROP 2>/dev/null \
-            || ip6tables -I INPUT -m set --match-set "${SWATTER_IPSET_V6}" src -j DROP 2>/dev/null
+            || ip6tables -I INPUT -m set --match-set "${SWATTER_IPSET_V6}" src -j DROP 2>/dev/null \
+            || { log_error "ip6tables DROP rule for ${SWATTER_IPSET_V6} failed — set NOT enforced"; rc=1; }
     else
         log_warn "ip6tables not found — IPv6 ipset blocks will NOT be enforced (v4 only)"
     fi
     log_info "ipset backend ready (sets ${SWATTER_IPSET_V4}/${SWATTER_IPSET_V6} + DROP rules)"
+    return "$rc"
 }
 
 swatter_ipset_temp() {
@@ -50,6 +56,13 @@ swatter_ipset_temp() {
         log_info "[dry-run] ipset add ${ip} timeout ${ttl} (${reason})"; return 0
     fi
     [[ "${SWATTER_HAVE_IPSET}" -eq 1 ]] || { SWATTER_LAST_BACKEND_ERR="ipset not found"; log_error "ipset not found; cannot temp-deny ${ip}"; return 1; }
+    # An IPv6 add succeeds against swatter6 even with no ip6tables DROP rule behind
+    # it — the member sits unenforced. Fail closed so the ledger never marks an
+    # unenforced block as handled.
+    if [[ "$ip" == *:* && "${SWATTER_HAVE_IP6TABLES:-0}" -ne 1 ]]; then
+        SWATTER_LAST_BACKEND_ERR="ip6tables absent; IPv6 block not enforced"
+        log_error "ip6tables not found; refusing unenforced IPv6 temp-deny ${ip}"; return 1
+    fi
     set="$(_ipset_set_for "$ip")"
     local _ierr
     if _ierr="$(ipset add "$set" "$ip" timeout "$ttl" -exist 2>&1 >/dev/null)"; then
@@ -69,6 +82,11 @@ swatter_ipset_perm() {
         log_info "[dry-run] ipset add ${ip} timeout 0 (${reason})"; return 0
     fi
     [[ "${SWATTER_HAVE_IPSET}" -eq 1 ]] || { SWATTER_LAST_BACKEND_ERR="ipset not found"; log_error "ipset not found; cannot perm-deny ${ip}"; return 1; }
+    # See swatter_ipset_temp: an unenforced IPv6 set member must not read as handled.
+    if [[ "$ip" == *:* && "${SWATTER_HAVE_IP6TABLES:-0}" -ne 1 ]]; then
+        SWATTER_LAST_BACKEND_ERR="ip6tables absent; IPv6 block not enforced"
+        log_error "ip6tables not found; refusing unenforced IPv6 perm-deny ${ip}"; return 1
+    fi
     set="$(_ipset_set_for "$ip")"
     local _ierr
     if _ierr="$(ipset add "$set" "$ip" timeout 0 -exist 2>&1 >/dev/null)"; then

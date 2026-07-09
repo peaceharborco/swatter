@@ -23,11 +23,25 @@ SWATTER_MODE="report"; SWATTER_CSF_DENIES_THIS_RUN=0; : > "$CALLS"
 swatter_csf_perm 1.2.3.4 r; check dryrun-rc "$?" "0"
 [[ -s "$CALLS" ]] && check dryrun-nocall "called" "uncalled" || check dryrun-nocall "uncalled" "uncalled"
 
-# enforce success: csf -d invoked, returns 0.
+# enforce success: csf -d invoked, returns 0, and the per-run cap counter ticks.
 SWATTER_MODE="enforce"; SWATTER_CSF_DENIES_THIS_RUN=0; : > "$CALLS"
 swatter_csf_perm 1.2.3.4 r; check enforce-perm-rc "$?" "0"
 grep -q "csf -d 1.2.3.4" "$CALLS" && check enforce-perm-call "yes" "yes" || check enforce-perm-call "no" "yes"
+check enforce-perm-count "$SWATTER_CSF_DENIES_THIS_RUN" "1"
 swatter_csf_temp 1.2.3.5 3600 r; check enforce-temp-rc "$?" "0"
+check enforce-temp-count "$SWATTER_CSF_DENIES_THIS_RUN" "2"
+
+# per-run cap boundary: MAX denies succeed (counter climbs to MAX), then the
+# next deny hits the cap and returns SWATTER_RC_CAP without shelling out.
+SWATTER_CSF_DENIES_THIS_RUN=0; : > "$CALLS"
+_loop_rc=0
+for (( _i=0; _i<MAX_CSF_DENIES_PER_RUN; _i++ )); do
+  swatter_csf_perm 1.2.3.4 r || _loop_rc=$?
+done
+check loop-belowcap-rc "$_loop_rc" "0"
+check loop-belowcap-count "$SWATTER_CSF_DENIES_THIS_RUN" "$MAX_CSF_DENIES_PER_RUN"
+swatter_csf_perm 1.2.3.4 r; check loop-atcap-rc "$?" "$SWATTER_RC_CAP"
+check loop-atcap-count "$SWATTER_CSF_DENIES_THIS_RUN" "$MAX_CSF_DENIES_PER_RUN"
 
 # cap: at MAX the backend returns SWATTER_RC_CAP and never calls csf.
 SWATTER_CSF_DENIES_THIS_RUN="$MAX_CSF_DENIES_PER_RUN"; : > "$CALLS"

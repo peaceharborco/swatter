@@ -207,6 +207,26 @@ feed $'203.0.113.99\t100\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"deci
 swatter_scan >/dev/null 2>&1
 check valid-ip-still-blocked "${LAST_CSF}" "perm 203.0.113.99"
 
+# 18) FAIL-CLOSED on the DIRECT plane (the load-bearing invariant): a DIRECT
+#     offender with healthy=0 (stale/missing CF ranges) must NOT reach the csf/
+#     ipset backend, and the skip is audited 'skipped-failclosed'. Exercises
+#     _swatter_apply_plane directly so the gate is proven independent of scan flow.
+LAST_CSF=""; _SW_TOTAL_BLOCKS=0
+: > "$LOG_DIR/decisions.jsonl"
+_swatter_apply_plane 198.51.100.7 DIRECT perm 0 "r" "" 0 100 '{"k":1}' 0
+check failclosed-no-backend "${LAST_CSF}" ""
+check failclosed-audited "$(last_action)" "skipped-failclosed"
+
+# 19) MAX_BLOCKS_PER_RUN circuit breaker: at the cap, an actionable call is skipped
+#     BEFORE any backend call, audited 'skipped-cap', and SWATTER_RUN_BREAKER latches 1.
+LAST_CSF=""; SWATTER_RUN_BREAKER=0; _SW_TOTAL_BLOCKS="$MAX_BLOCKS_PER_RUN"
+: > "$LOG_DIR/decisions.jsonl"
+_swatter_apply_plane 198.51.100.8 DIRECT perm 0 "r" "" 1 100 '{"k":1}' 0
+check cap-breaker-no-backend "${LAST_CSF}" ""
+check cap-breaker-audited "$(last_action)" "skipped-cap"
+check cap-breaker-flag "${SWATTER_RUN_BREAKER}" "1"
+_SW_TOTAL_BLOCKS=0
+
 # 17) _swatter_audit backstop: a reason carrying a backslash and a double-quote
 #     must still yield a parseable JSON line (the record layer neutralizes them
 #     even if some future reason source isn't pre-sanitized).

@@ -634,12 +634,16 @@ swatter_report() {
     swatter_report_build "$window" > "$bodyfile"
     local body; body="$(cat "$bodyfile")"
 
-    # Stay silent only when BOTH planes are quiet (no actions, no exemptions, no
-    # genuine server errors, no fatal errors) — unless --test. err_fatal is checked
-    # explicitly so a fatal-only window (e.g. a fatal filtered out of the genuine
-    # count as noise) still delivers the RED report instead of being suppressed.
+    # Stay silent only when ALL THREE planes are quiet (no actions, no exemptions,
+    # no backend-failed blocks, no origin-lock hits, no genuine server errors, no
+    # fatal errors) — unless --test. err_fatal is checked explicitly so a fatal-only
+    # window (e.g. a fatal filtered out of the genuine count as noise) still delivers
+    # the RED report instead of being suppressed. ol_hits is checked so an
+    # origin-lock-only window still reports; rpt_failed so a window that only produced
+    # backend-failed blocks still surfaces the failures.
     local err_genuine="${ERR_GENUINE:-0}" err_fatal="${ERR_FATAL:-0}"
-    if (( ! test_mode )) && (( RPT_ACTED == 0 && RPT_EXEMPT == 0 && err_genuine == 0 && err_fatal == 0 )); then
+    local ol_hits="${OL_HITS:-0}" rpt_failed="${RPT_FAILED:-0}"
+    if (( ! test_mode )) && (( RPT_ACTED == 0 && RPT_EXEMPT == 0 && rpt_failed == 0 && ol_hits == 0 && err_genuine == 0 && err_fatal == 0 )); then
         log_info "report: quiet window (${window}); not sending"
         return 0
     fi

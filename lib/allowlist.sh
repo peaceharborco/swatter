@@ -23,7 +23,11 @@ SWATTER_CF_FALLBACK_V6="2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::
 _ip2int() {
     local a b c d IFS=.
     read -r a b c d <<<"$1"
-    [[ "$a$b$c$d" =~ ^[0-9]+$ ]] || return 1
+    [[ -n "$a" && -n "$b" && -n "$c" && -n "$d" ]] || return 1
+    [[ "$a" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ && "$c" =~ ^[0-9]+$ && "$d" =~ ^[0-9]+$ ]] || return 1
+    # Force base-10: a zero-padded octet ("010", "08") must NOT be read as octal,
+    # which would silently corrupt CIDR membership incl. the CF never-block check.
+    a=$((10#$a)) b=$((10#$b)) c=$((10#$c)) d=$((10#$d))
     (( a<256 && b<256 && c<256 && d<256 )) || return 1
     printf '%u' "$(( (a<<24) + (b<<16) + (c<<8) + d ))"
 }
@@ -183,21 +187,35 @@ _swatter_is_good_crawler() {
     # flock — Swatter stays down until someone kills the stuck pipeline.
     local tmo=()
     have timeout && tmo=(timeout 5)
-    local ptr verdict="no"
+    local ptr verdict="no" raw rc
     if have host; then
-        ptr="$("${tmo[@]}" host -W 2 "$ip" 2>/dev/null | awk '/pointer|domain name pointer/{print $NF; exit}' | sed 's/\.$//')"
+        raw="$("${tmo[@]}" host -W 2 "$ip" 2>/dev/null)"; rc=$?
+        ptr="$(awk '/pointer|domain name pointer/{print $NF; exit}' <<<"$raw" | sed 's/\.$//')"
     else
-        ptr="$("${tmo[@]}" dig +time=2 +tries=1 +short -x "$ip" 2>/dev/null | head -1 | sed 's/\.$//')"
+        raw="$("${tmo[@]}" dig +time=2 +tries=1 +short -x "$ip" 2>/dev/null)"; rc=$?
+        ptr="$(head -1 <<<"$raw" | sed 's/\.$//')"
+    fi
+    # A blackholed/timed-out resolver (timeout(1) → 124; host/dig → nonzero) with
+    # no answer is a TRANSIENT failure — do NOT cache a negative, or one flaky
+    # lookup exposes Googlebot/Bingbot as blockable for the full 7d TTL. Return
+    # unverified this run and re-check next time.
+    if (( rc != 0 )) && [[ -z "$ptr" ]]; then
+        return 1
     fi
     # ONLY crawler-specific hostnames — NOT generic cloud PTRs. googleusercontent.com
     # (GCP customer VMs), amazonaws.com, etc. are attacker-rentable and must never
     # match. Real crawlers live under dedicated crawl domains.
     if [[ "$ptr" =~ \.(googlebot\.com|google\.com|search\.msn\.com|applebot\.apple\.com|duckduckgo\.com|crawl\.yahoo\.net|yandex\.(com|ru|net))$ ]]; then
         # Forward-confirm.
-        local fwd
-        if have host; then fwd="$("${tmo[@]}" host -W 2 "$ptr" 2>/dev/null | awk '/has address|has IPv6/{print $NF}')"
-        else fwd="$("${tmo[@]}" dig +time=2 +tries=1 +short "$ptr" 2>/dev/null)"; fi
-        if grep -qxF "$ip" <<<"$fwd"; then verdict="yes"; fi
+        local fwd fwdrc
+        if have host; then fwd="$("${tmo[@]}" host -W 2 "$ptr" 2>/dev/null | awk '/has address|has IPv6/{print $NF}')"; fwdrc=${PIPESTATUS[0]}
+        else fwd="$("${tmo[@]}" dig +time=2 +tries=1 +short "$ptr" 2>/dev/null)"; fwdrc=$?; fi
+        if grep -qxF "$ip" <<<"$fwd"; then verdict="yes"
+        elif (( fwdrc != 0 )) && [[ -z "$fwd" ]]; then
+            # Forward leg failed transiently — matched a real crawler PTR but
+            # couldn't confirm. Don't cache the false negative; retry next run.
+            return 1
+        fi
     fi
     mkdir -p "${STATE_DIR}/intel/crawler" 2>/dev/null || true
     printf '%s' "$verdict" > "$cache" 2>/dev/null || true
@@ -209,10 +227,19 @@ _swatter_is_good_crawler() {
 swatter_is_never_block() {
     local ip="$1"
 
-    # Loopback / RFC1918 / link-local (never the real internet attacker).
-    case "$ip" in
-        127.*|10.*|192.168.*|169.254.*|::1|fe80:*) echo "local/private"; return 0 ;;
-        172.1[6-9].*|172.2[0-9].*|172.3[0-1].*)    echo "rfc1918";       return 0 ;;
+    # IPv4-mapped IPv6 (::ffff:a.b.c.d) is just an IPv4 address wearing a v6 hat;
+    # unwrap it to its embedded v4 so the private/loopback/CIDR checks see the
+    # real address rather than treating it as an unrecognized v6 attacker.
+    local lip="${ip,,}"
+    if [[ "$lip" == ::ffff:*.*.*.* ]]; then
+        ip="${ip##*:}"; lip="${ip,,}"
+    fi
+
+    # Loopback / RFC1918 / link-local / IPv6 unique-local (fc00::/7 = fc/fd) —
+    # never the real internet attacker.
+    case "$lip" in
+        127.*|10.*|192.168.*|169.254.*|::1|fe80:*|fc*:*|fd*:*) echo "local/private"; return 0 ;;
+        172.1[6-9].*|172.2[0-9].*|172.3[0-1].*)                echo "rfc1918";       return 0 ;;
     esac
 
     # Cloudflare ranges — the catastrophic case. Check the live file first, then

@@ -64,6 +64,17 @@ touch -d '@1000' "$META" 2>/dev/null || touch -t 202001010000 "$META"
 swatter_swarm_sweep 2>/dev/null
 check sweep-stale-noop "$(grep -c . "$BLOCKS" || true)" "0"
 
+# non-numeric SWARM_MAX_AGE_DAYS must NOT silently disable the sweep: a bareword
+# would evaluate to 0 in arithmetic and make every fresh meta look stale. It must
+# fall back to the default bound and still block a corroborated IP.
+cat > "$META" <<'EOF'
+[{"ip":"4.4.4.4","host_count":3,"category":null,"expires":99}]
+EOF
+touch "$META"
+: > "$BLOCKS"
+SWARM_MAX_AGE_DAYS="abc" swatter_swarm_sweep 2>/dev/null
+check sweep-bad-maxage-fresh "$(grep -c '^4.4.4.4 DIRECT temp' "$BLOCKS")" "1"
+
 # boost mode: sweep is a no-op
 SWARM_ACTION="boost"; : > "$BLOCKS"
 swatter_swarm_sweep 2>/dev/null

@@ -19,6 +19,14 @@
 # shellcheck source=providers/ipsum.sh
 # (providers are sourced lazily in swatter_intel_init)
 
+# Provider exit code that signals a TRANSIENT failure (quota exhausted, transport
+# error, timeout) as distinct from an authoritative "no record" (any other
+# non-zero exit). A transient failure must NOT poison the durable no-data cache
+# for the whole INTEL_CACHE_TTL — it gets a short negative TTL so the next scan
+# retries soon instead of being blind to the provider for a full cache cycle.
+INTEL_RC_TEMPFAIL="${INTEL_RC_TEMPFAIL:-75}"   # sysexits EX_TEMPFAIL
+INTEL_FAIL_TTL="${INTEL_FAIL_TTL:-300}"        # negative-cache TTL after a tempfail
+
 swatter_intel_init() {
     # Aggregate provider files define multiple named providers (registry feeds);
     # source them first so per-name resolution can find them.
@@ -90,18 +98,23 @@ _intel_cache_get() {
     local prov="$1" ip="$2"
     local f="${STATE_DIR}/intel/${prov}/${ip}"
     [[ -f "$f" ]] || return 1
-    local now mtime age
+    local now mtime age ttl
     now="$(swatter_now)"; mtime="$(stat_mtime "$f" 2>/dev/null || echo 0)"
     age=$(( now - mtime ))
-    (( age < INTEL_CACHE_TTL )) || return 1
+    # Per-entry TTL (4th field) governs freshness — a short negative TTL after a
+    # transient failure expires long before a durable no-data entry. Legacy
+    # 3-field files and any non-numeric value fall back to the global TTL.
+    ttl="$(awk -F'\t' 'NF{print $4; exit}' "$f" 2>/dev/null)"
+    [[ "$ttl" =~ ^[0-9]+$ ]] || ttl="$INTEL_CACHE_TTL"
+    (( age < ttl )) || return 1
     cat "$f" 2>/dev/null
 }
 
 _intel_cache_put() {
-    local prov="$1" ip="$2" score="$3" label="$4" verdict="${5:-}"
+    local prov="$1" ip="$2" score="$3" label="$4" verdict="${5:-}" ttl="${6:-}"
     local d="${STATE_DIR}/intel/${prov}"
     mkdir -p "$d" 2>/dev/null || return 0
-    printf '%s\t%s\t%s\n' "$score" "$label" "$verdict" > "${d}/${ip}" 2>/dev/null || true
+    printf '%s\t%s\t%s\t%s\n' "$score" "$label" "$verdict" "$ttl" > "${d}/${ip}" 2>/dev/null || true
 }
 
 # First NON-blank line of a provider/cache payload. Dropping injected TRAILING
@@ -114,11 +127,14 @@ _intel_firstline() { printf '%s' "${1:-}" | awk 'NF{print; exit}'; }
 # score 0 means no malicious signal (or no data).
 swatter_intel_score() {
     local ip="$1" best=0 bestlabel="" suppress=0
-    local prov out cached score ttl label verdict line
+    local prov out cached score ttl label verdict line rc
     for prov in ${INTEL_PROVIDERS}; do
         if cached="$(_intel_cache_get "$prov" "$ip")"; then
             line="$(_intel_firstline "$cached")"
             score="$(printf '%s' "$line" | cut -f1)"
+            # A corrupt/hostile cache file must not carry a non-numeric score
+            # into the arithmetic below (the live path guards the same way).
+            [[ "$score" =~ ^[0-9]+$ ]] || score=0
             label="$(_intel_clean "$(printf '%s' "$line" | cut -f2)")"
             verdict="$(_intel_clean "$(printf '%s' "$line" | cut -f3)")"
         else
@@ -134,10 +150,22 @@ swatter_intel_score() {
                 label="$(_intel_clean "$(printf '%s' "$out" | cut -f3)")"
                 verdict="$(_intel_clean "$(printf '%s' "$out" | cut -f4)")"
                 [[ "$score" =~ ^[0-9]+$ ]] || score=0
-                _intel_cache_put "$prov" "$ip" "$score" "$label" "$verdict"
+                # Honor the provider's TTL for this entry; fall back to the
+                # global cache TTL when absent or non-numeric.
+                [[ "$ttl" =~ ^[0-9]+$ ]] || ttl="$INTEL_CACHE_TTL"
+                _intel_cache_put "$prov" "$ip" "$score" "$label" "$verdict" "$ttl"
             else
+                rc=$?
                 score=0; label=""; verdict=""
-                _intel_cache_put "$prov" "$ip" 0 "nodata" ""
+                if (( rc == INTEL_RC_TEMPFAIL )); then
+                    # Transient failure (quota/transport): short negative TTL so
+                    # the next scan retries — do NOT suppress this provider for a
+                    # full INTEL_CACHE_TTL over a temporary outage.
+                    _intel_cache_put "$prov" "$ip" 0 "tempfail" "" "$INTEL_FAIL_TTL"
+                else
+                    # Authoritative no-record: durable no-data cache.
+                    _intel_cache_put "$prov" "$ip" 0 "nodata" "" "$INTEL_CACHE_TTL"
+                fi
             fi
         fi
         [[ "$verdict" == "suppress" ]] && { suppress=1; [[ -z "$bestlabel" ]] && bestlabel="${prov}:${label}"; }

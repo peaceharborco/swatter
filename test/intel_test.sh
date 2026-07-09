@@ -118,6 +118,61 @@ provider_ipsum_refresh 2>/dev/null; check ipsum-empty-rc "$?" "1"
 check ipsum-empty-kept "$(cat "$STATE_DIR/feeds/ipsum.txt")" "9.9.9.9"
 unset -f curl
 
+# --- [3] transient failure vs authoritative no-record caching ---
+# A provider that exits INTEL_RC_TEMPFAIL (quota/transport/timeout) must get a
+# SHORT negative-TTL cache entry, not a durable INTEL_CACHE_TTL "nodata" one that
+# would blind us to the provider for a whole cache cycle. An authoritative
+# no-record (any other non-zero) keeps the durable entry.
+provider_temp()  { return "${INTEL_RC_TEMPFAIL:-75}"; }
+INTEL_PROVIDERS="temp"
+rm -rf "$STATE_DIR/intel"; mkdir -p "$STATE_DIR/intel"
+out="$(swatter_intel_score 3.3.3.3)"
+check tempfail-score    "$(printf '%s' "$out" | cut -f1)" "0"
+check tempfail-ttl      "$(awk -F'\t' 'NR==1{print $4}' "$STATE_DIR/intel/temp/3.3.3.3")" "${INTEL_FAIL_TTL:-300}"
+check tempfail-label    "$(awk -F'\t' 'NR==1{print $2}' "$STATE_DIR/intel/temp/3.3.3.3")" "tempfail"
+
+INTEL_PROVIDERS="nodata"
+rm -rf "$STATE_DIR/intel"; mkdir -p "$STATE_DIR/intel"
+out="$(swatter_intel_score 3.3.3.4)"
+check nodata-durable-ttl "$(awk -F'\t' 'NR==1{print $4}' "$STATE_DIR/intel/nodata/3.3.3.4")" "$INTEL_CACHE_TTL"
+check nodata-label       "$(awk -F'\t' 'NR==1{print $2}' "$STATE_DIR/intel/nodata/3.3.3.4")" "nodata"
+
+# The short tempfail entry actually goes stale sooner than a durable one: drive
+# swatter_now forward past INTEL_FAIL_TTL but well within INTEL_CACHE_TTL — the
+# tempfail entry is expired (a re-query would re-hit the provider), the durable
+# nodata entry is still fresh.
+_base="$(date -u +%s)"
+SWATTER_NOW_EPOCH=$(( _base + ${INTEL_FAIL_TTL:-300} + 60 ))
+_stale_temp="$(_intel_cache_get temp 3.3.3.3; echo "rc=$?")"
+check tempfail-stale   "${_stale_temp##*rc=}" "1"
+_fresh_nodata="$(_intel_cache_get nodata 3.3.3.4 >/dev/null; echo "rc=$?")"
+check nodata-still-fresh "${_fresh_nodata##*rc=}" "0"
+unset SWATTER_NOW_EPOCH
+
+# --- m13: per-entry TTL honored by _intel_cache_get (not just the global) ---
+mkdir -p "$STATE_DIR/intel/ttlp"
+printf '50\tlab\t\t10\n' > "$STATE_DIR/intel/ttlp/7.7.7.7"       # short ttl=10
+SWATTER_NOW_EPOCH=$(( $(date -u +%s) + 100 ))                    # age ~100 > 10
+_g="$(_intel_cache_get ttlp 7.7.7.7 >/dev/null; echo $?)"
+check ttl-short-expired "$_g" "1"
+printf '50\tlab\t\t100000\n' > "$STATE_DIR/intel/ttlp/8.8.8.8"   # long ttl
+_g="$(_intel_cache_get ttlp 8.8.8.8 >/dev/null; echo $?)"
+check ttl-long-fresh "$_g" "0"
+# Legacy 3-field file (no ttl field) falls back to the global INTEL_CACHE_TTL.
+printf '50\tlab\t\n' > "$STATE_DIR/intel/ttlp/6.6.6.6"
+_g="$(_intel_cache_get ttlp 6.6.6.6 >/dev/null; echo $?)"
+check ttl-legacy-fallback "$_g" "0"
+unset SWATTER_NOW_EPOCH
+
+# --- m14: a non-numeric score in a cache file is coerced to 0, not fed raw into
+# the arithmetic (would error/misbehave in (( score > best ))). ---
+mkdir -p "$STATE_DIR/intel/corrupt"
+printf 'NOTANUM\tlab\t\t%s\n' "$INTEL_CACHE_TTL" > "$STATE_DIR/intel/corrupt/1.1.1.1"
+INTEL_PROVIDERS="corrupt"
+provider_corrupt() { return 1; }   # only the cache hit matters
+cout="$(swatter_intel_score 1.1.1.1)"
+check corrupt-score-zero "$(printf '%s' "$cout" | cut -f1)" "0"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

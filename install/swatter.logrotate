@@ -8,3 +8,15 @@
     notifempty
     create 0640 root root
 }
+
+# Op log (scan/refresh cron output) + nightly report log — same policy so neither
+# grows unbounded.
+/var/log/swatter/swatter.log /var/log/swatter/report.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root root
+}

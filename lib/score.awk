@@ -34,7 +34,25 @@ function jesc(s,   t) {
     gsub(/"/,  "\\\"", t)
     gsub(/\t/, " ", t)
     gsub(/[\r\n]/, " ", t)
+    # Any remaining C0 control byte (0x00-0x1F) is invalid inside a JSON string;
+    # collapse to a space so the evidence object always parses.
+    gsub(/[\000-\037]/, " ", t)
     return t
+}
+
+# Is the token a plausible literal IP address? Rejects non-addresses that the raw
+# charset gate would pass (bare hex like "deadbeef", a single digit, out-of-range
+# octets like 999.999.999.999). v4: four octets each 0-255. v6: hex groups that
+# MUST contain at least one colon (bare hex is not an address).
+function ip_plausible(a,   o, i, n) {
+    if (a ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
+        n = split(a, o, ".")
+        for (i = 1; i <= 4; i++)
+            if (o[i] + 0 > 255 || length(o[i]) > 3) return 0
+        return 1
+    }
+    if (a ~ /^[0-9A-Fa-f:]+$/ && a ~ /:/) return 1
+    return 0
 }
 
 BEGIN {
@@ -83,9 +101,11 @@ BEGIN {
     ip = $1; ep = $2 + 0; method = $3; path = $4; status = $5 + 0; ua = $7
     if (ep < win_start) next            # outside the window
     if (ip == "" || ip == "-") next
-    # Must be a literal IPv4 or IPv6 address — never a hostname or a token that
-    # could be read as a flag by csf/the CF API downstream.
-    if (ip !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && ip !~ /^[0-9A-Fa-f:]+$/) next
+    # Must be a plausible literal IPv4/IPv6 address — never a hostname, an
+    # out-of-range octet string, bare hex, or a token that could be read as a flag
+    # by csf/the CF API downstream. (The block path re-validates strictly; this is
+    # the first-line filter so garbage never even reaches scoring.)
+    if (!ip_plausible(ip)) next
 
     reqs[ip]++
     if (first_ep[ip] == 0 || ep < first_ep[ip]) first_ep[ip] = ep

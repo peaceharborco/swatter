@@ -135,11 +135,37 @@ _swatter_read_file() {
         start=$(( size - MAX_BYTES_PER_FILE ))
     fi
 
+    # Read exactly the stat-time range [start, size), then only consume up to the
+    # last newline inside it. Two invariants ride on this:
+    #   1. The recorded offset must equal the bytes actually parsed. `tail` alone
+    #      reads to the *live* EOF, which grows between the stat above and this
+    #      read; capping with `head -c` pins the read to the range we account for,
+    #      so appends during the read are not re-ingested (and double-scored) next
+    #      run.
+    #   2. A partial final line (no trailing newline yet, or a line split by the
+    #      size boundary) must not be parsed half-formed. We advance the cursor
+    #      only to the last newline byte consumed; the remainder is re-read whole
+    #      once it is complete.
+    local new_off="$start"
     if (( size > start )); then
-        tail -c +$(( start + 1 )) "$path" 2>/dev/null | _swatter_parse "$vhost"
+        local chunk consumed
+        chunk="$(mktemp "${TMPDIR:-/tmp}/swatter-chunk.XXXXXX")" || return 0
+        tail -c +$(( start + 1 )) "$path" 2>/dev/null | head -c $(( size - start )) > "$chunk"
+        # Byte offset of the last newline in the chunk (0 if none). LC_ALL=C makes
+        # gawk count bytes, not multibyte characters; RT distinguishes a
+        # newline-terminated record from the trailing partial line.
+        consumed="$(LC_ALL=C gawk 'BEGIN{RS="\n"; n=0} {
+            if (RT == "\n") n += length($0) + 1
+        } END { print n+0 }' "$chunk")"
+        [[ "$consumed" =~ ^[0-9]+$ ]] || consumed=0
+        if (( consumed > 0 )); then
+            head -c "$consumed" "$chunk" | _swatter_parse "$vhost"
+        fi
+        new_off=$(( start + consumed ))
+        rm -f "$chunk"
     fi
 
-    printf '%s\t%s\t%s\t%s\n' "$path" "$inode" "$size" "$now" >&3
+    printf '%s\t%s\t%s\t%s\n' "$path" "$inode" "$new_off" "$now" >&3
 }
 
 # Ingest every configured source; write parsed TSV to stdout, refresh cursors.
@@ -166,9 +192,19 @@ swatter_ingest() {
     } 3>>"$tmp_cursors"
 
     # Merge: keep refreshed cursors, carry forward any file we did not touch.
+    # If the merge awk fails, do NOT clobber the live cursor file with the
+    # touched-only subset — that would drop the carry-forward for every untouched
+    # file and re-seed it from the tail next run. Bail instead, leaving the
+    # existing cursors intact; the worst case is those files re-read from their
+    # prior offset next run, never a lost cursor.
     if [[ -f "$cursors" ]]; then
-        awk -F'\t' 'NR==FNR{seen[$1]=1; print; next} !($1 in seen)' "$tmp_cursors" "$cursors" > "${tmp_cursors}.merged" 2>/dev/null \
-            && mv "${tmp_cursors}.merged" "$tmp_cursors"
+        if awk -F'\t' 'NR==FNR{seen[$1]=1; print; next} !($1 in seen)' "$tmp_cursors" "$cursors" > "${tmp_cursors}.merged" 2>/dev/null; then
+            mv "${tmp_cursors}.merged" "$tmp_cursors"
+        else
+            rm -f "${tmp_cursors}.merged" "$tmp_cursors"
+            log_warn "cursor merge failed; keeping existing cursors (no advance this run)"
+            return 1
+        fi
     fi
     mv "$tmp_cursors" "$cursors" 2>/dev/null || true
     chmod 0640 "$cursors" 2>/dev/null || true

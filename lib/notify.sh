@@ -37,7 +37,7 @@ _notify_email() {
 
 _notify_sms() {
     [[ -n "${ALERT_SMS_TO:-}" && -n "${TWILIO_SID:-}" && -n "${TWILIO_FROM:-}" && -n "${TWILIO_TOKEN_FILE:-}" ]] || return 0
-    [[ "${SWATTER_HAVE_CURL}" -eq 1 && -r "${TWILIO_TOKEN_FILE}" ]] || return 0
+    [[ "${SWATTER_HAVE_CURL:-0}" -eq 1 && -r "${TWILIO_TOKEN_FILE}" ]] || return 0
     local token; token="$(cat "${TWILIO_TOKEN_FILE}" 2>/dev/null)"; [[ -n "$token" ]] || return 0
     # SID:token via -K config file, never argv (visible in `ps` on a shared box).
     local cfg
@@ -54,7 +54,7 @@ _notify_sms() {
 
 _notify_webhook() {
     [[ -n "${ALERT_WEBHOOK_URL:-}" ]] || return 0
-    [[ "${SWATTER_HAVE_CURL}" -eq 1 ]] || return 0
+    [[ "${SWATTER_HAVE_CURL:-0}" -eq 1 ]] || return 0
     local fmt="${ALERT_WEBHOOK_FORMAT:-auto}" payload
     if [[ "$fmt" == "auto" ]]; then
         case "${ALERT_WEBHOOK_URL}" in

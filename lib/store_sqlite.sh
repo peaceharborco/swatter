@@ -25,7 +25,7 @@ swatter_store_init() {
         # ledger, losing cap + repeat-escalation state with no signal. Warn loud
         # and propagate rc so the caller/cron can tell the ledger is broken.
         local _ierr _irc
-        _ierr="$(sqlite3 "$(_swatter_db)" 2>&1 >/dev/null <<'SQL'
+        _ierr="$(sqlite3 -cmd '.timeout 3000' "$(_swatter_db)" 2>&1 >/dev/null <<'SQL'
 CREATE TABLE IF NOT EXISTS offenders(
   ip TEXT PRIMARY KEY, first_seen INTEGER, last_seen INTEGER,
   worst_score INTEGER DEFAULT 0, total_offenses INTEGER DEFAULT 0,
@@ -61,9 +61,11 @@ SQL
 # Run sqlite3 with stderr CAPTURED, not discarded: a locked/corrupt/unwritable
 # DB silently diverging the ledger from the firewall is undiagnosable. Errors
 # log a bounded warn; stdout passes through untouched for parsers; rc propagates.
+# A busy_timeout keeps a concurrent writer from failing instantly with "database
+# is locked" and dropping a ledger record while the firewall block succeeded.
 _sql() {
     local err rc
-    { err="$(sqlite3 "$(_swatter_db)" "$@" 2>&1 >&3 3>&-)"; rc=$?; } 3>&1
+    { err="$(sqlite3 -cmd '.timeout 3000' "$(_swatter_db)" "$@" 2>&1 >&3 3>&-)"; rc=$?; } 3>&1
     (( rc != 0 )) && log_warn "sqlite error (rc=${rc}): $(printf '%s' "$err" | tr '\n' ' ' | cut -c1-160)"
     return "$rc"
 }
@@ -115,7 +117,22 @@ swatter_store_is_perm() {
     if [[ "${STORE}" == "sqlite" ]]; then
         [[ "$(_sqlq "SELECT perm FROM offenders WHERE ip='${sip}';")" == "1" ]]
     else
-        grep -qF "\"ip\":\"${ip}\",\"action\":\"perm\"" "$(_swatter_jsonl)" 2>/dev/null
+        # Flatfile JSONL is append-only: a bare grep for a perm row reports an IP
+        # as perm even after a LATER unblock cleared it. Replay records in order —
+        # banned on a perm action, cleared on a later unblock — and honor only the
+        # final state (matches the sqlite offenders.perm semantics).
+        local st
+        st="$(awk -v ip="$ip" '
+            { a=""; found=0 }
+            match($0, /"ip":"[^"]*"/) { if (substr($0, RSTART+6, RLENGTH-7)==ip) found=1 }
+            found {
+                match($0, /"action":"[^"]*"/)
+                a=substr($0, RSTART+10, RLENGTH-11)
+                if (a=="perm") state=1
+                else if (a=="unblock") state=0
+            }
+            END { print state+0 }' "$(_swatter_jsonl)" 2>/dev/null)"
+        [[ "$st" == "1" ]]
     fi
 }
 
@@ -127,23 +144,37 @@ swatter_store_record() {
     local now; now="$(swatter_now)"
     local sip; sip="$(_sql_escape "$ip")"
     local sreason; sreason="$(_sql_escape "$reason")"
+    # Escape action/channel too (defense in depth — internal values, but never
+    # trust an interpolated string literal).
+    local saction; saction="$(_sql_escape "$action")"
+    local schannel; schannel="$(_sql_escape "$channel")"
+    # Coerce numerics to integers before interpolating unquoted into SQL — a
+    # non-numeric ttl/score/dry would otherwise abort the statement or inject.
+    local ittl iscore idry
+    [[ "${ttl:-0}"   =~ ^-?[0-9]+$ ]] && ittl="$ttl"     || ittl=0
+    [[ "${score:-0}" =~ ^-?[0-9]+$ ]] && iscore="$score" || iscore=0
+    [[ "${dry:-0}"   =~ ^[0-9]+$   ]] && idry="$dry"      || idry=0
 
     if [[ "${STORE}" == "sqlite" ]]; then
         _sql "INSERT INTO actions(ip,ts,action,channel,ttl,score,reason,dry_run)
-              VALUES('${sip}',${now},'${action}','${channel}',${ttl:-0},${score:-0},'${sreason}',${dry:-0});"
+              VALUES('${sip}',${now},'${saction}','${schannel}',${ittl},${iscore},'${sreason}',${idry});"
+        # Only a REAL (enforced) block bumps perm/temp_count — a dry-run detection
+        # must not make is_perm/counts report report-mode hits as live bans.
         local perm_inc=0 temp_inc=0
-        [[ "$action" == "perm" ]] && perm_inc=1
-        [[ "$action" == "temp" ]] && temp_inc=1
+        if (( idry == 0 )); then
+            [[ "$action" == "perm" ]] && perm_inc=1
+            [[ "$action" == "temp" ]] && temp_inc=1
+        fi
         _sql "INSERT INTO offenders(ip,first_seen,last_seen,worst_score,total_offenses,temp_count,perm,last_label,channel)
-              VALUES('${sip}',${now},${now},${score:-0},1,${temp_inc},${perm_inc},'${sreason}','${channel}')
+              VALUES('${sip}',${now},${now},${iscore},1,${temp_inc},${perm_inc},'${sreason}','${schannel}')
               ON CONFLICT(ip) DO UPDATE SET
                 last_seen=${now},
-                worst_score=MAX(worst_score,${score:-0}),
+                worst_score=MAX(worst_score,${iscore}),
                 total_offenses=total_offenses+1,
                 temp_count=temp_count+${temp_inc},
                 perm=MAX(perm,${perm_inc}),
                 last_label='${sreason}',
-                channel='${channel}';"
+                channel='${schannel}';"
     else
         printf '{"ts":%s,"ip":"%s","action":"%s","channel":"%s","ttl":%s,"score":%s,"reason":"%s","dry_run":%s}\n' \
             "$now" "$ip" "$action" "$channel" "${ttl:-0}" "${score:-0}" "${reason//\"/\'}" "${dry:-0}" \

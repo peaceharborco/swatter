@@ -36,8 +36,11 @@ _mailer_brevo() {
     local cfg resp
     cfg="$(swatter_curl_cfg "header = \"api-key: ${key}\"")" || { log_error "brevo: cannot create curl config"; return 1; }
     # Keep the response BODY: on failure it carries the actionable cause (bad
-    # key, unverified sender, ...) that a bare "HTTP 401" hides.
-    resp="$(curl -sS --max-time 15 -X POST "https://api.brevo.com/v3/smtp/email" \
+    # key, unverified sender, ...) that a bare "HTTP 401" hides. The EXIT/INT/TERM
+    # trap lives in the command-substitution subshell, so it scrubs the token cfg
+    # even if curl is interrupted, without clobbering any caller trap.
+    resp="$(trap 'rm -f "$cfg"' EXIT INT TERM
+        curl -sS --max-time 15 -X POST "https://api.brevo.com/v3/smtp/email" \
         -K "$cfg" -H "Content-Type: application/json" -H "Accept: application/json" \
         --data "$payload" -w '\n%{http_code}' 2>&1)"
     rm -f "$cfg"
@@ -91,8 +94,11 @@ _mailer_sendgrid() {
     local cfg resp
     cfg="$(swatter_curl_cfg "header = \"Authorization: Bearer ${key}\"")" || { log_error "sendgrid: cannot create curl config"; return 1; }
     # Keep the response BODY: on failure it carries the actionable cause (bad
-    # key, unverified sender, ...) that a bare "HTTP 403" hides.
-    resp="$(curl -sS --max-time 15 -X POST "https://api.sendgrid.com/v3/mail/send" \
+    # key, unverified sender, ...) that a bare "HTTP 403" hides. The EXIT/INT/TERM
+    # trap lives in the command-substitution subshell, so it scrubs the token cfg
+    # even if curl is interrupted, without clobbering any caller trap.
+    resp="$(trap 'rm -f "$cfg"' EXIT INT TERM
+        curl -sS --max-time 15 -X POST "https://api.sendgrid.com/v3/mail/send" \
         -K "$cfg" -H "Content-Type: application/json" \
         --data "$payload" -w '\n%{http_code}' 2>&1)"
     rm -f "$cfg"

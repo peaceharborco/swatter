@@ -4,7 +4,7 @@
 # Publishes this box's CONFIRMED perm bans to the operator's self-hosted hub
 # (POST /contribute) and consumes the merged fleet feed back as the intel
 # provider `swarm` (lib/providers/swarm.sh). Opt-in corroborated-block sweeps
-# route through _swatter_execute_block so every local gate still applies.
+# route through _swatter_apply_plane so every local gate still applies.
 # All inert unless SWARM_ENABLE=true + SWARM_HUB_URL set (see spec §9).
 
 _swarm_enabled() {
@@ -159,11 +159,16 @@ swatter_swarm_sweep() {
     local meta="${STATE_DIR}/feeds/swarm.meta.json"
     [[ -s "$meta" ]] || { log_info "swarm sweep: no corroboration data (empty feed or meta fetch failed)"; return 0; }
 
-    # Same staleness policy as the provider (spec §4.3).
+    # Same staleness policy as the provider (spec §4.3). Normalize the age bound
+    # to an int first: a non-numeric override would evaluate to 0 in arithmetic
+    # (bareword => unset var), making EVERY refresh look stale and silently
+    # disabling the sweep. Bad/empty value => default 3.
+    local maxd=${SWARM_MAX_AGE_DAYS:-3}
+    [[ "$maxd" =~ ^[0-9]+$ ]] || maxd=3
     local age
     age=$(( $(swatter_now) - $(stat_mtime "$meta" || echo 0) ))
-    if (( age > ${SWARM_MAX_AGE_DAYS:-3} * 86400 )); then
-        log_warn "swarm sweep: meta stale (>${SWARM_MAX_AGE_DAYS}d) — skipped"
+    if (( age > maxd * 86400 )); then
+        log_warn "swarm sweep: meta stale (>${maxd}d) — skipped"
         return 0
     fi
 

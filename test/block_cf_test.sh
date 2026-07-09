@@ -169,6 +169,73 @@ swatter_cf_unblock 9.9.9.9; check cfunb-ok-rc "$?" "0"
 check cfunb-ok-ref-gone   "$(grep -c $'^9.9.9.9\t' "$refs")" "0"
 check cfunb-ok-other-kept "$(grep -c $'^8.8.8.8\t' "$refs")" "1"
 
+# ==== pristine re-source for sweep + account-resolution coverage ==========
+# Earlier cases stubbed _cf_load_accounts and _cf_api globally. Re-source the
+# lib to get pristine functions, then re-stub only the plane gate + creds loader.
+source "${ROOT}/lib/block_cf.sh"
+swatter_cf_manages_plane() { return 0; }
+_cf_load() { :; }
+SWATTER_HAVE_JQ=1; SWATTER_HAVE_CURL=1
+
+# ---- swatter_cf_sweep_expired: only expired refs deleted, future kept ------
+# The sole remover of expired CF rules (TTL emulation). Seed an expired 5-field
+# row, a future 5-field row, and a legacy 4-field (expired) row; assert only the
+# expired refs are deleted and the future row survives in the file.
+SWATTER_MODE="report"   # sweep runs regardless of mode
+refs="${STATE_DIR}/cf-rules.tsv"
+now="$(swatter_now)"
+{ printf '1.1.1.1\tzone\tZID\tEXPIRED\t1\n'
+  printf '2.2.2.2\taccount\tAID\tFUTURE\t%s\n' "$(( now + 100000 ))"
+  printf '3.3.3.3\tZLEG\tLEGACY\t1\n'
+} > "$refs"
+_swept="${STATE_DIR}/swept.log"; : > "$_swept"
+_cf_delete_ref() { printf '%s\n' "$3" >> "$_swept"; return 0; }   # $3 = rule id
+swatter_cf_sweep_expired
+check sweep-expired-deleted     "$(grep -c '^EXPIRED$' "$_swept")" "1"
+check sweep-legacy-deleted      "$(grep -c '^LEGACY$'  "$_swept")" "1"
+check sweep-future-not-deleted  "$(grep -c '^FUTURE$'  "$_swept")" "0"
+check sweep-future-kept         "$(grep -c $'^2.2.2.2\t' "$refs")" "1"
+check sweep-expired-gone        "$(grep -c $'\tEXPIRED\t' "$refs")" "0"
+check sweep-legacy-gone         "$(grep -c 'LEGACY' "$refs")" "0"
+
+# ---- _cf_load_accounts: all-or-retry, pagination, cache staleness ----------
+# A) token A resolves OK, token B fails -> non-zero AND no cache written (a
+#    partial map must never be baked in — it would mark IPs handled while a whole
+#    account stays uncovered).
+_cf_api() { case "$1" in
+  tokA) printf '%s' '{"success":true,"result":[{"id":"acctA1"}],"result_info":{"total_pages":1}}';;
+  *)    printf '%s' '{"success":false,"errors":[{"message":"nope"}]}';;
+esac; }
+declare -A _CF_TOKEN _CF_TOKEN_OF_ACCTID
+_CF_TOKEN=([A]=tokA [B]=tokB); _CF_TOKEN_OF_ACCTID=(); _CF_ACCTS_LOADED=0
+rm -f "${STATE_DIR}/cf-accounts.tsv"
+_cf_load_accounts; check loadacct-anyfail-rc "$?" "1"
+check loadacct-anyfail-nocache "$([[ -e "${STATE_DIR}/cf-accounts.tsv" ]] && echo yes || echo no)" "no"
+
+# B) multi-page: total_pages=2 -> both pages' account ids resolved and cached.
+_cf_api() { case "$3" in
+  *page=1*) printf '%s' '{"success":true,"result":[{"id":"p1a"}],"result_info":{"total_pages":2}}';;
+  *page=2*) printf '%s' '{"success":true,"result":[{"id":"p2a"}],"result_info":{"total_pages":2}}';;
+esac; }
+_CF_TOKEN=([A]=tokA); _CF_TOKEN_OF_ACCTID=(); _CF_ACCTS_LOADED=0
+rm -f "${STATE_DIR}/cf-accounts.tsv"
+_cf_load_accounts; check loadacct-multipage-rc "$?" "0"
+check loadacct-multipage-p1 "${_CF_TOKEN_OF_ACCTID[p1a]:-}" "tokA"
+check loadacct-multipage-p2 "${_CF_TOKEN_OF_ACCTID[p2a]:-}" "tokA"
+check loadacct-multipage-cached "$([[ -s "${STATE_DIR}/cf-accounts.tsv" ]] && echo yes || echo no)" "yes"
+
+# C) cache older than the creds file is IGNORED (adding an account+token line
+#    bumps creds mtime and must force a re-resolve). Stale cache holds a bogus id
+#    that the API never returns; the result must reflect the API, not the cache.
+CF_CREDS_FILE="${STATE_DIR}/creds"; printf 'A\ttokA\n' > "$CF_CREDS_FILE"
+printf 'STALEID\tA\n' > "${STATE_DIR}/cf-accounts.tsv"
+touch -t 202001010000 "${STATE_DIR}/cf-accounts.tsv"   # cache far older than creds
+_cf_api() { printf '%s' '{"success":true,"result":[{"id":"freshID"}],"result_info":{"total_pages":1}}'; }
+_CF_TOKEN=([A]=tokA); _CF_TOKEN_OF_ACCTID=(); _CF_ACCTS_LOADED=0
+_cf_load_accounts; check loadacct-stalecache-rc "$?" "0"
+check loadacct-stalecache-ignored "${_CF_TOKEN_OF_ACCTID[STALEID]:-none}" "none"
+check loadacct-stalecache-fresh   "${_CF_TOKEN_OF_ACCTID[freshID]:-}" "tokA"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

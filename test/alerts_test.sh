@@ -73,6 +73,13 @@ has test-prefix "[TEST]"
 : > "$SENT"; rm -f "$TMP/last-sms-alert"; SMS_RC=1; RPT_GRADE=RED
 swatter_alert_on_grade; check failsoft-rc "$?" "0"; SMS_RC=0
 
+# 8b. a FAILED send must NOT write the dedup marker — the marker is recorded only
+#     after a successful send, so a retry within the window still fires.
+: > "$SENT"; rm -f "$TMP/last-sms-alert"; NOW=1000000
+SMS_RC=1; RPT_GRADE=RED; swatter_alert_on_grade      # send fails: no marker
+SMS_RC=0; RPT_GRADE=RED; swatter_alert_on_grade      # retry within window: sends
+check failed-send-no-dedup "$(nsent)" "2"
+
 # 9. swatter_send_sms dispatch: method "" is a no-op success (restore real fn)
 unset -f swatter_send_sms; source "${ROOT}/lib/alerts.sh"
 ALERT_SMS_METHOD=""; swatter_send_sms "+1555" "hi"; check dispatch-off "$?" "0"

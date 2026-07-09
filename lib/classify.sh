@@ -233,7 +233,11 @@ swatter_build_direct_set() {
     if [[ -n "${LFD_LOG}" && -r "${LFD_LOG}" ]]; then
         local now cutoff
         now="$(swatter_now)"; cutoff=$(( now - WINDOW_SECONDS ))
-        gawk -v cutoff="$cutoff" -v now="$now" '
+        # lfd/syslog writes stamps in the host's LOCAL time. common.sh forces
+        # TZ=UTC process-wide, which would make gawk's mktime() read those local
+        # stamps as UTC and skew the window filter on non-UTC hosts. Unset TZ for
+        # THIS invocation only so mktime() matches the stamp's zone (/etc/localtime).
+        ( unset TZ; gawk -v cutoff="$cutoff" -v now="$now" '
             BEGIN {
                 split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", mn, " ")
                 for (i = 1; i <= 12; i++) mon[mn[i]] = i
@@ -246,7 +250,7 @@ swatter_build_direct_set() {
                 if (ts > now + 86400)   # "future" stamp = line from last year
                     ts = mktime((year - 1) " " mon[$1] " " $2 " " t[1] " " t[2] " " t[3])
                 if (ts >= cutoff) print
-            }' "${LFD_LOG}" 2>/dev/null \
+            }' "${LFD_LOG}" ) 2>/dev/null \
             | grep -aoE '([0-9]{1,3}\.){3}[0-9]{1,3}' \
             >> "$out" 2>/dev/null || true
     fi

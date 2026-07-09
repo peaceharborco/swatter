@@ -221,7 +221,14 @@ cmd_refresh_feeds() {
     local rc=0
     # Cloudflare ranges (always — they gate the never-block set).
     if [[ "${SWATTER_HAVE_CURL}" -eq 1 ]]; then
-        local cf4 cf6 tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/swatter-cfranges.XXXXXX")" || { log_error "refresh-feeds: mktemp failed"; return 1; }
+        # Stage the temp beside the target so the install is an atomic same-fs
+        # rename (a reader mid-refresh never sees a half-written cloudflare.cidr,
+        # which gates the never-block set). Fall back to TMPDIR only if the target
+        # dir is unwritable — the write then fails closed and cron alerts.
+        local cf4 cf6 tmp cfdir; cfdir="$(dirname "${CLOUDFLARE_IPS_FILE}")"
+        tmp="$(mktemp "${cfdir}/.swatter-cfranges.XXXXXX" 2>/dev/null)" \
+            || tmp="$(mktemp "${TMPDIR:-/tmp}/swatter-cfranges.XXXXXX")" \
+            || { log_error "refresh-feeds: mktemp failed"; return 1; }
         cf4="$(curl --max-time 20 -fsS https://www.cloudflare.com/ips-v4 2>/dev/null)"
         cf6="$(curl --max-time 20 -fsS https://www.cloudflare.com/ips-v6 2>/dev/null)"
         # Validate EACH family independently: swatter_cidr_list_ok requires >=1
@@ -243,7 +250,8 @@ cmd_refresh_feeds() {
         else
             # A validated body that never lands must not read as success to cron.
             if { printf '%s\n' "$cf4"; printf '%s\n' "$cf6"; } > "$tmp" 2>/dev/null \
-               && { install -m 0644 "$tmp" "${CLOUDFLARE_IPS_FILE}" 2>/dev/null \
+               && chmod 0644 "$tmp" 2>/dev/null \
+               && { mv -f "$tmp" "${CLOUDFLARE_IPS_FILE}" 2>/dev/null \
                     || cp "$tmp" "${CLOUDFLARE_IPS_FILE}" 2>/dev/null; }; then
                 log_info "cloudflare ranges refreshed -> ${CLOUDFLARE_IPS_FILE}"
             else
@@ -320,8 +328,8 @@ cmd_test_config() {
     # managed: explicit direct, or auto that resolved to behind-Cloudflare.
     if [[ "${CF_MODE}" == "direct" ]] || { [[ "${CF_MODE}" == "auto" ]] && swatter_cf_fronted; }; then
         local ncreds=0 ndoms=0
-        [[ -r "${CF_CREDS_FILE}" ]] && ncreds="$(grep -cvE '^[[:space:]]*(#|$)' "${CF_CREDS_FILE}" 2>/dev/null || echo 0)"
-        [[ -r "${CF_DOMAINS_MAP}" ]] && ndoms="$(grep -cvE '^[[:space:]]*(#|$)' "${CF_DOMAINS_MAP}" 2>/dev/null || echo 0)"
+        [[ -r "${CF_CREDS_FILE}" ]] && ncreds="$(grep -cvE '^[[:space:]]*(#|$)' "${CF_CREDS_FILE}" 2>/dev/null)"
+        [[ -r "${CF_DOMAINS_MAP}" ]] && ndoms="$(grep -cvE '^[[:space:]]*(#|$)' "${CF_DOMAINS_MAP}" 2>/dev/null)"
         echo "  CF creds:       ${CF_CREDS_FILE} ($( [[ -r ${CF_CREDS_FILE} ]] && echo "${ncreds} account token(s)" || echo 'MISSING — run swatter-deploy-cf-creds.sh' ))"
         echo "  CF domain map:  ${CF_DOMAINS_MAP} ($( [[ -r ${CF_DOMAINS_MAP} ]] && echo "${ndoms} domain(s)" || echo 'MISSING' ))"
         echo "  CF action:      ${CF_ACTION}"
