@@ -523,7 +523,11 @@ swatter_cf_sweep_expired() {
     [[ "${SWATTER_HAVE_JQ}" -eq 1 && "${SWATTER_HAVE_CURL}" -eq 1 ]] || return 0
     _cf_load
     local now; now="$(swatter_now)"
-    local keep; keep="$(mktemp "${TMPDIR:-/tmp}/swatter-cfrules.XXXXXX")"
+    # Fail closed on mktemp (like unblock): sweeping without a keep-file would
+    # otherwise rewrite the refs from an empty file, orphaning every live rule.
+    local keep
+    keep="$(mktemp "${TMPDIR:-/tmp}/swatter-cfrules.XXXXXX")" \
+        || { log_error "cloudflare sweep: mktemp failed — refs untouched, sweep skipped"; return 1; }
     local line _CFR_IP _CFR_SCOPE _CFR_SID _CFR_RID _CFR_EXP
     while IFS= read -r line; do
         _cf_parse_ref "$line" || continue

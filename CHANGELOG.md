@@ -30,6 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Metrics warn-once stamp is keyed to the target directory**, so a stamp left
   by one outage can never suppress the warning for a different misconfigured
   `METRICS_FILE` path later.
+- **`swatter_cf_sweep_expired` fails closed on mktemp failure** (matching
+  unblock): the refs file is left untouched instead of being rewritten from an
+  empty keep-file, which would have orphaned every live rule ref.
+
+### Removed
+- **`SCORE_PERM` (dead config).** Defined but never consulted — perm has never
+  come from a single score; it comes from repeats (`REPEAT_N` within
+  `REPEAT_WINDOW_DAYS`), honeypot hits, or hard intel. Removing it stops
+  operators tuning a knob that does nothing. A stale `SCORE_PERM=` line in an
+  existing swatter.conf is harmless (unused variable).
 - **Cloudflare duplicate-rule responses (code 10009) are now idempotent success,
   not `failed`.** The account-scoped IP Access Rules endpoint reports an existing
   rule as error code 10009 `firewallaccessrules.api.duplicate_of_existing`, which
