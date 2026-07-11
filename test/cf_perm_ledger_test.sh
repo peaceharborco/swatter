@@ -66,25 +66,26 @@ check true-perm-sticky "$dexp2" "perm 0"
 # on EVERY scan, burning MAX_BLOCKS_PER_RUN. Now: while the edge rule is live the
 # gate must NOOP; after expiry it must fall through/backfill (re-block).
 APPLY="${STATE_DIR}/apply"; : > "$APPLY"
-_swatter_apply_plane_real="$(declare -f _swatter_apply_plane)"
-_swatter_apply_plane() { printf '%s %s %s %s\n' "$1" "$2" "$3" "${11:-$3}" >> "$APPLY"; return 0; }
 
 # Seed a CF-emulated perm exactly as an enforced scan records one.
 swatter_store_record 9.9.8.7 perm cloudflare 259200 95 "score=95" 0
 swatter_store_plane_set 9.9.8.7 cloudflare perm 259200
 
-# Live: 5 consecutive gate calls -> 5 noops, ZERO applies.
-for _ in 1 2 3 4 5; do
+# Subshell so the apply stub never shadows the real function at file scope
+# (shellcheck SC2218) and needs no restore afterwards.
+(
+    _swatter_apply_plane() { printf '%s %s %s %s\n' "$1" "$2" "$3" "${11:-$3}" >> "$APPLY"; return 0; }
+    # Live: 5 consecutive gate calls -> 5 noops, ZERO applies.
+    for _ in 1 2 3 4 5; do
+        _swatter_perm_gate 9.9.8.7 VIA_CF cloudflare 95 r '{}' 0 "x.com" 1 >/dev/null
+    done
+    # Expired (edge rule swept): the gate must RE-BLOCK (backfill), not noop.
+    sqlite3 "$(_swatter_db)" "UPDATE plane_blocks SET expires_at=$(( now - 10 )) WHERE ip='9.9.8.7';"
     _swatter_perm_gate 9.9.8.7 VIA_CF cloudflare 95 r '{}' 0 "x.com" 1 >/dev/null
-done
-check storm-noop-noapply "$(grep -c . "$APPLY")" "0"
-
-# Expired (edge rule swept): the gate must RE-BLOCK (global perm backfill), not noop.
-sqlite3 "$(_swatter_db)" "UPDATE plane_blocks SET expires_at=$(( now - 10 )) WHERE ip='9.9.8.7';"
-_swatter_perm_gate 9.9.8.7 VIA_CF cloudflare 95 r '{}' 0 "x.com" 1 >/dev/null
+)
+# 5 live calls produced zero applies; the 1 post-expiry call re-blocked.
+check storm-noop-noapply "$(grep -c -v '^9.9.8.7 VIA_CF perm plane-upgrade$' "$APPLY")" "0"
 check storm-expired-reblocks "$(grep -c '^9.9.8.7 VIA_CF perm plane-upgrade' "$APPLY")" "1"
-
-eval "$_swatter_apply_plane_real"
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
