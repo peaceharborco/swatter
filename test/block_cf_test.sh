@@ -71,8 +71,18 @@ _CF_API_RESP='{"success":true,"result":{"id":"rule1"}}'
 swatter_cf_block 1.2.3.4 3600 r x.com; check api-ok "$?" "0"
 
 # 8) API duplicate ("already exists") -> treated as success (0).
-_CF_API_RESP='{"success":false,"errors":[{"message":"firewallaccessrules.api.duplicate_of_existing already exists"}]}'
+_CF_API_RESP='{"success":false,"errors":[{"message":"rule already exists"}]}'
 swatter_cf_block 1.2.3.4 3600 r x.com; check api-dup-ok "$?" "0"
+
+# 8b) REAL prod duplicate shape: code 10009, message is the bare error slug with
+#     no "already exists" text. Must be idempotent-success, not `failed` — this
+#     exact shape looped retries + starved perm escalation before the fix.
+_CF_API_RESP='{"success":false,"errors":[{"code":10009,"message":"firewallaccessrules.api.duplicate_of_existing"}]}'
+swatter_cf_block 1.2.3.4 3600 r x.com; check api-dup-10009-ok "$?" "0"
+
+# 8c) code 10009 alone (no message) is still a duplicate -> success (0).
+_CF_API_RESP='{"success":false,"errors":[{"code":10009}]}'
+swatter_cf_block 1.2.3.4 3600 r x.com; check api-dup-codeonly-ok "$?" "0"
 
 # 9) API genuine error -> failure (1), and the error is CAPTURED for diagnosability.
 _CF_API_RESP='{"success":false,"errors":[{"message":"boom"}]}'
@@ -129,8 +139,9 @@ SWATTER_HAVE_JQ=1
 _CF_API_RESP='{"success":true,"result":{"id":"rule1"}}'
 swatter_cf_block 1.2.3.4 3600 r ""; check acct-ok "$?" "0"
 
-# F) duplicate on every account -> treated as success (0).
-_CF_API_RESP='{"success":false,"errors":[{"message":"firewallaccessrules.api.duplicate_of_existing already exists"}]}'
+# F) duplicate on every account (real prod shape: code 10009, bare slug message)
+#    -> treated as success (0).
+_CF_API_RESP='{"success":false,"errors":[{"code":10009,"message":"firewallaccessrules.api.duplicate_of_existing"}]}'
 swatter_cf_block 1.2.3.4 3600 r ""; check acct-dup-ok "$?" "0"
 
 # G) every account errors -> failure (1).

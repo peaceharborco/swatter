@@ -194,16 +194,23 @@ _cf_rule_payload() {
         '{mode:$mode, configuration:{target:"ip", value:$ip}, notes:$note}'
 }
 
-# A create response that is success OR an idempotent duplicate ("already
-# exists"/"identical") is, for our purposes, a rule in place. Returns 0 and
-# echoes the rule id when the API minted one (empty on duplicate).
+# A create response that is success OR an idempotent duplicate is, for our
+# purposes, a rule in place. The API says "duplicate" two ways: legacy
+# message text ("already exists"/"identical") and, on the account-scoped
+# endpoint, code 10009 "firewallaccessrules.api.duplicate_of_existing".
+# Missing the latter recorded every retry as `failed`, which both looped the
+# create every scan AND starved the repeat-escalation counter (only `temp`
+# rows count toward REPEAT_N), so a live repeat offender never went perm.
+# Returns 0 and echoes the rule id when the API minted one (empty on duplicate).
 _cf_create_ok() {
     # _cf_create_ok <response>  -> echoes rule id (may be empty); rc 0 if in place
     local resp="$1"
     if printf '%s' "$resp" | jq -e '.success == true' >/dev/null 2>&1; then
         printf '%s' "$resp" | jq -r '.result.id // empty'; return 0
     fi
-    if printf '%s' "$resp" | jq -e '[.errors[]?.message] | any(test("already exists|identical"))' >/dev/null 2>&1; then
+    if printf '%s' "$resp" | jq -e \
+        '[.errors[]?] | any((.code == 10009) or ((.message // "") | test("already exists|identical|duplicate_of_existing")))' \
+        >/dev/null 2>&1; then
         return 0
     fi
     return 1

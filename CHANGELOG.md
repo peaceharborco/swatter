@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Cloudflare duplicate-rule responses (code 10009) are now idempotent success,
+  not `failed`.** The account-scoped IP Access Rules endpoint reports an existing
+  rule as error code 10009 `firewallaccessrules.api.duplicate_of_existing`, which
+  `_cf_create_ok` did not recognize (it only matched "already exists"/"identical"
+  message text). Every retried create was recorded as `failed`, which (a) looped
+  the same create on every */5 scan, inflating the backend-failed count, and
+  (b) starved repeat escalation: only `temp` rows count toward `REPEAT_N`, so a
+  live repeat offender (e.g. 27 recorded offenses) never escalated to perm on the
+  Cloudflare plane.
+- **Metrics warning now fires once per outage, not once per scan.** The
+  "missing or unwritable" node_exporter textfile-collector warning used an
+  in-memory latch, but each cron scan is a fresh process, so boxes without
+  node_exporter warned every 5 minutes. The latch is now a stamp file in
+  `STATE_DIR`, cleared when the directory becomes writable again. (Setting
+  `METRICS_FILE=""` still disables metrics entirely.)
+
 ## [2.9.0] - 2026-07-09
 
 ### Added

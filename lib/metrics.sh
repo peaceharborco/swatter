@@ -49,15 +49,23 @@ swatter_metrics_emit() {
     done
 }
 
-_SW_METRICS_WARNED=0
 swatter_metrics_write() {
     local target="${1:-${METRICS_FILE:-}}"
     [[ -n "$target" ]] || return 0
     local dir; dir="$(dirname "$target")"
+    # Warn ONCE per outage, not once per scan process: each */5 cron is a fresh
+    # shell, so an in-memory latch re-warned every run on a box without
+    # node_exporter. The stamp persists the latch across runs and is cleared
+    # the moment the dir becomes writable, so a real regression warns again.
+    local stamp="${STATE_DIR}/.metrics-warned"
     if [[ ! -d "$dir" || ! -w "$dir" ]]; then
-        (( _SW_METRICS_WARNED == 0 )) && { log_warn "metrics: ${dir} missing or unwritable; skipping"; _SW_METRICS_WARNED=1; }
+        if [[ ! -f "$stamp" ]]; then
+            log_warn "metrics: ${dir} missing or unwritable; skipping (set METRICS_FILE=\"\" to disable; suppressing this warning until the dir is writable)"
+            : > "$stamp" 2>/dev/null || true
+        fi
         return 0
     fi
+    rm -f "$stamp" 2>/dev/null || true
     local tmp; tmp="$(mktemp "${dir}/.swatter-metrics.XXXXXX")" || return 0
     swatter_metrics_emit > "$tmp" 2>/dev/null && mv -f "$tmp" "$target" 2>/dev/null || rm -f "$tmp" 2>/dev/null
 }

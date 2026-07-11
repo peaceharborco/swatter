@@ -31,12 +31,25 @@ check quota-type-once "$(printf '%s\n' "$out" | grep -c '^# TYPE swatter_intel_q
 swatter_metrics_write "$STATE_DIR/swatter.prom"
 [[ -s "$STATE_DIR/swatter.prom" ]] && PASS=$((PASS+1)) || { echo "FAIL wrote-file"; FAIL=$((FAIL+1)); }
 
-# Empty path disables: returns 0 and writes nothing.
-swatter_metrics_write ""; check empty-rc "$?" "0"
+# Empty METRICS_FILE disables: returns 0, writes nothing, warns nothing.
+# (An explicit "" arg falls back to $METRICS_FILE per ${1:-...}, so disabling
+# is expressed via the config var, matching how swatter.conf does it.)
+METRICS_FILE="" swatter_metrics_write; check empty-rc "$?" "0"
 
 # Missing dir warns + skips: returns 0 and creates no file at the bad path.
-swatter_metrics_write "$STATE_DIR/nope/swatter.prom" 2>/dev/null; check missingdir-rc "$?" "0"
+warn1="$(swatter_metrics_write "$STATE_DIR/nope/swatter.prom" 2>&1 >/dev/null)"; check missingdir-rc "$?" "0"
 [[ ! -e "$STATE_DIR/nope/swatter.prom" ]] && PASS=$((PASS+1)) || { echo "FAIL missingdir-nofile"; FAIL=$((FAIL+1)); }
+check missingdir-warned "$(printf '%s' "$warn1" | grep -c 'missing or unwritable')" "1"
+
+# Warn-once persists ACROSS processes (each */5 scan is a fresh shell): the
+# stamp file suppresses the repeat warning, and a later writable dir clears it.
+warn2="$(swatter_metrics_write "$STATE_DIR/nope/swatter.prom" 2>&1 >/dev/null)"
+check missingdir-warn-once "$(printf '%s' "$warn2" | grep -c 'missing or unwritable')" "0"
+[[ -f "$STATE_DIR/.metrics-warned" ]] && PASS=$((PASS+1)) || { echo "FAIL warn-stamp-set"; FAIL=$((FAIL+1)); }
+swatter_metrics_write "$STATE_DIR/swatter.prom"   # writable again -> stamp cleared
+[[ ! -f "$STATE_DIR/.metrics-warned" ]] && PASS=$((PASS+1)) || { echo "FAIL warn-stamp-cleared"; FAIL=$((FAIL+1)); }
+warn3="$(swatter_metrics_write "$STATE_DIR/nope/swatter.prom" 2>&1 >/dev/null)"
+check missingdir-rewarn "$(printf '%s' "$warn3" | grep -c 'missing or unwritable')" "1"
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
