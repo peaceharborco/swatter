@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # test/cf_perm_ledger_test.sh — a Cloudflare-plane 'perm' is TTL-emulated (swept at
-# ~3d), so it must be recorded in plane_blocks as a TEMP with that real lifetime,
-# not a never-expiring perm — else is_perm_on(cloudflare) stays true forever and a
-# returning offender is never re-blocked after the CF rule is swept.
+# ~3d), so it is recorded in plane_blocks as an EXPIRING perm: is_perm_on holds
+# while the edge rule is live (so _swatter_perm_gate noops instead of re-applying
+# a plane-upgrade every scan — the v2.9.0 upgrade-storm bug), and lapses at expiry
+# so a returning offender is re-blocked after the sweep.
 # Exercises the real _swatter_apply_plane with the firewall backends stubbed.
 set -uo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,20 +32,59 @@ swatter_store_sighting_clear() { :; }
 swatter_abuseipdb_report() { :; }
 _swatter_audit() { :; }
 
-# VIA_CF perm -> ledger must be a TEMP (expiring), NOT a perm.
+# VIA_CF perm -> ledger is an EXPIRING perm: perm while live, expiry ~ladder max.
 _swatter_apply_plane 1.2.3.4 VIA_CF perm 0 "cf perm" "x.com" 1 91 '{}' 91
-check cf-perm-not-perm   "$(swatter_store_is_perm_on 1.2.3.4 cloudflare && echo yes || echo no)" "no"
-check cf-perm-active-now "$(swatter_store_active_on  1.2.3.4 cloudflare && echo yes || echo no)" "yes"
-# ...and its expiry is ~the ladder max (3d), not 0.
+check cf-perm-is-perm-live "$(swatter_store_is_perm_on 1.2.3.4 cloudflare && echo yes || echo no)" "yes"
+check cf-perm-active-now   "$(swatter_store_active_on  1.2.3.4 cloudflare && echo yes || echo no)" "yes"
+kind="$(sqlite3 "$(_swatter_db)" "SELECT kind FROM plane_blocks WHERE ip='1.2.3.4' AND plane='cloudflare';")"
 exp="$(sqlite3 "$(_swatter_db)" "SELECT expires_at FROM plane_blocks WHERE ip='1.2.3.4' AND plane='cloudflare';")"
 now="$(swatter_now)"
+check cf-perm-kind "$kind" "perm"
 check cf-perm-expires-future "$([[ "$exp" -gt "$now" ]] && echo yes || echo no)" "yes"
 
-# DIRECT perm -> genuine perm (never expires).
+# ...and once the expiry passes (rule swept at the edge), it is neither perm nor
+# active — the gate falls through and a returning offender is re-blocked.
+sqlite3 "$(_swatter_db)" "UPDATE plane_blocks SET expires_at=$(( now - 10 )) WHERE ip='1.2.3.4';"
+check cf-perm-lapsed-notperm "$(swatter_store_is_perm_on 1.2.3.4 cloudflare && echo yes || echo no)" "no"
+check cf-perm-lapsed-inactive "$(swatter_store_active_on 1.2.3.4 cloudflare && echo yes || echo no)" "no"
+
+# DIRECT perm -> genuine perm (never expires; exp stays 0, always perm/active).
 _swatter_apply_plane 5.6.7.8 DIRECT perm 0 "csf perm" "" 1 91 '{}' 91
 check direct-perm-is-perm "$(swatter_store_is_perm_on 5.6.7.8 csf && echo yes || echo no)" "yes"
 dexp="$(sqlite3 "$(_swatter_db)" "SELECT expires_at FROM plane_blocks WHERE ip='5.6.7.8' AND plane='csf';")"
 check direct-perm-exp-zero "$dexp" "0"
+check direct-perm-active "$(swatter_store_active_on 5.6.7.8 csf && echo yes || echo no)" "yes"
+
+# A true perm can never be downgraded/shortened by a later temp on the same plane.
+swatter_store_plane_set 5.6.7.8 csf temp 3600
+dexp2="$(sqlite3 "$(_swatter_db)" "SELECT kind||' '||expires_at FROM plane_blocks WHERE ip='5.6.7.8' AND plane='csf';")"
+check true-perm-sticky "$dexp2" "perm 0"
+
+# --- THE UPGRADE-STORM REGRESSION (v2.9.0) ----------------------------------
+# A CF-emulated perm used to be recorded kind='temp', so is_perm_on(cloudflare)
+# was permanently false and _swatter_perm_gate re-applied a "plane-upgrade" perm
+# on EVERY scan, burning MAX_BLOCKS_PER_RUN. Now: while the edge rule is live the
+# gate must NOOP; after expiry it must fall through/backfill (re-block).
+APPLY="${STATE_DIR}/apply"; : > "$APPLY"
+_swatter_apply_plane_real="$(declare -f _swatter_apply_plane)"
+_swatter_apply_plane() { printf '%s %s %s %s\n' "$1" "$2" "$3" "${11:-$3}" >> "$APPLY"; return 0; }
+
+# Seed a CF-emulated perm exactly as an enforced scan records one.
+swatter_store_record 9.9.8.7 perm cloudflare 259200 95 "score=95" 0
+swatter_store_plane_set 9.9.8.7 cloudflare perm 259200
+
+# Live: 5 consecutive gate calls -> 5 noops, ZERO applies.
+for _ in 1 2 3 4 5; do
+    _swatter_perm_gate 9.9.8.7 VIA_CF cloudflare 95 r '{}' 0 "x.com" 1 >/dev/null
+done
+check storm-noop-noapply "$(grep -c . "$APPLY")" "0"
+
+# Expired (edge rule swept): the gate must RE-BLOCK (global perm backfill), not noop.
+sqlite3 "$(_swatter_db)" "UPDATE plane_blocks SET expires_at=$(( now - 10 )) WHERE ip='9.9.8.7';"
+_swatter_perm_gate 9.9.8.7 VIA_CF cloudflare 95 r '{}' 0 "x.com" 1 >/dev/null
+check storm-expired-reblocks "$(grep -c '^9.9.8.7 VIA_CF perm plane-upgrade' "$APPLY")" "1"
+
+eval "$_swatter_apply_plane_real"
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"

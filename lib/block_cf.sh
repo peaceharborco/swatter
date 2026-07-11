@@ -194,26 +194,94 @@ _cf_rule_payload() {
         '{mode:$mode, configuration:{target:"ip", value:$ip}, notes:$note}'
 }
 
-# A create response that is success OR an idempotent duplicate is, for our
-# purposes, a rule in place. The API says "duplicate" two ways: legacy
-# message text ("already exists"/"identical") and, on the account-scoped
-# endpoint, code 10009 "firewallaccessrules.api.duplicate_of_existing".
-# Missing the latter recorded every retry as `failed`, which both looped the
-# create every scan AND starved the repeat-escalation counter (only `temp`
-# rows count toward REPEAT_N), so a live repeat offender never went perm.
-# Returns 0 and echoes the rule id when the API minted one (empty on duplicate).
+# Classify a create response. The API says "duplicate" two ways: legacy message
+# text ("already exists"/"identical") and, on the account-scoped endpoint, code
+# 10009 "firewallaccessrules.api.duplicate_of_existing". Missing the latter
+# recorded every retry as `failed`, which both looped the create every scan AND
+# starved the repeat-escalation counter (only `temp` rows count toward REPEAT_N),
+# so a live repeat offender never went perm.
+#   rc 0 = fresh rule minted (echoes the rule id)
+#   rc 2 = idempotent duplicate — a rule for this target already exists; the
+#          caller must reconcile it (_cf_reconcile_dup) rather than trust it
+#          blindly: the existing rule may carry an older/shorter expiry note, a
+#          lost cf-rules.tsv ref, or even a different mode (a manual rule).
+#   rc 1 = genuine error
 _cf_create_ok() {
-    # _cf_create_ok <response>  -> echoes rule id (may be empty); rc 0 if in place
-    local resp="$1"
-    if printf '%s' "$resp" | jq -e '.success == true' >/dev/null 2>&1; then
-        printf '%s' "$resp" | jq -r '.result.id // empty'; return 0
-    fi
-    if printf '%s' "$resp" | jq -e \
-        '[.errors[]?] | any((.code == 10009) or ((.message // "") | test("already exists|identical|duplicate_of_existing")))' \
-        >/dev/null 2>&1; then
+    # _cf_create_ok <response>  -> echoes rule id on rc 0
+    local resp="$1" cls
+    cls="$(printf '%s' "$resp" | jq -r '
+        if .success == true then "ok\t\(.result.id // "")"
+        elif ([.errors[]?] | any((.code == 10009)
+              or ((.message // "") | test("already exists|identical|duplicate_of_existing"))))
+             then "dup"
+        else "err" end' 2>/dev/null)"
+    case "$cls" in
+        ok$'\t'*) printf '%s' "${cls#ok$'\t'}"; return 0 ;;
+        dup)      return 2 ;;
+        *)        return 1 ;;
+    esac
+}
+
+# Rewrite cf-rules.tsv so (ip,scope,scope_id) maps to exactly one row with the
+# given rule id + expiry (replacing any stale rows for that triple). Safe against
+# concurrent scans via the entrypoint flock; a mktemp failure leaves the file
+# untouched (same exposure as before this helper existed).
+_cf_tsv_upsert() {
+    # _cf_tsv_upsert <ip> <scope> <sid> <rid> <exp>
+    local ip="$1" scope="$2" sid="$3" rid="$4" exp="$5"
+    local refs="${STATE_DIR}/cf-rules.tsv"
+    mkdir -p "${STATE_DIR}" 2>/dev/null || true
+    if [[ ! -f "$refs" ]]; then
+        printf '%s\t%s\t%s\t%s\t%s\n' "$ip" "$scope" "$sid" "$rid" "$exp" >> "$refs" 2>/dev/null || true
         return 0
     fi
-    return 1
+    local keep; keep="$(mktemp "${TMPDIR:-/tmp}/swatter-cfrules.XXXXXX")" || return 0
+    local line _CFR_IP _CFR_SCOPE _CFR_SID _CFR_RID _CFR_EXP
+    while IFS= read -r line; do
+        _cf_parse_ref "$line" || continue
+        [[ "${_CFR_IP}" == "$ip" && "${_CFR_SCOPE}" == "$scope" && "${_CFR_SID}" == "$sid" ]] && continue
+        printf '%s\t%s\t%s\t%s\t%s\n' "${_CFR_IP}" "${_CFR_SCOPE}" "${_CFR_SID}" "${_CFR_RID}" "${_CFR_EXP}" >> "$keep"
+    done < "$refs"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$ip" "$scope" "$sid" "$rid" "$exp" >> "$keep"
+    mv "$keep" "$refs" 2>/dev/null || rm -f "$keep"
+}
+
+# On a duplicate-create, look the existing rule up and make our bookkeeping match
+# reality instead of assuming a prior run already recorded it:
+#   * the rule may be OURS with an older ref — refresh the tsv row's expiry so
+#     the sweep honours the NEW ttl (else an escalated/perm block is silently
+#     swept at the first temp's expiry while the ledger claims long coverage);
+#   * the ref may be LOST (append failed, state restored) — recreate it so
+#     sweep/unblock keep a handle on the live rule;
+#   * the rule may be someone ELSE'S with a different mode (e.g. a manual
+#     whitelist) — that is NOT a block in place: fail loudly, never claim it.
+# If the lookup itself fails (API blip / token lacks read), fall back to
+# trusting the duplicate (rc 0, no ref update): the rule IS in place per the
+# API, and failing here would resurrect the failed-retry loop this fixes.
+_cf_reconcile_dup() {
+    # _cf_reconcile_dup <token> <scope> <sid> <ip> <exp>
+    local token="$1" scope="$2" sid="$3" ip="$4" exp="$5"
+    local resp rid mode
+    resp="$(_cf_api "$token" GET "$(_cf_rule_path "$scope" "$sid")?configuration.target=ip&configuration.value=${ip}&per_page=5")"
+    if ! printf '%s' "$resp" | jq -e '.success == true' >/dev/null 2>&1; then
+        log_warn "CF block ${ip}: duplicate reported but rule lookup failed (${scope} ${sid}); trusting the duplicate, ref not refreshed"
+        return 0
+    fi
+    rid="$(printf '%s' "$resp" | jq -r --arg ip "$ip" \
+        '[.result[]? | select(.configuration.value == $ip)][0].id // empty' 2>/dev/null)"
+    mode="$(printf '%s' "$resp" | jq -r --arg ip "$ip" \
+        '[.result[]? | select(.configuration.value == $ip)][0].mode // empty' 2>/dev/null)"
+    if [[ -z "$rid" ]]; then
+        log_warn "CF block ${ip}: duplicate reported but no rule found on ${scope} ${sid}; trusting the duplicate, ref not refreshed"
+        return 0
+    fi
+    if [[ "$mode" != "${CF_ACTION}" ]]; then
+        SWATTER_LAST_BACKEND_ERR="existing rule for ${ip} on ${scope} ${sid} has mode=${mode} (want ${CF_ACTION}) — not swatter's rule, refusing to claim it"
+        log_warn "CF block ${ip}: ${SWATTER_LAST_BACKEND_ERR}"
+        return 1
+    fi
+    _cf_tsv_upsert "$ip" "$scope" "$sid" "$rid" "$exp"
+    return 0
 }
 
 # A zone-scoped block on the single zone the attacker hit (CF_SCOPE=zone).
@@ -247,12 +315,21 @@ _cf_block_zone() {
     expiry=$(( $(swatter_now) + ttl ))
     note="${CF_RULE_PREFIX:-swatter}|exp=${expiry}|${reason}"
     resp="$(_cf_api "$token" POST "$(_cf_rule_path zone "$zid")" "$(_cf_rule_payload "$ip" "$note")")"
-    if rid="$(_cf_create_ok "$resp")"; then
-        # Record the (scope,scope_id,rule) ref so unblock/sweep are O(1). A bare
-        # duplicate yields no id (nothing to record beyond what a prior run did).
-        [[ -n "$rid" ]] && printf '%s\t%s\t%s\t%s\t%s\n' "$ip" "zone" "$zid" "$rid" "$expiry" >> "${STATE_DIR}/cf-rules.tsv" 2>/dev/null || true
+    local crc; rid="$(_cf_create_ok "$resp")"; crc=$?
+    if (( crc == 0 )); then
+        # Record the (scope,scope_id,rule) ref so unblock/sweep are O(1).
+        _cf_tsv_upsert "$ip" "zone" "$zid" "$rid" "$expiry"
         log_info "cloudflare ${CF_ACTION} ${ip} in ${vhost} (zone ${zid}, acct ${acct})"
         return 0
+    fi
+    if (( crc == 2 )); then
+        # Duplicate: a rule already exists — reconcile it (refresh the ref's
+        # expiry to THIS ttl, recover a lost ref, reject a foreign-mode rule).
+        if _cf_reconcile_dup "$token" "zone" "$zid" "$ip" "$expiry"; then
+            log_info "cloudflare ${CF_ACTION} ${ip} in ${vhost} (zone ${zid}, acct ${acct}; existing rule refreshed)"
+            return 0
+        fi
+        return 1   # foreign-mode rule: SWATTER_LAST_BACKEND_ERR already set
     fi
     # Capture the reduced API error so score.sh can record it on the `failed`
     # decision (makes a block_failed self-diagnosing), not just log it to stderr.
@@ -303,11 +380,24 @@ _cf_block_account() {
     expiry=$(( $(swatter_now) + ttl ))
     note="${CF_RULE_PREFIX:-swatter}|exp=${expiry}|${reason}"
     payload="$(_cf_rule_payload "$ip" "$note")"
+    local crc
     for aid in "${!_CF_TOKEN_OF_ACCTID[@]}"; do
         token="${_CF_TOKEN_OF_ACCTID[$aid]}"
         resp="$(_cf_api "$token" POST "$(_cf_rule_path account "$aid")" "$payload")"
-        if rid="$(_cf_create_ok "$resp")"; then
-            [[ -n "$rid" ]] && printf '%s\t%s\t%s\t%s\t%s\n' "$ip" "account" "$aid" "$rid" "$expiry" >> "${STATE_DIR}/cf-rules.tsv" 2>/dev/null || true
+        rid="$(_cf_create_ok "$resp")"; crc=$?
+        if (( crc == 2 )); then
+            # Duplicate: reconcile (refresh ref expiry / recover a lost ref /
+            # reject a foreign-mode rule). Success folds into the ok tally;
+            # a foreign-mode rejection falls through to the failure branch.
+            if _cf_reconcile_dup "$token" "account" "$aid" "$ip" "$expiry"; then
+                log_info "cloudflare ${CF_ACTION} ${ip} on account ${aid} (existing rule refreshed)"
+                ok=$(( ok + 1 )); continue
+            fi
+            log_warn "CF block ${ip} on account ${aid} failed: ${SWATTER_LAST_BACKEND_ERR}"
+            fail=$(( fail + 1 )); continue
+        fi
+        if (( crc == 0 )); then
+            _cf_tsv_upsert "$ip" "account" "$aid" "$rid" "$expiry"
             log_info "cloudflare ${CF_ACTION} ${ip} on account ${aid}"
             ok=$(( ok + 1 ))
         else

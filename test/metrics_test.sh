@@ -43,13 +43,24 @@ check missingdir-warned "$(printf '%s' "$warn1" | grep -c 'missing or unwritable
 
 # Warn-once persists ACROSS processes (each */5 scan is a fresh shell): the
 # stamp file suppresses the repeat warning, and a later writable dir clears it.
+stamp_count() { find "$STATE_DIR" -maxdepth 1 -name '.metrics-warned.*' | grep -c .; }
 warn2="$(swatter_metrics_write "$STATE_DIR/nope/swatter.prom" 2>&1 >/dev/null)"
 check missingdir-warn-once "$(printf '%s' "$warn2" | grep -c 'missing or unwritable')" "0"
-[[ -f "$STATE_DIR/.metrics-warned" ]] && PASS=$((PASS+1)) || { echo "FAIL warn-stamp-set"; FAIL=$((FAIL+1)); }
-swatter_metrics_write "$STATE_DIR/swatter.prom"   # writable again -> stamp cleared
-[[ ! -f "$STATE_DIR/.metrics-warned" ]] && PASS=$((PASS+1)) || { echo "FAIL warn-stamp-cleared"; FAIL=$((FAIL+1)); }
+check warn-stamp-set "$(stamp_count)" "1"
+# A DIFFERENT bad dir is a different outage: keyed stamp -> warns independently.
+warn2b="$(swatter_metrics_write "$STATE_DIR/other/swatter.prom" 2>&1 >/dev/null)"
+check otherdir-warns "$(printf '%s' "$warn2b" | grep -c 'missing or unwritable')" "1"
+check warn-stamp-two "$(stamp_count)" "2"
+swatter_metrics_write "$STATE_DIR/swatter.prom"   # writable dir -> ITS stamp cleared (others keyed, untouched)
 warn3="$(swatter_metrics_write "$STATE_DIR/nope/swatter.prom" 2>&1 >/dev/null)"
-check missingdir-rewarn "$(printf '%s' "$warn3" | grep -c 'missing or unwritable')" "1"
+check missingdir-still-suppressed "$(printf '%s' "$warn3" | grep -c 'missing or unwritable')" "0"
+# Simulate the bad dir being fixed then breaking again: clear its stamp the way
+# a successful write to THAT dir would, and confirm it re-warns.
+mkdir -p "$STATE_DIR/nope"; swatter_metrics_write "$STATE_DIR/nope/swatter.prom"
+check fixed-dir-writes "$([[ -s "$STATE_DIR/nope/swatter.prom" ]] && echo yes || echo no)" "yes"
+rm -rf "$STATE_DIR/nope"
+warn4="$(swatter_metrics_write "$STATE_DIR/nope/swatter.prom" 2>&1 >/dev/null)"
+check missingdir-rewarn "$(printf '%s' "$warn4" | grep -c 'missing or unwritable')" "1"
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"

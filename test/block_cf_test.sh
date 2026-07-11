@@ -84,6 +84,44 @@ swatter_cf_block 1.2.3.4 3600 r x.com; check api-dup-10009-ok "$?" "0"
 _CF_API_RESP='{"success":false,"errors":[{"code":10009}]}'
 swatter_cf_block 1.2.3.4 3600 r x.com; check api-dup-codeonly-ok "$?" "0"
 
+# ---- duplicate reconciliation ----------------------------------------------
+# On a dup, the existing rule is looked up (GET) and the cf-rules.tsv ref is
+# refreshed to THIS ttl (else the sweep would remove an escalated/perm block at
+# the FIRST temp's expiry while the ledger claims long coverage), a lost ref is
+# recovered, and a foreign-mode rule (e.g. a manual whitelist) is refused.
+_cf_api_dup_get() {   # method-aware stub: POST -> dup, GET -> the existing rule
+    local method="$2"
+    if [[ "$method" == "GET" ]]; then printf '%s' "${_CF_GET_RESP:-}"
+    else printf '%s' '{"success":false,"errors":[{"code":10009,"message":"firewallaccessrules.api.duplicate_of_existing"}]}'
+    fi
+}
+
+# 8d) dup + lookup finds OUR rule (mode matches CF_ACTION=block) -> rc 0 AND the
+#     tsv ref is upserted with the existing rule id + the NEW expiry.
+: > "${STATE_DIR}/cf-rules.tsv"
+printf '1.2.3.4\tzone\tzone123\tOLDRULE\t1000\n' > "${STATE_DIR}/cf-rules.tsv"   # stale short-TTL ref
+_cf_api() { _cf_api_dup_get "$@"; }
+_CF_GET_RESP='{"success":true,"result":[{"id":"EXISTING1","mode":"block","configuration":{"target":"ip","value":"1.2.3.4"}}]}'
+swatter_cf_block 1.2.3.4 99999 r x.com; check dup-reconcile-rc "$?" "0"
+check dup-reconcile-one-row "$(grep -c $'^1.2.3.4\tzone\tzone123' "${STATE_DIR}/cf-rules.tsv")" "1"
+check dup-reconcile-rid "$(grep -c $'\tEXISTING1\t' "${STATE_DIR}/cf-rules.tsv")" "1"
+check dup-reconcile-exp-refreshed "$(grep -c $'\t1000$' "${STATE_DIR}/cf-rules.tsv")" "0"
+
+# 8e) dup + lookup finds a FOREIGN rule (mode=whitelist, a manual allow) -> the
+#     block is NOT in place: rc 1 with a self-diagnosing cause, never claimed.
+_CF_GET_RESP='{"success":true,"result":[{"id":"MANUAL1","mode":"whitelist","configuration":{"target":"ip","value":"1.2.3.4"}}]}'
+swatter_cf_block 1.2.3.4 3600 r x.com; check dup-foreign-failed "$?" "1"
+check dup-foreign-cause "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'mode=whitelist')" "1"
+
+# 8f) dup but the lookup itself fails (API blip / token lacks read) -> trust the
+#     duplicate (rc 0, no ref written) — must NOT resurrect the failed-retry loop.
+: > "${STATE_DIR}/cf-rules.tsv"
+_CF_GET_RESP='{"success":false,"errors":[{"message":"nope"}]}'
+swatter_cf_block 1.2.3.4 3600 r x.com; check dup-lookupfail-ok "$?" "0"
+check dup-lookupfail-noref "$(grep -c . "${STATE_DIR}/cf-rules.tsv")" "0"
+_cf_api() { printf '%s' "${_CF_API_RESP:-}"; }   # restore
+: > "${STATE_DIR}/cf-rules.tsv"
+
 # 9) API genuine error -> failure (1), and the error is CAPTURED for diagnosability.
 _CF_API_RESP='{"success":false,"errors":[{"message":"boom"}]}'
 swatter_cf_block 1.2.3.4 3600 r x.com; check api-error-failed "$?" "1"

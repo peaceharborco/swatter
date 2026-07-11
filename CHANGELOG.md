@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **CF plane-upgrade storm after a Cloudflare perm (pre-release review catch).**
+  A CF TTL-emulated perm was recorded in `plane_blocks` as `kind='temp'`, so
+  `is_perm_on(cloudflare)` was permanently false and `_swatter_perm_gate`
+  re-applied a "plane-upgrade" perm on every subsequent scan the IP appeared in,
+  burning `MAX_BLOCKS_PER_RUN` and starving new offenders (`skipped-cap`). CF
+  perms are now recorded as **expiring perms** (`kind='perm'` with the real
+  sweep expiry): the gate noops while the edge rule is live and legitimately
+  re-blocks a returning offender after the sweep. `is_perm_on`/`active_on` are
+  expiry-aware; true perms (`expires_at=0`, DIRECT/import-bans) are unchanged
+  and can never be shortened by a later temp.
+- **Duplicate Cloudflare creates now reconcile the existing rule instead of
+  trusting it blindly.** On a duplicate response, Swatter looks the existing
+  rule up and (a) refreshes the `cf-rules.tsv` ref to the NEW expiry — else an
+  escalated/perm block was silently swept at the first temp's expiry while the
+  ledger claimed long coverage; (b) recovers a lost ref (failed append /
+  restored state dir) so sweep/unblock keep a handle on the live rule; and
+  (c) refuses to claim a foreign-mode rule (e.g. a manual whitelist for the
+  same IP), recording a self-diagnosing `failed` instead of a phantom block.
+  If the lookup itself fails, the duplicate is trusted (no retry loop).
+- **Metrics warn-once stamp is keyed to the target directory**, so a stamp left
+  by one outage can never suppress the warning for a different misconfigured
+  `METRICS_FILE` path later.
 - **Cloudflare duplicate-rule responses (code 10009) are now idempotent success,
   not `failed`.** The account-scoped IP Access Rules endpoint reports an existing
   rule as error code 10009 `firewallaccessrules.api.duplicate_of_existing`, which

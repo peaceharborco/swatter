@@ -144,13 +144,13 @@ _swatter_apply_plane() {
         # mirroring swatter_store_record's dry_run==0 path. sqlite-only; flatfile no-op.
         # The Cloudflare plane has NO true perm: a CF 'perm' is a TTL-emulated rule
         # (ttl was rewritten to the ladder max above) that swatter_cf_sweep_expired
-        # removes at expiry. Record it as a TEMP with that real lifetime so the
-        # ledger tracks the edge rule's actual life and perm_gate re-blocks a
-        # returning offender after the sweep, instead of claiming a perm the edge
-        # no longer enforces. The DIRECT plane keeps a genuine perm.
-        local ledger_kind="$action"
-        [[ "$channel" == "cloudflare" && "$action" == "perm" ]] && ledger_kind="temp"
-        [[ "${SWATTER_MODE}" == "enforce" ]] && swatter_store_plane_set "$ip" "$channel" "$ledger_kind" "$ttl"
+        # removes at expiry. It is recorded as an EXPIRING perm (kind='perm' with
+        # that real expiry — see swatter_store_plane_set): is_perm_on holds while
+        # the edge rule is live, so perm_gate noops instead of re-applying a
+        # "plane-upgrade" every scan (which burned MAX_BLOCKS_PER_RUN), and lapses
+        # at expiry so a returning offender is legitimately re-blocked after the
+        # sweep. The DIRECT plane's perm passes ttl=0 -> a genuine never-expiring perm.
+        [[ "${SWATTER_MODE}" == "enforce" ]] && swatter_store_plane_set "$ip" "$channel" "$action" "$ttl"
         # Report to AbuseIPDB once per IP: only the primary block (audit_action ==
         # action). An upgrade / dual-plane second leg carries a distinct
         # audit_action, so it records + blocks but does not re-report the same IP.

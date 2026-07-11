@@ -256,31 +256,48 @@ swatter_store_sighting_sweep() {
 # Tracks which enforcement planes (DIRECT csf/ipset, VIA_CF cloudflare) currently
 # hold a block for an IP, so the enforce path can tell perm vs temp and whether a
 # block is still live without re-deriving it from the action ledger.
+# kind=perm with ttl=0 is a TRUE perm (expires_at=0, never lapses: DIRECT/CSF,
+# import-bans). kind=perm with ttl>0 is an EXPIRING perm — the Cloudflare plane's
+# TTL-emulated perm, which really does lapse when swatter_cf_sweep_expired removes
+# the edge rule. Recording it as kind='perm' (not the old kind='temp' rewrite)
+# lets _swatter_perm_gate noop it while the edge rule is live — the old temp
+# rewrite made is_perm_on(cloudflare) permanently false, so every scan re-applied
+# a "plane-upgrade" perm and burned MAX_BLOCKS_PER_RUN. Expiry still governs:
+# once past, is_perm_on/active_on go false and the gate legitimately re-blocks.
 swatter_store_plane_set() {
     local ip="$1" plane="$2" kind="$3" ttl="$4"
     _store_ip_ok "$ip" || return 0
     [[ "${STORE}" == "sqlite" ]] || return 0
     local now exp sip splane skind
     now="$(swatter_now)"
-    if [[ "$kind" == "perm" ]]; then exp=0; else exp=$(( now + ${ttl:-0} )); fi
+    if [[ "$kind" == "perm" && "${ttl:-0}" -eq 0 ]]; then exp=0; else exp=$(( now + ${ttl:-0} )); fi
     sip="$(_sql_escape "$ip")"; splane="$(_sql_escape "$plane")"; skind="$(_sql_escape "$kind")"
+    # Merge rules on conflict: perm beats temp; a true perm (exp=0) on either side
+    # pins expiry to 0; otherwise expiries only ever extend (MAX), so a later
+    # shorter temp can never shorten a live longer block.
     _sql "INSERT INTO plane_blocks(ip,plane,kind,expires_at)
           VALUES('${sip}','${splane}','${skind}',${exp})
           ON CONFLICT(ip,plane) DO UPDATE SET
             kind=CASE WHEN excluded.kind='perm' OR plane_blocks.kind='perm'
                       THEN 'perm' ELSE 'temp' END,
-            expires_at=CASE WHEN excluded.kind='perm' OR plane_blocks.kind='perm'
-                            THEN 0 ELSE MAX(plane_blocks.expires_at, excluded.expires_at) END;"
+            expires_at=CASE
+              WHEN (excluded.kind='perm' AND excluded.expires_at=0)
+                OR (plane_blocks.kind='perm' AND plane_blocks.expires_at=0) THEN 0
+              ELSE MAX(plane_blocks.expires_at, excluded.expires_at) END;"
 }
 
 swatter_store_is_perm_on() {
     local ip="$1" plane="$2"
     _store_ip_ok "$ip" || return 1
     [[ "${STORE}" == "sqlite" ]] || return 1
-    local sip splane n; sip="$(_sql_escape "$ip")"; splane="$(_sql_escape "$plane")"
-    # Fail CLOSED: a DB error yields empty stdout — treat non-numeric as 0 (not
-    # blocked) so the caller re-attempts the block rather than silently skipping.
-    n="$(_sqlq "SELECT COUNT(*) FROM plane_blocks WHERE ip='${sip}' AND plane='${splane}' AND kind='perm';")"
+    local now sip splane n; now="$(swatter_now)"
+    sip="$(_sql_escape "$ip")"; splane="$(_sql_escape "$plane")"
+    # A perm is "on" while in force: forever for a true perm (expires_at=0), until
+    # expiry for a CF TTL-emulated perm. Fail CLOSED: a DB error yields empty
+    # stdout — treat non-numeric as 0 (not blocked) so the caller re-attempts the
+    # block rather than silently skipping.
+    n="$(_sqlq "SELECT COUNT(*) FROM plane_blocks WHERE ip='${sip}' AND plane='${splane}'
+                AND kind='perm' AND (expires_at=0 OR expires_at>${now});")"
     [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 ))
 }
 
@@ -291,7 +308,9 @@ swatter_store_active_on() {
     local now sip splane n; now="$(swatter_now)"
     sip="$(_sql_escape "$ip")"; splane="$(_sql_escape "$plane")"
     # Fail CLOSED on a DB error (empty stdout) — see swatter_store_is_perm_on.
-    n="$(_sqlq "SELECT COUNT(*) FROM plane_blocks WHERE ip='${sip}' AND plane='${splane}' AND (kind='perm' OR expires_at>${now});")"
+    # An expiring perm past its expiry is NOT active (the edge rule was swept).
+    n="$(_sqlq "SELECT COUNT(*) FROM plane_blocks WHERE ip='${sip}' AND plane='${splane}'
+                AND ((kind='perm' AND expires_at=0) OR expires_at>${now});")"
     [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 ))
 }
 

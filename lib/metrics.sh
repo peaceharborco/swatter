@@ -57,7 +57,9 @@ swatter_metrics_write() {
     # shell, so an in-memory latch re-warned every run on a box without
     # node_exporter. The stamp persists the latch across runs and is cleared
     # the moment the dir becomes writable, so a real regression warns again.
-    local stamp="${STATE_DIR}/.metrics-warned"
+    # Keyed to the target dir (cksum), so a stamp left by one outage can never
+    # suppress the warning for a DIFFERENT misconfigured METRICS_FILE path.
+    local stamp="${STATE_DIR}/.metrics-warned.$(printf '%s' "$dir" | cksum | cut -d' ' -f1)"
     if [[ ! -d "$dir" || ! -w "$dir" ]]; then
         if [[ ! -f "$stamp" ]]; then
             log_warn "metrics: ${dir} missing or unwritable; skipping (set METRICS_FILE=\"\" to disable; suppressing this warning until the dir is writable)"
