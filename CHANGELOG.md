@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.2] - 2026-07-17
+
 ### Fixed
 - **A Cloudflare rule whose `cf-rules.tsv` ref fails to persist is no longer a
   silent permanent ban.** The ref is the only handle `swatter_cf_sweep_expired`
