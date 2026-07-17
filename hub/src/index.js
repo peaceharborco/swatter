@@ -23,7 +23,9 @@ async function readBody(request) {
   if (Number.isFinite(clen) && clen > MAX_BODY_BYTES) return { tooLarge: true, body: null };
   let text;
   try { text = await request.text(); } catch { return { tooLarge: false, body: null }; }
-  if (text.length > MAX_BODY_BYTES) return { tooLarge: true, body: null };
+  // Byte length, not char count — a multi-byte body can exceed the cap on the wire
+  // while text.length (UTF-16 code units) stays under it.
+  if (new TextEncoder().encode(text).length > MAX_BODY_BYTES) return { tooLarge: true, body: null };
   try { return { tooLarge: false, body: JSON.parse(text) }; } catch { return { tooLarge: false, body: null }; }
 }
 

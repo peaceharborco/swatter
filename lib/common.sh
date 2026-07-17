@@ -409,22 +409,28 @@ swatter_cidr_list_ok() {
 # configurable; defaults reject anything broader than a /8 (v4) or /16 (v6) — legit
 # DROP netblocks are /9 and smaller, so this only catches poison.
 swatter_intel_cidr_feed_ok() {
-    local line n=0 addr plen min4="${INTEL_FEED_MIN_PREFIX4:-8}" min6="${INTEL_FEED_MIN_PREFIX6:-16}"
+    local line n=0 addr plen o1 min4="${INTEL_FEED_MIN_PREFIX4:-8}" min6="${INTEL_FEED_MIN_PREFIX6:-16}"
     [[ "$min4" =~ ^[0-9]+$ ]] || min4=8
     [[ "$min6" =~ ^[0-9]+$ ]] || min6=16
     while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line%$'\r'}"; line="${line//[[:space:]]/}"
         [[ -z "$line" ]] && continue
         swatter_is_valid_ip_or_cidr "$line" || return 1
-        # Reject an over-broad prefix — this catches /0 (0 < floor) and anything
-        # wider than the floor. NOT keyed on the 0.0.0.0 address: a bogon entry like
-        # 0.0.0.0/8 matches only unroutable space (harmless in a feed), so only the
-        # WIDTH matters here, unlike a block TARGET where the address matters.
         if [[ "$line" == */* ]]; then
             addr="${line%%/*}"; plen="${line#*/}"
             [[ "$plen" =~ ^[0-9]+$ ]] || return 1
-            if [[ "$addr" == *:* ]]; then (( plen < min6 )) && return 1
-            else (( plen < min4 )) && return 1; fi
+            (( plen == 0 )) && return 1   # /0 or ::/0 matches EVERY visitor — poison
+            # The width floor only guards GLOBAL-UNICAST space, where real visitors
+            # live. Bogon / multicast / reserved supernets are broad but can never be
+            # a real visitor's source, so a legit feed legitimately ships them (e.g.
+            # firehol_level1 includes 224.0.0.0/3) — don't reject the feed over them.
+            # v4 global unicast ~ first octet 1-223; v6 global unicast = 2000::/3.
+            if [[ "$addr" == *:* ]]; then
+                case "$addr" in [23]*) (( plen < min6 )) && return 1 ;; esac
+            else
+                o1="${addr%%.*}"
+                [[ "$o1" =~ ^[0-9]+$ ]] && (( o1 >= 1 && o1 <= 223 )) && (( plen < min4 )) && return 1
+            fi
         fi
         n=$(( n + 1 ))
     done

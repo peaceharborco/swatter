@@ -37,9 +37,17 @@ ok() { local g; if printf '%s' "$1" | swatter_intel_cidr_feed_ok; then g=ok; els
 ok $'1.2.3.0/24\n10.0.0.0/9\n' feedok-good        ok
 ok $'1.2.3.4\n'               feedok-bare-ip      ok
 ok $'2001:db8::/32\n'         feedok-v6-ok        ok
+# firehol_level1 legitimately ships broad BOGON / multicast / reserved supernets —
+# these can never be a real visitor's source, so they must be ACCEPTED, not rejected.
+ok $'224.0.0.0/3\n'          feedok-multicast    ok
+ok $'240.0.0.0/4\n'          feedok-reserved     ok
+ok $'0.0.0.0/8\n'            feedok-thisnet      ok
+ok $'fe80::/10\n'           feedok-v6-linklocal ok
+# poison: /0 (everything) and an over-broad GLOBAL-UNICAST range are rejected.
 ok $'0.0.0.0/0\n'             feedok-slash0       no
-ok $'10.0.0.0/6\n'           feedok-broad-v4     no
-ok $'2001:db8::/8\n'         feedok-broad-v6     no
+ok $'::/0\n'                 feedok-v6-slash0    no
+ok $'1.0.0.0/6\n'           feedok-broad-global no
+ok $'2000::/8\n'            feedok-broad-v6     no
 ok $'<html>error</html>\n'   feedok-html         no
 ok ''                        feedok-empty        no
 

@@ -571,9 +571,10 @@ swatter_cf_unblock() {
             rc=1
         fi
     done < "$refs"
-    # Full-file rewrite is safe against a concurrent append: the entrypoint's
-    # flock re-exec (swatter_acquire_lock) serializes every run, so no other
-    # process is appending to cf-rules.tsv while this read+mv runs.
+    # Full-file rewrite is safe against a concurrent append: the scan holds the
+    # entrypoint flock and `swatter unblock` now takes the same lock
+    # (swatter_with_state_lock), so no other process is appending to cf-rules.tsv
+    # while this read+mv runs.
     mv "$keep" "$refs" 2>/dev/null || { rm -f "$keep"; rc=1; }
     (( rc )) && SWATTER_LAST_BACKEND_ERR="cloudflare rule delete failed (ref kept; retry unblock or wait for the expiry sweep)"
     return "$rc"
