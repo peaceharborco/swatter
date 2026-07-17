@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`import-bans` no longer stops at the per-run deny cap.** It routed through the
+  same `MAX_CSF_DENIES_PER_RUN` throttle as the scan (default 10), so importing more
+  than 10 bans silently dropped the rest. A deliberate operator import now lifts the
+  cap (never-block still protects the allowlist; the applied count is logged).
+- **`swatter top -n` validates its argument** — it was interpolated into a SQL
+  `LIMIT` unchecked; a non-integer now errors instead of corrupting the query.
+- **Stale SMS-grade config is surfaced.** Statuses became traffic-light
+  (RED/YELLOW/GREEN) in v2.8, so a pre-2.8 `ALERT_SMS_GRADES` (e.g. `"D F"`) matched
+  nothing and SMS silently never fired; the alert path now warns.
 - **Turning Cloudflare off no longer strands live CF rules.** `swatter_cf_unblock`
   and `swatter_cf_sweep_expired` bailed on `swatter_cf_manages_plane` before looking
   at `cf-rules.tsv`, so flipping `CF_MODE=off` (or an `auto` box that stopped being

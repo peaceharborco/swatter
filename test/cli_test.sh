@@ -61,6 +61,34 @@ EOF
     rm -rf "$s2" "$c2"
 fi
 
+# `swatter top -n` must reject a non-numeric N (it is interpolated into SQL LIMIT).
+bash "${ROOT}/bin/swatter" top -n 'abc; DROP' >/dev/null 2>"$state/toperr"; rc=$?
+[[ $rc -ne 0 ]] && PASS=$((PASS+1)) || { echo "FAIL top-n-nonnumeric-rejected"; FAIL=$((FAIL+1)); }
+bash "${ROOT}/bin/swatter" top -n 5 >/dev/null 2>&1 && PASS=$((PASS+1)) || { echo "FAIL top-n-numeric-ok"; FAIL=$((FAIL+1)); }
+
+# import-bans is a deliberate bulk op — it must NOT be truncated by the per-run
+# deny cap (default 10). With a fake csf on PATH + enforce, importing 12 IPs must
+# apply all 12. (Skip if a real csf is installed so we never shadow it.)
+if ! command -v csf >/dev/null 2>&1; then
+    fakebin="$(mktemp -d "${TMPDIR:-/tmp}/swatter-fakecsf.XXXXXX")"
+    printf '#!/bin/sh\nexit 0\n' > "$fakebin/csf"; chmod +x "$fakebin/csf"
+    s3="$(mktemp -d "${TMPDIR:-/tmp}/swatter-imp.XXXXXX")"; c3="$(mktemp)"; mkdir -p "$s3/log"
+    cat > "$c3" <<EOF
+STATE_DIR="$s3"
+LOG_DIR="$s3/log"
+STORE="flatfile"
+SWATTER_NO_LOCK=1
+DIRECT_BACKEND="csf"
+CF_MODE="off"
+INTEL_PROVIDERS=""
+EOF
+    : > "$s3/bans.txt"; for i in $(seq 1 12); do printf '203.0.113.%d\n' "$i" >> "$s3/bans.txt"; done
+    PATH="$fakebin:$PATH" SWATTER_MODE=enforce SWATTER_CONF="$c3" bash "${ROOT}/bin/swatter" import-bans "$s3/bans.txt" 2>"$s3/err" >/dev/null
+    applied="$(sed -n 's/.*: \([0-9]*\) ban(s) applied.*/\1/p' "$s3/err")"
+    [[ "$applied" == "12" ]] && PASS=$((PASS+1)) || { echo "FAIL import-bans-cap-bypass (applied='${applied}' want 12)"; FAIL=$((FAIL+1)); }
+    rm -rf "$fakebin" "$s3" "$c3"
+fi
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

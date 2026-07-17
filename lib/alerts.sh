@@ -64,6 +64,13 @@ swatter_alert_on_grade() {
 
     local grade="${RPT_GRADE:-GREEN}"
     if (( ! test_mode )); then
+        # Surface a stale grade config: statuses are traffic-light (RED/YELLOW/GREEN)
+        # since v2.8. A pre-2.8 A–F value (e.g. "D F") matches nothing, so SMS would
+        # silently never fire — warn rather than fail quiet.
+        case " ${ALERT_SMS_GRADES:-RED} " in
+            *" RED "*|*" YELLOW "*|*" GREEN "*) ;;
+            *) log_warn "alerts: ALERT_SMS_GRADES='${ALERT_SMS_GRADES:-}' matches no status (RED/YELLOW/GREEN) — SMS alerting will never fire (stale A–F config?)" ;;
+        esac
         # Only the configured statuses trigger.
         case " ${ALERT_SMS_GRADES:-RED} " in *" ${grade} "*) ;; *) return 0 ;; esac
         # Dedup: same status already alerted within the window? The marker is NOT

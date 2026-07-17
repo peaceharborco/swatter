@@ -117,7 +117,11 @@ cmd_status() {
 
 cmd_top() {
     local n=20
-    [[ "${1:-}" == "-n" && -n "${2:-}" ]] && n="$2"
+    # -n must be a positive integer — it is interpolated into a SQL LIMIT.
+    if [[ "${1:-}" == "-n" ]]; then
+        [[ "${2:-}" =~ ^[0-9]+$ ]] || die "usage: swatter top [-n N]  (N must be a positive integer)"
+        n="$2"
+    fi
     swatter_store_init
     printf '%-18s %5s %5s %5s %4s %-11s %s\n' "IP" "SCORE" "OFFN" "TEMP" "PERM" "CHANNEL" "LAST"
     swatter_store_top_offenders "$n" | while IFS=$'\t' read -r ip sc off tmp perm ch label; do
@@ -436,6 +440,11 @@ cmd_import_bans() {
     local line ip nb n=0 dry
     dry="$([[ "${SWATTER_MODE}" == "enforce" ]] && echo 0 || echo 1)"
     local channel="${DIRECT_BACKEND:-csf}"
+    # A deliberate operator import is NOT a scan — the per-run deny cap
+    # (MAX_CSF_DENIES_PER_RUN, a scan runaway-guard) must not silently truncate it
+    # at 10. Lift it for this process so every listed ban applies; never_block still
+    # protects the allowlist, and the applied count is logged below.
+    MAX_CSF_DENIES_PER_RUN=1000000
     # `|| [[ -n "$line" ]]` so a bans file whose LAST line has no trailing newline
     # still imports that ban instead of silently dropping it.
     while IFS= read -r line || [[ -n "$line" ]]; do

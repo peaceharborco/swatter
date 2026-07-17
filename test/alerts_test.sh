@@ -106,6 +106,18 @@ check twilio-fail-body "$(grep -c 'Authentication Error' "$ERR")" "1"
 check twilio-fail-redacted "$(grep -c 's3cret' "$ERR")" "0"
 unset -f curl
 
+# A stale A–F grade config (pre-2.8) matches no traffic-light status, so SMS can
+# never fire — warn instead of failing silent, and send nothing. (Set method/to
+# inline so the alerting-configured gate is satisfied regardless of prior tests.)
+: > "$SENT"
+warn_out="$(ALERT_SMS_METHOD=twilio ALERT_SMS_TO='+15550001111' ALERT_SMS_GRADES="D F" RPT_GRADE=RED swatter_alert_on_grade 2>&1)"
+check stale-grades-warns "$(printf '%s\n' "$warn_out" | grep -c 'never fire')" "1"
+check stale-grades-nosend "$(nsent)" "0"
+# A valid traffic-light config does NOT warn.
+: > "$SENT"; NOW=2000000
+warn_ok="$(ALERT_SMS_METHOD=twilio ALERT_SMS_TO='+15550001111' ALERT_SMS_GRADES="RED" RPT_GRADE=YELLOW swatter_alert_on_grade 2>&1)"
+check valid-grades-nowarn "$(printf '%s\n' "$warn_ok" | grep -c 'never fire')" "0"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
