@@ -48,11 +48,16 @@ _listfeed_refresh() {
         cidr)    parse='/^[0-9]/{print $1}' ;;
         dshield) parse='/^[0-9]/ && $3>=0 && $3<=32 {print $1"/"$3}' ;;
     esac
-    if curl --max-time 30 -fsS "$url" 2>/dev/null | awk "$parse" > "${out}.tmp" 2>/dev/null && [[ -s "${out}.tmp" ]]; then
+    # CIDR feeds pass through the strict intel validator (reject invalid / over-broad
+    # entries like 0.0.0.0/0 that would score every visitor 100); ip feeds are single
+    # addresses, no over-broad risk. On rejection the last-good "$out" is kept.
+    if curl --max-time 30 -fsS "$url" 2>/dev/null | awk "$parse" > "${out}.tmp" 2>/dev/null \
+        && [[ -s "${out}.tmp" ]] \
+        && { [[ "$kind" == "ip" ]] || swatter_intel_cidr_feed_ok < "${out}.tmp"; }; then
         mv "${out}.tmp" "$out"
         log_info "${name} feed refreshed ($(wc -l < "$out" 2>/dev/null | tr -d ' ') entries)"
     else
-        rm -f "${out}.tmp" 2>/dev/null; log_warn "${name} feed download failed"; return 1
+        rm -f "${out}.tmp" 2>/dev/null; log_warn "${name} feed download failed or rejected (invalid/over-broad CIDR) — keeping last good"; return 1
     fi
 }
 

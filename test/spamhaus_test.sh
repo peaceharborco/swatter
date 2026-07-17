@@ -25,6 +25,24 @@ check sh-lookup "$(provider_spamhaus 1.10.16.5 | cut -f1)" "100"
 # no SPAMHAUS_EDROP_URL variable should remain
 [[ -z "${SPAMHAUS_EDROP_URL:-}" ]] && PASS=$((PASS+1)) || { echo "FAIL sh-edrop-var-gone"; FAIL=$((FAIL+1)); }
 
+# A POISONED feed (0.0.0.0/0 present) is rejected; the last-good file survives so a
+# MITM'd drop.txt can't score every visitor 100 and mass-ban innocents.
+curl() { printf '%s' $'0.0.0.0/0 ; SBLX\n5.5.5.0/24 ; SBLY\n'; }
+provider_spamhaus_refresh; check sh-poison-rejected "$?" "1"
+check sh-poison-kept-lastgood "$(grep -c . "$STATE_DIR/feeds/spamhaus.cidr")" "2"
+check sh-poison-no-zero       "$(grep -c '0.0.0.0/0' "$STATE_DIR/feeds/spamhaus.cidr")" "0"
+
+# swatter_intel_cidr_feed_ok unit checks.
+ok() { local g; if printf '%s' "$1" | swatter_intel_cidr_feed_ok; then g=ok; else g=no; fi; check "$2" "$g" "$3"; }
+ok $'1.2.3.0/24\n10.0.0.0/9\n' feedok-good        ok
+ok $'1.2.3.4\n'               feedok-bare-ip      ok
+ok $'2001:db8::/32\n'         feedok-v6-ok        ok
+ok $'0.0.0.0/0\n'             feedok-slash0       no
+ok $'10.0.0.0/6\n'           feedok-broad-v4     no
+ok $'2001:db8::/8\n'         feedok-broad-v6     no
+ok $'<html>error</html>\n'   feedok-html         no
+ok ''                        feedok-empty        no
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **Intel CIDR feeds now reject over-broad entries.** Spamhaus DROP and the
+  keyless list feeds (firehol/cins/dshield/…) were installed with no validation,
+  so a MITM'd or poisoned feed line like `0.0.0.0/0` would match every visitor,
+  score them 100 (hard-intel), and mass-ban innocents (with AbuseIPDB + swarm
+  amplification). A new `swatter_intel_cidr_feed_ok` gate rejects the whole feed
+  (keeping the last-good file) if any line is not a valid IP/CIDR or is broader
+  than `INTEL_FEED_MIN_PREFIX4` (default /8) / `INTEL_FEED_MIN_PREFIX6` (/16) —
+  legit DROP netblocks are /9 or smaller, so only abuse is caught. Wired into the
+  spamhaus and listfeeds refresh paths.
+
 ## [2.9.2] - 2026-07-17
 
 ### Fixed

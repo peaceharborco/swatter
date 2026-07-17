@@ -13,13 +13,16 @@ provider_spamhaus_refresh() {
     local out="${STATE_DIR}/feeds/spamhaus.cidr"
     [[ "${SWATTER_HAVE_CURL}" -eq 1 ]] || { log_warn "spamhaus refresh needs curl"; return 1; }
     curl --max-time 30 -fsS "${SPAMHAUS_DROP_URL}" > "${out}.raw" 2>/dev/null
+    # Reject the feed if any line is invalid or dangerously broad (a poisoned
+    # 0.0.0.0/0 would score every visitor 100 -> mass false-positive bans). On
+    # rejection the last-good "$out" is left untouched.
     if awk '/^[0-9]/{print $1}' "${out}.raw" > "${out}.tmp" 2>/dev/null \
-        && [[ -s "${out}.tmp" ]]; then
+        && [[ -s "${out}.tmp" ]] && swatter_intel_cidr_feed_ok < "${out}.tmp"; then
         sort -u "${out}.tmp" > "$out"; rm -f "${out}.raw" "${out}.tmp"
         log_info "spamhaus feed refreshed ($(wc -l < "$out" 2>/dev/null | tr -d ' ') CIDRs)"
     else
         rm -f "${out}.raw" "${out}.tmp" 2>/dev/null
-        log_warn "spamhaus feed download failed"; return 1
+        log_warn "spamhaus feed download failed or rejected (invalid/over-broad CIDR) — keeping last good"; return 1
     fi
 }
 

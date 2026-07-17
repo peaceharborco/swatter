@@ -142,6 +142,12 @@ CF_DOMAINS_MAP="/etc/swatter/cf-domains.map"
 SWATTER_HTTPD_CF_GLOB="/etc/apache2/conf.d/*.conf /etc/apache2/conf.modules.d/*.conf /usr/local/apache/conf/includes/*.conf"
 
 : "${INTEL_PROVIDERS:=ipsum spamhaus abuseipdb greynoise projecthoneypot firehol_level1 blocklist_de cins greensnow dshield et_compromised}"
+# Reject an intel CIDR feed (Spamhaus/listfeeds) whose entries are broader than
+# these prefixes — poison/MITM guard against a 0.0.0.0/0-style line scoring every
+# visitor as hard-intel. Legit DROP netblocks are /9 or smaller, so /8 v4 / /16 v6
+# only catches abuse. See swatter_intel_cidr_feed_ok.
+INTEL_FEED_MIN_PREFIX4=8
+INTEL_FEED_MIN_PREFIX6=16
 : "${ABUSEIPDB_BLOCKLIST_CONFIDENCE:=90}"
 ABUSEIPDB_KEY=""
 ABUSEIPDB_DAILY_QUOTA=1000
@@ -389,6 +395,37 @@ swatter_cidr_list_ok() {
         line="${line%$'\r'}"; line="${line//[[:space:]]/}"
         [[ -z "$line" ]] && continue
         swatter_is_valid_ip_or_cidr "$line" || return 1
+        n=$(( n + 1 ))
+    done
+    (( n > 0 ))
+}
+
+# Stricter validator for a downloaded INTEL CIDR feed (Spamhaus DROP, listfeeds
+# cidr/dshield): stdin must be non-empty and EVERY line a valid IP/CIDR that is
+# NOT dangerously broad. An intel match scores the IP as hard-intel and blocks it,
+# so a poisoned / MITM'd feed line like 0.0.0.0/0 — or a huge ISP block — would
+# score every visitor 100 and mass-ban innocents. Rejects the WHOLE feed (return 1)
+# on any invalid or over-broad line so refresh keeps the last-good file. Floors are
+# configurable; defaults reject anything broader than a /8 (v4) or /16 (v6) — legit
+# DROP netblocks are /9 and smaller, so this only catches poison.
+swatter_intel_cidr_feed_ok() {
+    local line n=0 addr plen min4="${INTEL_FEED_MIN_PREFIX4:-8}" min6="${INTEL_FEED_MIN_PREFIX6:-16}"
+    [[ "$min4" =~ ^[0-9]+$ ]] || min4=8
+    [[ "$min6" =~ ^[0-9]+$ ]] || min6=16
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"; line="${line//[[:space:]]/}"
+        [[ -z "$line" ]] && continue
+        swatter_is_valid_ip_or_cidr "$line" || return 1
+        # Reject an over-broad prefix — this catches /0 (0 < floor) and anything
+        # wider than the floor. NOT keyed on the 0.0.0.0 address: a bogon entry like
+        # 0.0.0.0/8 matches only unroutable space (harmless in a feed), so only the
+        # WIDTH matters here, unlike a block TARGET where the address matters.
+        if [[ "$line" == */* ]]; then
+            addr="${line%%/*}"; plen="${line#*/}"
+            [[ "$plen" =~ ^[0-9]+$ ]] || return 1
+            if [[ "$addr" == *:* ]]; then (( plen < min6 )) && return 1
+            else (( plen < min4 )) && return 1; fi
+        fi
         n=$(( n + 1 ))
     done
     (( n > 0 ))
