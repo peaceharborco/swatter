@@ -17,6 +17,11 @@ workers_dev = true
 SWARM_TTL = "604800"
 MAX_ENTRIES = "1000"
 FEED_MAX = "50000"
+# Legacy shared-write-token path RETIRED 2026-07-17 (whole fleet migrated to per-host
+# tokens). After this unix ts the hub refuses SWARM_WRITE_TOKEN writes entirely; only
+# per-host tokens work. Bump/remove only to re-open the compat window for a NEW
+# un-migrated host, then re-close it after that host enrolls.
+SWARM_LEGACY_WRITE_UNTIL = "1784309631"
 
 [[d1_databases]]
 binding = "DB"
