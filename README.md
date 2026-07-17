@@ -395,8 +395,15 @@ default — opt in deliberately.
 
 ```bash
 ABUSEIPDB_REPORT="true"
-ABUSEIPDB_REPORT_TTL=900   # don't re-report the same IP within N seconds
+ABUSEIPDB_REPORT_TTL=900              # don't re-report the same IP within N seconds
+ABUSEIPDB_REPORT_MIN_ACTION="perm"    # report only high-confidence perm bans (default);
+                                      # a first-seen temp is never reported outward
 ```
+
+Only **permanent** bans are reported by default (`ABUSEIPDB_REPORT_MIN_ACTION`) —
+a first-seen temp block or a fleet-corroborated temp is a lower-confidence signal,
+so it's kept off the wire rather than pushed as reputational harm to a third party.
+Set `"temp"` to report temps too.
 
 `swatter test-config` shows whether reporting is on and warns if `ABUSEIPDB_KEY`
 is unset (reporting would be inert).
@@ -535,11 +542,15 @@ All the knobs live in `/etc/swatter/swatter.conf`:
   (`0.0.0.0`, `::`) is never blocked, even from an untrusted `import-bans` file.
 - **Full audit + appeal.** `swatter why <ip>` shows exactly what triggered a block;
   `swatter unblock <ip> [--perm-allow]` reverses it on both planes.
-- **Failures are loud, never silent.** A block or unblock that a backend
-  rejects is recorded as such — failed blocks carry the backend's actual error
-  in the decision record (`evidence.backend_err`), and `unblock` exits nonzero
-  with an `INCOMPLETE` message if any plane's removal failed, instead of
-  printing a false "unblocked" while a rule is still live.
+- **Failures are loud, never silent — and retried.** A block or unblock that a
+  backend rejects is recorded as such — failed blocks carry the backend's actual
+  error in the decision record (`evidence.backend_err`), and `unblock` exits
+  nonzero with an `INCOMPLETE` message if any plane's removal failed, instead of
+  printing a false "unblocked" while a rule is still live. A block that hits a
+  *transient* backend error (a Cloudflare API blip, a `csf` hiccup) is queued and
+  **durably retried** on later scans — so a short-lived offender whose evidence
+  has already scrolled out of the log window still gets blocked, rather than
+  slipping through because the one attempt happened to fail.
 
 ---
 
