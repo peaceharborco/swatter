@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.3] - 2026-07-17
+
 ### Fixed
 - **`notify.sh` supports a Twilio Messaging Service SID.** The generic notifier
   always sent `From=`, so a `TWILIO_FROM` of `MG…` (a Messaging Service, which
