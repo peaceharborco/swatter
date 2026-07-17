@@ -148,6 +148,8 @@ cmd_unblock() {
     [[ -n "$ip" ]] || die "usage: swatter unblock IP [--perm-allow]"
     swatter_validate_ip_or_cidr "$ip"
     [[ "${2:-}" == "--perm-allow" ]] && perm_allow=1
+    # Serialize with a running scan — unblock rewrites cf-rules.tsv + the ledger.
+    swatter_with_state_lock || die "a swatter scan is running (lock held) — try again in a moment"
     swatter_store_init
     # A backend failure must surface: nonzero exit + cause, never a false
     # "unblocked" while a deny/CF rule is still live. The ledger is still
@@ -266,8 +268,14 @@ cmd_refresh_feeds() {
     swatter_intel_refresh_all || rc=1
 
     # Corroborated-block sweep (opt-in): acts on the JUST-refreshed swarm meta,
-    # entirely through _swatter_execute_block. No-op unless configured.
-    swatter_swarm_sweep || true
+    # entirely through _swatter_execute_block. No-op unless configured. Serialize
+    # with a running scan; if a scan holds the lock, SKIP (non-fatal — feeds already
+    # refreshed, and the sweep is idempotent next run) rather than fail the cron.
+    if swatter_with_state_lock 30; then
+        swatter_swarm_sweep || true
+    else
+        log_warn "swarm sweep skipped: a scan holds the state lock (retries next refresh)"
+    fi
 
     # Re-run Cloudflare posture detection now that ranges are fresh. Only matters
     # for CF_MODE=auto, but caching it always keeps `status`/`test-config`
@@ -412,6 +420,9 @@ cmd_export_bans() {
 cmd_import_bans() {
     local file="${1:-}"
     [[ -f "$file" ]] || die "usage: swatter import-bans <file>"
+    # Serialize with a running scan — import-bans applies firewall denies + writes
+    # the ledger. Wait longer than unblock: a large file can take a while.
+    swatter_with_state_lock 60 || die "a swatter scan is running (lock held) — try again in a moment"
     # Like cmd_scan: import-bans WRITES the ledger (records each ban). A broken
     # store would firewall-block without recording — the exact divergence we guard
     # against — so abort before applying any block rather than leave untracked denies.
@@ -419,7 +430,9 @@ cmd_import_bans() {
     local line ip nb n=0 dry
     dry="$([[ "${SWATTER_MODE}" == "enforce" ]] && echo 0 || echo 1)"
     local channel="${DIRECT_BACKEND:-csf}"
-    while IFS= read -r line; do
+    # `|| [[ -n "$line" ]]` so a bans file whose LAST line has no trailing newline
+    # still imports that ban instead of silently dropping it.
+    while IFS= read -r line || [[ -n "$line" ]]; do
         ip="${line%%#*}"; ip="$(printf '%s' "$ip" | tr -d '[:space:]')"
         [[ -n "$ip" ]] || continue
         swatter_is_valid_ip_or_cidr "$ip" 2>/dev/null || { log_warn "import-bans: skip invalid '${ip}'"; continue; }

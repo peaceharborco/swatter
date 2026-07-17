@@ -518,6 +518,23 @@ swatter_acquire_lock() {
     fi
 }
 
+# Blocking state lock for a mutating operator command (unblock, import-bans, the
+# swarm sweep) so it cannot race the */5 scan on cf-rules.tsv / the sqlite ledger /
+# the firewall. Takes the SAME lock file the scan's non-blocking flock re-exec
+# uses, so the two are mutually exclusive. Blocks up to <wait>s (default 30) for a
+# running scan to finish; RETURNS non-zero if it still can't get the lock so the
+# caller decides whether to die (operator mutation) or skip (opt-in sweep). No-op
+# (rc 0) if SWATTER_NO_LOCK=1 or flock is unavailable (e.g. a macOS dev box — tests
+# run single-threaded). Uses a fixed fd (9), held until the process exits, for bash
+# 3.2 portability (no dynamic {fd} assignment).
+swatter_with_state_lock() {
+    [[ "${SWATTER_NO_LOCK:-}" == "1" ]] && return 0
+    have flock || return 0
+    local wait="${1:-30}"; [[ "$wait" =~ ^[0-9]+$ ]] || wait=30
+    exec 9>"${STATE_DIR}/.lock" 2>/dev/null || return 0
+    flock -w "$wait" 9
+}
+
 # now_epoch is captured once per process and reused everywhere.
 swatter_now() { printf '%s' "${SWATTER_NOW_EPOCH:-$(date -u +%s)}"; }
 

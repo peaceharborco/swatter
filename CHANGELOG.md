@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`unblock`, `import-bans`, and the swarm sweep now serialize with a running
+  scan.** The `flock` re-exec was only taken by `swatter scan`, so an operator
+  `unblock`/`import-bans` (or the daily `refresh-feeds` swarm sweep) could run
+  concurrently with a `*/5` scan and clobber `cf-rules.tsv`, diverge the sqlite
+  ledger from the firewall, or double-apply a deny. A new `swatter_with_state_lock`
+  takes the same lock file (blocking, bounded wait); operator commands die with a
+  "try again" message if a scan holds it, the opt-in sweep skips (non-fatal). No-op
+  where `flock` is absent (macOS dev boxes).
+- **`import-bans` no longer drops the last ban** when the bans file's final line
+  has no trailing newline (missing `read` EOF guard).
+
 ### Security
 - **Intel CIDR feeds now reject over-broad entries.** Spamhaus DROP and the
   keyless list feeds (firehol/cins/dshield/…) were installed with no validation,
