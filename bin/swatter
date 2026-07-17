@@ -200,8 +200,14 @@ cmd_allow() {
 cmd_list() {
     local what="${1:-temp}"
     case "$what" in
-        temp) have csf && csf -t 2>/dev/null | grep -i swatter || echo "(none / csf unavailable)";;
-        perm) have csf && grep -i swatter /etc/csf/csf.deny 2>/dev/null || echo "(none)";;
+        temp) case "${DIRECT_BACKEND:-csf}" in
+                ipset) swatter_ipset_list temp ;;
+                *)     have csf && csf -t 2>/dev/null | grep -i swatter || echo "(none / csf unavailable)" ;;
+              esac ;;
+        perm) case "${DIRECT_BACKEND:-csf}" in
+                ipset) swatter_ipset_list perm ;;
+                *)     have csf && grep -i swatter /etc/csf/csf.deny 2>/dev/null || echo "(none)" ;;
+              esac ;;
         allow)
             echo "# never-block (${OPERATOR_ALLOW_FILE}):"
             [[ -s "${OPERATOR_ALLOW_FILE}" ]] && grep -v '^#' "${OPERATOR_ALLOW_FILE}" || echo "(none)"

@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`swatter list temp|perm` now works on ipset-backend boxes.** It only ever
+  queried csf, so an `ipset` deployment saw `(none)` regardless of live blocks. It
+  now dispatches on `DIRECT_BACKEND` and lists the `swatter4`/`swatter6` set members
+  (split temp vs perm by timeout) via a new `swatter_ipset_list`.
+- **Cloudflare creds/domains files load their last line without a trailing
+  newline.** `_cf_load`'s `read` loops lacked the EOF guard, so a hand-edited
+  one-line `cloudflare.creds` (or an unterminated last account) was silently
+  dropped, disabling blocks for that account.
 - **`unblock`, `import-bans`, and the swarm sweep now serialize with a running
   scan.** The `flock` re-exec was only taken by `swatter scan`, so an operator
   `unblock`/`import-bans` (or the daily `refresh-feeds` swarm sweep) could run

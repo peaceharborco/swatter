@@ -116,6 +116,28 @@ check save-fail-file-intact "$(cat "$IPSET_SAVE_FILE")" "PRIOR-PERM-BANS"
 # restore the recording mock.
 ipset() { if [[ "$1" == "save" ]]; then echo "ipset $*" >> "$CALLS"; echo "create $2 hash:ip"; else echo "ipset $*" >> "$CALLS"; fi; return 0; }
 
+# (m28) swatter_ipset_list: temp = members with a positive timeout, perm = members
+# without one — so `swatter list temp|perm` works on ipset-backend boxes.
+ipset() {
+    if [[ "$1" == "list" ]]; then
+        case "$2" in
+            swatter4) printf 'Name: swatter4\nType: hash:ip\nMembers:\n1.2.3.4 timeout 3599\n5.6.7.8\n' ;;
+            swatter6) printf 'Name: swatter6\nType: hash:ip\nMembers:\n2001:db8::1 timeout 120\n' ;;
+        esac
+    fi
+    return 0
+}
+tmp_out="$(swatter_ipset_list temp)"
+check ipslist-temp-has-live  "$(printf '%s\n' "$tmp_out" | grep -c '1.2.3.4 timeout 3599')" "1"
+check ipslist-temp-has-v6    "$(printf '%s\n' "$tmp_out" | grep -c '2001:db8::1 timeout 120')" "1"
+check ipslist-temp-no-perm   "$(printf '%s\n' "$tmp_out" | grep -c '5.6.7.8')" "0"
+perm_out="$(swatter_ipset_list perm)"
+check ipslist-perm-has-perm  "$(printf '%s\n' "$perm_out" | grep -c '^5.6.7.8$')" "1"
+check ipslist-perm-no-temp   "$(printf '%s\n' "$perm_out" | grep -c 'timeout 3599')" "0"
+# empty sets -> friendly placeholder, not blank.
+ipset() { [[ "$1" == "list" ]] && printf 'Name: swatter4\nMembers:\n'; return 0; }
+check ipslist-empty "$(swatter_ipset_list temp)" "(none / ipset unavailable)"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

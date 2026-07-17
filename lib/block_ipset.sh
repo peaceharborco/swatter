@@ -13,6 +13,22 @@ SWATTER_IPSET_DENIES_THIS_RUN=0
 
 _ipset_set_for() { [[ "$1" == *:* ]] && printf '%s' "${SWATTER_IPSET_V6}" || printf '%s' "${SWATTER_IPSET_V4}"; }
 
+# List swatter's ipset members for `swatter list temp|perm` on ipset-backend boxes
+# (cmd_list otherwise only knows csf). A live temp block carries a positive
+# timeout; a perm block has none (added timeout 0). Emits one member per line
+# across both v4/v6 sets.
+#   swatter_ipset_list <temp|perm>
+swatter_ipset_list() {
+    local kind="${1:-temp}" set out
+    out="$(for set in "${SWATTER_IPSET_V4}" "${SWATTER_IPSET_V6}"; do
+        ipset list "$set" 2>/dev/null | awk 'inbody{print} /^Members:/{inbody=1}'
+    done)"
+    if [[ "$kind" == "perm" ]]; then out="$(printf '%s\n' "$out" | grep -Ev 'timeout [1-9]')"
+    else                             out="$(printf '%s\n' "$out" | grep -E  'timeout [1-9]')"; fi
+    out="$(printf '%s\n' "$out" | grep .)"
+    [[ -n "$out" ]] && printf '%s\n' "$out" || echo "(none / ipset unavailable)"
+}
+
 _ipset_save() {
     # Save ONLY our two sets by name — a bare `ipset save` dumps EVERY set on the
     # box (CSF/fail2ban also use ipset), which the documented boot-restore would

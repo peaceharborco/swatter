@@ -48,14 +48,16 @@ _cf_load() {
     _CF_LOADED=1
     if [[ -r "${CF_CREDS_FILE:-/etc/swatter/cloudflare.creds}" ]]; then
         local acct tok
-        while IFS=$'\t ' read -r acct tok _; do
+        # `|| [[ -n "$acct" ]]` so a creds file whose LAST line has no trailing
+        # newline still loads that account (else the last token is silently dropped).
+        while IFS=$'\t ' read -r acct tok _ || [[ -n "$acct" ]]; do
             [[ -z "$acct" || "${acct:0:1}" == "#" || -z "$tok" ]] && continue
             _CF_TOKEN["$acct"]="$tok"
         done < "${CF_CREDS_FILE:-/etc/swatter/cloudflare.creds}"
     fi
     if [[ -r "${CF_DOMAINS_MAP:-/etc/swatter/cf-domains.map}" ]]; then
         local dom ac
-        while IFS=$'\t ' read -r dom ac _; do
+        while IFS=$'\t ' read -r dom ac _ || [[ -n "$dom" ]]; do
             [[ -z "$dom" || "${dom:0:1}" == "#" || -z "$ac" ]] && continue
             _CF_ACCT_OF_DOMAIN["$dom"]="$ac"
         done < "${CF_DOMAINS_MAP:-/etc/swatter/cf-domains.map}"
