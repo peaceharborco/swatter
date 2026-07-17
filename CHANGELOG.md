@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.4] - 2026-07-17
+
 ### Security
 - **Swarm hub: per-host write tokens (was a shared write token + client-chosen
   `host_id`).** Any `SWARM_WRITE_TOKEN` holder could publish as ANY enrolled host —
