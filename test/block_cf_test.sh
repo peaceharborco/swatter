@@ -253,6 +253,21 @@ check sweep-future-kept         "$(grep -c $'^2.2.2.2\t' "$refs")" "1"
 check sweep-expired-gone        "$(grep -c $'\tEXPIRED\t' "$refs")" "0"
 check sweep-legacy-gone         "$(grep -c 'LEGACY' "$refs")" "0"
 
+# CF turned OFF (manages_plane false) must still sweep/unblock recorded rules —
+# otherwise a rule created while CF was on is stranded forever.
+swatter_cf_manages_plane() { return 1; }
+printf '4.4.4.4\tzone\tZ4\tEXP4\t1\n' > "$refs"; : > "$_swept"
+swatter_cf_sweep_expired
+check sweep-modeoff-deleted "$(grep -c '^EXP4$' "$_swept")" "1"
+check sweep-modeoff-gone    "$(grep -c 'EXP4' "$refs")" "0"
+# unblock likewise (delete stubbed to succeed).
+printf '4.4.4.4\tzone\tZ4\tRID4\t999999999\n' > "$refs"
+_cf_delete_ref() { return 0; }
+swatter_cf_unblock 4.4.4.4; check unblock-modeoff-rc "$?" "0"
+check unblock-modeoff-gone "$(grep -c '4.4.4.4' "$refs")" "0"
+swatter_cf_manages_plane() { return 0; }   # restore
+_cf_delete_ref() { printf '%s\n' "$3" >> "$_swept"; return 0; }
+
 # ---- _cf_load_accounts: all-or-retry, pagination, cache staleness ----------
 # A) token A resolves OK, token B fails -> non-zero AND no cache written (a
 #    partial map must never be baked in — it would mark IPs handled while a whole

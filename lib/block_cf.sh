@@ -547,8 +547,11 @@ _cf_delete_ref() {
 # file), while the operator walks away believing the IP is clear.
 swatter_cf_unblock() {
     local ip="$1" refs="${STATE_DIR}/cf-rules.tsv" rc=0
-    swatter_cf_manages_plane || return 0
-    [[ -f "$refs" ]] || return 0
+    # Clean up recorded CF rules regardless of the CURRENT CF_MODE: a rule created
+    # while CF was active must stay unblockable even after CF is turned off, or it
+    # is stranded (an unremovable edge ban). Gate on refs existing, not on the plane
+    # being currently managed. No creds -> _cf_delete_ref fails and the ref is kept.
+    [[ -f "$refs" && -s "$refs" ]] || return 0
     _cf_load
     local keep
     keep="$(mktemp "${TMPDIR:-/tmp}/swatter-cfrules.XXXXXX")" \
@@ -578,9 +581,12 @@ swatter_cf_unblock() {
 
 # Sweep expired Swatter access rules (TTL emulation) using recorded refs.
 swatter_cf_sweep_expired() {
-    swatter_cf_manages_plane || return 0
+    # Sweep recorded rules regardless of the CURRENT CF_MODE — a TTL promised when
+    # CF was active must still be honoured after CF is turned off, or the rule is
+    # stranded (a permanent edge ban). Gate on refs existing, not on the plane being
+    # managed. No creds -> _cf_delete_ref fails and the ref is kept for a later run.
     local refs="${STATE_DIR}/cf-rules.tsv"
-    [[ -f "$refs" ]] || return 0
+    [[ -f "$refs" && -s "$refs" ]] || return 0
     [[ "${SWATTER_HAVE_JQ}" -eq 1 && "${SWATTER_HAVE_CURL}" -eq 1 ]] || return 0
     _cf_load
     local now; now="$(swatter_now)"

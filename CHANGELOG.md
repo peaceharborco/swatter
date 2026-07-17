@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Turning Cloudflare off no longer strands live CF rules.** `swatter_cf_unblock`
+  and `swatter_cf_sweep_expired` bailed on `swatter_cf_manages_plane` before looking
+  at `cf-rules.tsv`, so flipping `CF_MODE=off` (or an `auto` box that stopped being
+  CF-fronted) left every recorded rule un-swept and un-unblockable — a permanent
+  edge ban. Cleanup of already-created rules is independent of the current mode, so
+  both now gate on refs existing instead; with no creds the delete fails and the ref
+  is kept for a later run, exactly as before.
 - **`swatter list temp|perm` now works on ipset-backend boxes.** It only ever
   queried csf, so an `ipset` deployment saw `(none)` regardless of live blocks. It
   now dispatches on `DIRECT_BACKEND` and lists the `swatter4`/`swatter6` set members
