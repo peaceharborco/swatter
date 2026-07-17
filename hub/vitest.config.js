@@ -18,6 +18,9 @@ export default defineConfig({
           SWARM_WRITE_TOKEN: "test-write",
           SWARM_READ_TOKEN: "test-read",
           SWARM_ENROLL_TOKEN: "test-enroll",
+          // Keep the legacy shared-write window OPEN for tests (prod retires it via
+          // the real SWARM_LEGACY_WRITE_UNTIL in wrangler.toml [vars]); "" = no cutover.
+          SWARM_LEGACY_WRITE_UNTIL: "",
         },
       },
     }),

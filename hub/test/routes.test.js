@@ -228,6 +228,13 @@ describe("per-host tokens", () => {
     expect(ips).toEqual(["2.2.2.2"]);   // boxA's own IP purged; boxB untouched
   });
 
+  it("purge is rate-limited (429 when the injected limiter denies)", async () => {
+    const A = await enroll("boxA");
+    const denyEnv = { ...env, CONTRIBUTE_LIMITER: { limit: async () => ({ success: false }) } };
+    const res = await call("/purge", { method: "POST", headers: A, body: JSON.stringify({}) }, denyEnv);
+    expect(res.status).toBe(429);
+  });
+
   it("SWARM_LEGACY_WRITE_UNTIL in the past refuses the shared write token", async () => {
     await env.DB.prepare("INSERT INTO hosts (host, enrolled_at, label, token_hash) VALUES (?1, ?2, NULL, NULL)").bind("legacyBox", 1000).run();
     const pastEnv = { ...env, SWARM_LEGACY_WRITE_UNTIL: "1" };

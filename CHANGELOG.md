@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **API keys can now live in 0400 files, not the conf.** New
+  `ABUSEIPDB_KEY_FILE` / `GREYNOISE_KEY_FILE` / `HTTPBL_KEY_FILE` (file wins over the
+  inline value; key stays a shell var, never exported), matching how SendGrid/Twilio/
+  swarm secrets are already handled — keeps keys out of the `0600` `swatter.conf`.
+- **curl config files (which carry secrets) moved out of world-shared `/tmp`** into
+  `${STATE_DIR}/.curlcfg` (0700, root-only), so a leftover from a mid-request SIGKILL
+  (which no trap can catch) isn't readable by other users on a shared box.
+
+### Fixed
+- **CF account-resolution cache now has a TTL** (`CF_ACCOUNT_CACHE_TTL`, default 7d).
+  It was only invalidated by the creds-file mtime, so a token that silently gained a
+  new account would be cached forever.
+- **Stale on-disk state is swept daily** (`swatter_state_gc`, run from `refresh-feeds`):
+  orphaned curl cfgs and per-IP intel/crawler cache entries older than their TTL, so a
+  long-lived box's working set stays bounded.
+- **Hub `/purge` is now rate-limited** (per-IP, shares the write limiter) — a
+  destructive endpoint that previously had none.
+- **Hub `registerHost` first-issue is race-safe** — a concurrent double first-enroll
+  of the same host can no longer clobber each other's token (conditional `WHERE
+  token_hash IS NULL`; the loser gets no token and re-enrolls).
+
 ## [2.9.4] - 2026-07-17
 
 ### Security

@@ -113,6 +113,11 @@ async function handleRegister(request, env) {
 }
 
 async function handlePurge(request, env) {
+  // Rate-limit purge (a destructive op) per connecting IP — reuses the write
+  // limiter, so purge shares a budget with contribute.
+  const ip = request.headers.get("cf-connecting-ip") || "unknown";
+  if (env.CONTRIBUTE_LIMITER && !(await env.CONTRIBUTE_LIMITER.limit({ key: ip })).success)
+    return json({ error: "rate limited" }, 429);
   const { tooLarge, body } = await readBody(request);
   if (tooLarge) return json({ error: "body too large" }, 413);
   const auth = await authWriteIdentity(request, env, body);

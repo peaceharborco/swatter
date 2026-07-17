@@ -159,6 +159,13 @@ ABUSEIPDB_DAILY_QUOTA=1000
 : "${GREYNOISE_KEY:=}"
 : "${GREYNOISE_DAILY_QUOTA:=100}"
 : "${HTTPBL_KEY:=}"
+# File-based alternatives to the inline keys above (0400, like SENDGRID_KEY_FILE /
+# the Twilio / swarm tokens) so an operator can keep API keys OUT of swatter.conf.
+# If set + readable, the file wins over the inline value. Resolved in
+# swatter_load_config; the key never leaves a shell var (never exported).
+: "${ABUSEIPDB_KEY_FILE:=}"
+: "${GREYNOISE_KEY_FILE:=}"
+: "${HTTPBL_KEY_FILE:=}"
 : "${ASN_SIGNAL_ENABLE:=false}"
 : "${HOSTING_ASNS_FILE:=/etc/swatter/hosting-asns.txt}"
 : "${W_ASN:=12}"
@@ -272,6 +279,22 @@ swatter_load_config() {
         # shellcheck disable=SC1090
         source "${SWATTER_CONF}"
     fi
+    # Resolve file-based API keys AFTER the conf load: a *_KEY_FILE (0400) keeps the
+    # key out of the 0600 conf. File wins over the inline value; the key stays a
+    # plain shell var (never exported into the environment). A single trailing
+    # newline is stripped (the common `echo key > file` form).
+    local _kv _kf _kval
+    for _kv in ABUSEIPDB_KEY GREYNOISE_KEY HTTPBL_KEY; do
+        _kf="${_kv}_FILE"
+        # Only override the inline key from a REGULAR, readable file that yields a
+        # NON-EMPTY value — an empty file, a directory (which is `-r`), or a failed
+        # read must keep the inline key, never blank it. Strip all whitespace so a
+        # CRLF / trailing-newline key file can't 401 the provider.
+        if [[ -n "${!_kf:-}" && -f "${!_kf}" && -r "${!_kf}" ]]; then
+            _kval="$(tr -d '[:space:]' < "${!_kf}" 2>/dev/null)"
+            [[ -n "$_kval" ]] && printf -v "$_kv" '%s' "$_kval"
+        fi
+    done
     # Installed bad-path table takes precedence over the repo copy if present.
     if [[ -f /etc/swatter/badpaths.conf ]]; then
         BADPATHS_CONF=/etc/swatter/badpaths.conf
@@ -565,9 +588,37 @@ swatter_now() { printf '%s' "${SWATTER_NOW_EPOCH:-$(date -u +%s)}"; }
 #   cfg="$(swatter_curl_cfg 'header = "Authorization: Bearer TOK"')" || return 1
 # ---------------------------------------------------------------------------
 swatter_curl_cfg() {
-    local f line
-    f="$(mktemp "${TMPDIR:-/tmp}/swatter-curl.XXXXXX")" || return 1
+    local f line dir="${STATE_DIR:-}/.curlcfg"
+    # Keep the secret-bearing cfg under STATE_DIR (0750 root:root), NOT world-shared
+    # /tmp — a leftover from a mid-request SIGKILL (which no EXIT trap can catch)
+    # would otherwise be a 0600 file readable by anyone who can list /tmp on a shared
+    # box. Stale orphans here are swept by swatter_state_gc. Fall back to TMPDIR only
+    # if STATE_DIR is unusable (early/no-state contexts).
+    if [[ -n "${STATE_DIR:-}" ]] && mkdir -p "$dir" 2>/dev/null && chmod 0700 "$dir" 2>/dev/null && [[ -w "$dir" ]]; then
+        f="$(mktemp "${dir}/curl.XXXXXX")" || return 1
+    else
+        f="$(mktemp "${TMPDIR:-/tmp}/swatter-curl.XXXXXX")" || return 1
+    fi
     chmod 0600 "$f" 2>/dev/null
     for line in "$@"; do printf '%s\n' "$line" >> "$f"; done
     printf '%s' "$f"
+}
+
+# Sweep stale on-disk state a long-running box accretes: orphaned curl cfg files
+# (from a SIGKILL mid-request), and per-IP intel + crawler cache entries older than
+# their TTL. Bounded find over STATE_DIR; safe to call every refresh-feeds (daily).
+# Never touches live files (age-gated), so it can't race a concurrent run's writes.
+swatter_state_gc() {
+    [[ -n "${STATE_DIR:-}" && -d "${STATE_DIR}" ]] || return 0
+    # Orphaned curl cfg files (each caller rm's its own; only a SIGKILL leaves one) —
+    # anything older than a day is definitely dead.
+    [[ -d "${STATE_DIR}/.curlcfg" && ! -L "${STATE_DIR}/.curlcfg" ]] && find "${STATE_DIR}/.curlcfg" -type f -mtime +1 -delete 2>/dev/null
+    # Per-IP intel + crawler cache: one file per IP, never GC'd before. Drop entries
+    # untouched for longer than the cache would ever be honoured (max of the intel
+    # TTLs, +1 day slack), so the working set stays bounded without evicting live ones.
+    local maxttl="${INTEL_CACHE_TTL:-86400}"
+    [[ "${INTEL_FAIL_TTL:-0}"  =~ ^[0-9]+$ ]] && (( INTEL_FAIL_TTL  > maxttl )) && maxttl="${INTEL_FAIL_TTL}"
+    local days=$(( maxttl / 86400 + 1 ))
+    [[ -d "${STATE_DIR}/intel" && ! -L "${STATE_DIR}/intel" ]] && find "${STATE_DIR}/intel" -type f -mtime "+${days}" -delete 2>/dev/null
+    return 0
 }

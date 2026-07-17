@@ -69,8 +69,9 @@ _cf_load() {
 # token-label-free on disk: $STATE_DIR/cf-accounts.tsv holds "account_id<TAB>label"
 # (no secrets), and the token is re-attached from CF_CREDS_FILE on load. The
 # cache is honoured only while it is NEWER than CF_CREDS_FILE, so adding a new
-# account+token line invalidates it (mtime bump) and forces a re-resolve; to pick
-# up an account newly granted to an *existing* token (creds unchanged), delete
+# account+token line invalidates it (mtime bump) and forces a re-resolve; an account
+# newly granted to an *existing* token (creds unchanged) is picked up within
+# CF_ACCOUNT_CACHE_TTL (default 7d), or immediately by deleting
 # $STATE_DIR/cf-accounts.tsv. Returns non-zero with an empty map when no accounts
 # resolve; the caller distinguishes "no creds at all" (config gap) from "creds
 # present but resolution failed" (transient/permission -> retryable). The
@@ -84,8 +85,16 @@ _cf_load_accounts() {
     local creds="${CF_CREDS_FILE:-/etc/swatter/cloudflare.creds}"
     local cache="${STATE_DIR}/cf-accounts.tsv"
     _CF_TOKEN_OF_ACCTID=()
-    # Cache hit only if present, non-empty, AND newer than the creds file.
-    if [[ -s "$cache" && "$cache" -nt "$creds" ]]; then
+    # Cache hit only if present, non-empty, newer than the creds file, AND within
+    # the TTL — the mtime check alone never expires, so a token that silently gains
+    # a new account (no creds-file edit) would be cached forever. Mirrors the zone
+    # cache TTL. Fresh-resolve past the window.
+    local _cache_age=-1
+    if [[ -s "$cache" ]]; then
+        local _now_ts _mtime; _now_ts="$(swatter_now)"; _mtime="$(stat_mtime "$cache" 2>/dev/null || echo 0)"
+        [[ "$_mtime" =~ ^[0-9]+$ ]] && _cache_age=$(( _now_ts - _mtime ))
+    fi
+    if [[ -s "$cache" && "$cache" -nt "$creds" ]] && (( _cache_age >= 0 && _cache_age < ${CF_ACCOUNT_CACHE_TTL:-604800} )); then
         local aid label
         while IFS=$'\t' read -r aid label _; do
             [[ -z "$aid" || -z "$label" ]] && continue

@@ -306,6 +306,18 @@ _cf_load_accounts; check loadacct-stalecache-rc "$?" "0"
 check loadacct-stalecache-ignored "${_CF_TOKEN_OF_ACCTID[STALEID]:-none}" "none"
 check loadacct-stalecache-fresh   "${_CF_TOKEN_OF_ACCTID[freshID]:-}" "tokA"
 
+# C2) cache NEWER than creds but PAST CF_ACCOUNT_CACHE_TTL is re-resolved — the
+#     mtime check alone never expires, so a token that silently gains an account
+#     would otherwise be cached forever. Cache 2020 (newer than 2019 creds) but
+#     years old vs a tiny TTL -> ignored, API result wins.
+CF_CREDS_FILE="${STATE_DIR}/creds3"; printf 'A\ttokA\n' > "$CF_CREDS_FILE"; touch -t 201901010000 "$CF_CREDS_FILE"
+printf 'STALEID2\tA\n' > "${STATE_DIR}/cf-accounts.tsv"; touch -t 202001010000 "${STATE_DIR}/cf-accounts.tsv"
+_cf_api() { printf '%s' '{"success":true,"result":[{"id":"freshID2"}],"result_info":{"total_pages":1}}'; }
+_CF_TOKEN=([A]=tokA); _CF_TOKEN_OF_ACCTID=(); _CF_ACCTS_LOADED=0
+CF_ACCOUNT_CACHE_TTL=1 _cf_load_accounts; check loadacct-ttl-rc "$?" "0"
+check loadacct-ttl-ignored "${_CF_TOKEN_OF_ACCTID[STALEID2]:-none}" "none"
+check loadacct-ttl-fresh   "${_CF_TOKEN_OF_ACCTID[freshID2]:-}" "tokA"
+
 # ---- B2: a created rule whose ref can't be persisted is reported `failed` -----
 # The cf-rules.tsv ref is the ONLY handle sweep/unblock have on a live edge rule
 # (CF Access Rules have no native TTL), so a lost ref = an unsweepable permanent

@@ -291,6 +291,9 @@ cmd_refresh_feeds() {
     # for CF_MODE=auto, but caching it always keeps `status`/`test-config`
     # informative regardless of mode.
     swatter_detect_cf >/dev/null
+    # GC stale on-disk state (orphaned curl cfgs, expired per-IP intel/crawler cache)
+    # so a long-lived box's working set stays bounded. Daily cadence; never fatal.
+    swatter_state_gc || true
     return "$rc"
 }
 

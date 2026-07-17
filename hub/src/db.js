@@ -22,11 +22,19 @@ export async function registerHost(env, { host, label, now, rotate }) {
   }
   const token = randomTokenHex();
   const token_hash = await sha256Hex(token);
+  // Issue path (first enroll OR --rotate). First enroll guards the SELECT->write
+  // TOCTOU with `WHERE token_hash IS NULL` (first writer wins); rotate overwrites
+  // unconditionally (last writer wins). EITHER way, re-read and hand back the
+  // plaintext ONLY when our hash is the one stored — so a concurrent issue/rotate of
+  // the same host can never return a token that wasn't persisted (the loser gets no
+  // token and re-enrolls). One hash always wins; there is no dual-auth window.
+  const cond = rotate === true ? "" : " WHERE hosts.token_hash IS NULL";
   await env.DB.prepare(
     `INSERT INTO hosts (host, enrolled_at, label, token_hash) VALUES (?1, ?2, ?3, ?4)
-     ON CONFLICT(host) DO UPDATE SET label=?3, token_hash=?4`
+     ON CONFLICT(host) DO UPDATE SET label=?3, token_hash=?4${cond}`
   ).bind(host, now, label ?? null, token_hash).run();
-  return { token, rotated: hasToken };
+  const after = await env.DB.prepare("SELECT token_hash FROM hosts WHERE host=?").bind(host).first();
+  return after && after.token_hash === token_hash ? { token, rotated: hasToken } : { token: null, rotated: false };
 }
 
 // Resolve the host_id a per-host token authenticates as (or null). Lookup by hash;
