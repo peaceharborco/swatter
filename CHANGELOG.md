@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **AbuseIPDB reporting is now perm-only by default** (`ABUSEIPDB_REPORT_MIN_ACTION`,
+  default `perm`). A first-seen temp block — including a swarm-corroborated temp —
+  is no longer auto-reported as outbound reputational harm to a third party; only
+  high-confidence repeat-offender / hard-intel perm bans are. Set to `temp` for the
+  old behavior. (Swarm re-publish was already perm-only, and swarm-corroborated
+  blocks are temps, so this also stops a false-positive from being amplified.)
+
 ## [2.9.3] - 2026-07-17
 
 ### Fixed

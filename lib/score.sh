@@ -158,7 +158,14 @@ _swatter_apply_plane() {
         # Report to AbuseIPDB once per IP: only the primary block (audit_action ==
         # action). An upgrade / dual-plane second leg carries a distinct
         # audit_action, so it records + blocks but does not re-report the same IP.
-        [[ "$audit_action" == "$action" ]] && swatter_abuseipdb_report "$ip" "$ev" "$reason"
+        # Conservative default (ABUSEIPDB_REPORT_MIN_ACTION=perm): report only
+        # high-confidence PERM blocks (repeat offender / hard intel), not first-seen
+        # temps — a scoring false-positive or a swarm-corroborated temp is outbound
+        # reputational harm to a third party. Set to 'temp' to report both.
+        if [[ "$audit_action" == "$action" ]] \
+           && { [[ "${ABUSEIPDB_REPORT_MIN_ACTION:-perm}" == "temp" ]] || [[ "$action" == "perm" ]]; }; then
+            swatter_abuseipdb_report "$ip" "$ev" "$reason"
+        fi
         _swatter_audit "$ip" "$folded" "$audit_action" "$channel" "$ttl" "$reason" "$ev" "$rep"
     elif (( rc == SWATTER_RC_CAP )); then
         # Backend hit its per-run deny cap (a deliberate throttle) — not a failure.

@@ -70,6 +70,11 @@ DIRECT_WEB_PORTS="80 443"
 # Outbound AbuseIPDB reporting (opt-in).
 : "${ABUSEIPDB_REPORT:=false}"
 : "${ABUSEIPDB_REPORT_TTL:=900}"
+# Minimum action that triggers an AbuseIPDB report: 'perm' (default — only
+# high-confidence repeat-offender / hard-intel bans, so a scoring false-positive or
+# a swarm-corroborated temp is never reported as outbound reputational harm) or
+# 'temp' (report first-seen temps too — the pre-2.9.4 behavior).
+: "${ABUSEIPDB_REPORT_MIN_ACTION:=perm}"
 
 SCORE_WATCH=50
 SCORE_TEMP=70
