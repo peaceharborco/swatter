@@ -29,6 +29,13 @@ swatter_notify "circuit breaker tripped" "reached cap" "circuit_breaker"; settle
 [[ -s "$SMS" ]] && PASS=$((PASS+1)) || { echo "FAIL sms-fired"; FAIL=$((FAIL+1)); }
 # slack auto-format -> payload contains "text".
 grep -q '"text"' "$WEB" && PASS=$((PASS+1)) || { echo "FAIL webhook-slack-fmt"; FAIL=$((FAIL+1)); }
+# A phone-number TWILIO_FROM uses the From= param.
+grep -q 'From=+15550002222' "$SMS" && PASS=$((PASS+1)) || { echo "FAIL sms-from-phone"; FAIL=$((FAIL+1)); }
+# An MG… Messaging Service SID uses MessagingServiceSid= instead of From=.
+: > "$SMS"; TWILIO_FROM="MG0123456789abcdef0123456789abcdef"; _notify_sms "subj" "body"; settle
+grep -q 'MessagingServiceSid=MG0123456789abcdef0123456789abcdef' "$SMS" && PASS=$((PASS+1)) || { echo "FAIL sms-mg-param"; FAIL=$((FAIL+1)); }
+grep -q 'From=MG' "$SMS" && { echo "FAIL sms-mg-not-from"; FAIL=$((FAIL+1)); } || PASS=$((PASS+1))
+TWILIO_FROM="+15550002222"   # restore
 
 # Rate-limit: a second keyed call within TTL is suppressed (no new email).
 before="$(wc -l < "$MAILED")"

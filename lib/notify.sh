@@ -42,10 +42,13 @@ _notify_sms() {
     # SID:token via -K config file, never argv (visible in `ps` on a shared box).
     local cfg
     cfg="$(swatter_curl_cfg "user = \"${TWILIO_SID}:${token}\"")" || { log_warn "notify: cannot create curl config"; return 0; }
+    # TWILIO_FROM may be a phone number (+1…) or a Messaging Service SID (MG…) —
+    # the latter uses a different Twilio param (mirrors lib/alerts.sh).
+    local fromkey="From"; [[ "${TWILIO_FROM}" == MG* ]] && fromkey="MessagingServiceSid"
     local err
     err="$(curl --max-time 8 -fsS -X POST \
         -K "$cfg" \
-        --data-urlencode "From=${TWILIO_FROM}" --data-urlencode "To=${ALERT_SMS_TO}" \
+        --data-urlencode "${fromkey}=${TWILIO_FROM}" --data-urlencode "To=${ALERT_SMS_TO}" \
         --data-urlencode "Body=swatter: $1" \
         "https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json" 2>&1 >/dev/null)" \
         || log_warn "notify: twilio sms failed${err:+: $(printf '%s' "${err//${token}/***}" | tr '\n' ' ' | cut -c1-160)}"
