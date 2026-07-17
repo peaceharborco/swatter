@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A Cloudflare rule whose `cf-rules.tsv` ref fails to persist is no longer a
+  silent permanent ban.** The ref is the only handle `swatter_cf_sweep_expired`
+  and unblock have on a live edge rule (CF Access Rules carry no native TTL), but
+  `_cf_tsv_upsert` swallowed mktemp/write/`mv` failures and returned success while
+  the caller recorded a real block — so a lost ref left a rule that blocks forever
+  and no code path could ever remove it. `_cf_tsv_upsert` now returns non-zero on
+  any persistence failure (and never `mv`s a partial file over the live refs), and
+  the zone/account create paths + `_cf_reconcile_dup` propagate it as `failed`. The
+  durable-retry queue (above) then re-drives the block; the re-POST hits the
+  existing rule as a duplicate and `_cf_reconcile_dup` heals the ref once the state
+  dir is writable — bounded, so it can't loop. `_cf_reconcile_dup` also tightened:
+  when the dup lookup is inconclusive (API blip / no rule returned) it now trusts
+  the duplicate only if a ref is already on file (a handle exists); with no ref —
+  the exact state B2 recovery is healing — it returns `failed` and keeps retrying
+  rather than trusting a rule it can never reach. Regression tests in
+  `block_cf_test.sh`.
 - **Failed blocks are now durably retried (silent permanent-drop bug).** A block
   that hit a transient backend error (Cloudflare API 5xx/timeout, csf/ipset
   command failure) recorded `action:"failed"` and deliberately no durable state,

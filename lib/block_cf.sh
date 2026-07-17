@@ -224,26 +224,53 @@ _cf_create_ok() {
 
 # Rewrite cf-rules.tsv so (ip,scope,scope_id) maps to exactly one row with the
 # given rule id + expiry (replacing any stale rows for that triple). Safe against
-# concurrent scans via the entrypoint flock; a mktemp failure leaves the file
-# untouched (same exposure as before this helper existed).
+# concurrent scans via the entrypoint flock.
+#
+# The ref is the ONLY handle sweep/unblock have on a live edge rule (CF Access
+# Rules carry no native TTL), so a lost ref = an unsweepable permanent ban.
+# Therefore this returns NON-ZERO on any persistence failure (mktemp/write/mv)
+# instead of silently succeeding: the caller reports the block `failed`, which the
+# durable retry queue re-drives — the re-POST hits the existing rule as a
+# duplicate and _cf_reconcile_dup heals the ref once the state dir is writable
+# again. Any partial write is discarded so the existing refs file is never
+# truncated (an interrupted rewrite must not strand the OTHER live rules).
 _cf_tsv_upsert() {
     # _cf_tsv_upsert <ip> <scope> <sid> <rid> <exp>
     local ip="$1" scope="$2" sid="$3" rid="$4" exp="$5"
     local refs="${STATE_DIR}/cf-rules.tsv"
     mkdir -p "${STATE_DIR}" 2>/dev/null || true
+    local why="rule ${rid} for ${ip} has no handle — sweep/unblock can't reach it (edge rule would be permanent)"
     if [[ ! -f "$refs" ]]; then
-        printf '%s\t%s\t%s\t%s\t%s\n' "$ip" "$scope" "$sid" "$rid" "$exp" >> "$refs" 2>/dev/null || true
+        printf '%s\t%s\t%s\t%s\t%s\n' "$ip" "$scope" "$sid" "$rid" "$exp" >> "$refs" 2>/dev/null \
+            || { log_error "CF ref persist FAILED (append ${refs}): ${why}"; return 1; }
         return 0
     fi
-    local keep; keep="$(mktemp "${TMPDIR:-/tmp}/swatter-cfrules.XXXXXX")" || return 0
+    local keep; keep="$(mktemp "${TMPDIR:-/tmp}/swatter-cfrules.XXXXXX")" \
+        || { log_error "CF ref persist FAILED (mktemp): ${why}"; return 1; }
     local line _CFR_IP _CFR_SCOPE _CFR_SID _CFR_RID _CFR_EXP
     while IFS= read -r line; do
         _cf_parse_ref "$line" || continue
         [[ "${_CFR_IP}" == "$ip" && "${_CFR_SCOPE}" == "$scope" && "${_CFR_SID}" == "$sid" ]] && continue
-        printf '%s\t%s\t%s\t%s\t%s\n' "${_CFR_IP}" "${_CFR_SCOPE}" "${_CFR_SID}" "${_CFR_RID}" "${_CFR_EXP}" >> "$keep"
+        # A failed append here would give a PARTIAL keep-file; abort and leave the
+        # original refs untouched rather than mv a truncated file over live rules.
+        printf '%s\t%s\t%s\t%s\t%s\n' "${_CFR_IP}" "${_CFR_SCOPE}" "${_CFR_SID}" "${_CFR_RID}" "${_CFR_EXP}" >> "$keep" \
+            || { rm -f "$keep"; log_error "CF ref persist FAILED (rewrite ${keep}): ${why}; refs left intact"; return 1; }
     done < "$refs"
-    printf '%s\t%s\t%s\t%s\t%s\n' "$ip" "$scope" "$sid" "$rid" "$exp" >> "$keep"
-    mv "$keep" "$refs" 2>/dev/null || rm -f "$keep"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$ip" "$scope" "$sid" "$rid" "$exp" >> "$keep" \
+        || { rm -f "$keep"; log_error "CF ref persist FAILED (append ${keep}): ${why}; refs left intact"; return 1; }
+    mv "$keep" "$refs" 2>/dev/null \
+        || { rm -f "$keep"; log_error "CF ref persist FAILED (mv -> ${refs}): ${why}; refs left intact"; return 1; }
+    return 0
+}
+
+# Does cf-rules.tsv already hold a handle (ref) for this (ip,scope,sid)? Exact
+# field match (not a substring grep) so 11.2.3.4 can't satisfy a query for 1.2.3.4.
+_cf_ref_exists() {
+    # _cf_ref_exists <ip> <scope> <sid>
+    local refs="${STATE_DIR}/cf-rules.tsv"
+    [[ -f "$refs" ]] || return 1
+    awk -F'\t' -v ip="$1" -v sc="$2" -v sid="$3" \
+        '$1==ip && $2==sc && $3==sid { found=1; exit } END { exit !found }' "$refs" 2>/dev/null
 }
 
 # On a duplicate-create, look the existing rule up and make our bookkeeping match
@@ -255,32 +282,50 @@ _cf_tsv_upsert() {
 #     sweep/unblock keep a handle on the live rule;
 #   * the rule may be someone ELSE'S with a different mode (e.g. a manual
 #     whitelist) — that is NOT a block in place: fail loudly, never claim it.
-# If the lookup itself fails (API blip / token lacks read), fall back to
-# trusting the duplicate (rc 0, no ref update): the rule IS in place per the
-# API, and failing here would resurrect the failed-retry loop this fixes.
+# If the lookup is inconclusive (API blip / token lacks read / no rule returned),
+# trust the duplicate ONLY when we already hold a ref for it (sweep/unblock have a
+# handle). With NO ref on file — the exact state B2 recovery is retrying to heal —
+# trusting would leave a live rule no code can ever reach (a permanent ban), so we
+# return non-zero and let the bounded durable-retry queue keep trying to heal via
+# this same dup path. If the lookup SUCCEEDS but the healed ref can't be persisted,
+# also return non-zero (same reason). None of this risks the old unbounded loop:
+# the retry is capped by attempts/age.
 _cf_reconcile_dup() {
     # _cf_reconcile_dup <token> <scope> <sid> <ip> <exp>
     local token="$1" scope="$2" sid="$3" ip="$4" exp="$5"
     local resp rid mode
     resp="$(_cf_api "$token" GET "$(_cf_rule_path "$scope" "$sid")?configuration.target=ip&configuration.value=${ip}&per_page=5")"
     if ! printf '%s' "$resp" | jq -e '.success == true' >/dev/null 2>&1; then
-        log_warn "CF block ${ip}: duplicate reported but rule lookup failed (${scope} ${sid}); trusting the duplicate, ref not refreshed"
-        return 0
+        if _cf_ref_exists "$ip" "$scope" "$sid"; then
+            log_warn "CF block ${ip}: duplicate reported, rule lookup failed (${scope} ${sid}); trusting the duplicate (ref already on file)"
+            return 0
+        fi
+        SWATTER_LAST_BACKEND_ERR="duplicate reported but rule lookup failed (${scope} ${sid}) and no ref on file — no handle to the live rule; retrying to heal"
+        log_warn "CF block ${ip}: ${SWATTER_LAST_BACKEND_ERR}"
+        return 1
     fi
     rid="$(printf '%s' "$resp" | jq -r --arg ip "$ip" \
         '[.result[]? | select(.configuration.value == $ip)][0].id // empty' 2>/dev/null)"
     mode="$(printf '%s' "$resp" | jq -r --arg ip "$ip" \
         '[.result[]? | select(.configuration.value == $ip)][0].mode // empty' 2>/dev/null)"
     if [[ -z "$rid" ]]; then
-        log_warn "CF block ${ip}: duplicate reported but no rule found on ${scope} ${sid}; trusting the duplicate, ref not refreshed"
-        return 0
+        if _cf_ref_exists "$ip" "$scope" "$sid"; then
+            log_warn "CF block ${ip}: duplicate reported but no rule found on ${scope} ${sid}; ref already on file, trusting"
+            return 0
+        fi
+        SWATTER_LAST_BACKEND_ERR="duplicate reported but no rule found on ${scope} ${sid} and no ref on file; retrying to (re)create"
+        log_warn "CF block ${ip}: ${SWATTER_LAST_BACKEND_ERR}"
+        return 1
     fi
     if [[ "$mode" != "${CF_ACTION}" ]]; then
         SWATTER_LAST_BACKEND_ERR="existing rule for ${ip} on ${scope} ${sid} has mode=${mode} (want ${CF_ACTION}) — not swatter's rule, refusing to claim it"
         log_warn "CF block ${ip}: ${SWATTER_LAST_BACKEND_ERR}"
         return 1
     fi
-    _cf_tsv_upsert "$ip" "$scope" "$sid" "$rid" "$exp"
+    if ! _cf_tsv_upsert "$ip" "$scope" "$sid" "$rid" "$exp"; then
+        SWATTER_LAST_BACKEND_ERR="duplicate rule ${rid} for ${ip} reconciled but ref not persisted (state dir unwritable) — retrying to heal the handle"
+        return 1
+    fi
     return 0
 }
 
@@ -317,8 +362,14 @@ _cf_block_zone() {
     resp="$(_cf_api "$token" POST "$(_cf_rule_path zone "$zid")" "$(_cf_rule_payload "$ip" "$note")")"
     local crc; rid="$(_cf_create_ok "$resp")"; crc=$?
     if (( crc == 0 )); then
-        # Record the (scope,scope_id,rule) ref so unblock/sweep are O(1).
-        _cf_tsv_upsert "$ip" "zone" "$zid" "$rid" "$expiry"
+        # Record the (scope,scope_id,rule) ref so unblock/sweep are O(1). If the ref
+        # can't be persisted the rule is live but unsweepable — report failed so the
+        # retry queue re-drives it (the re-POST dup-reconciles + heals the ref).
+        if ! _cf_tsv_upsert "$ip" "zone" "$zid" "$rid" "$expiry"; then
+            SWATTER_LAST_BACKEND_ERR="rule ${rid} created for ${ip} (zone ${zid}) but ref not persisted (state dir unwritable)"
+            log_warn "CF block ${ip} in ${vhost}: ${SWATTER_LAST_BACKEND_ERR}"
+            return 1
+        fi
         log_info "cloudflare ${CF_ACTION} ${ip} in ${vhost} (zone ${zid}, acct ${acct})"
         return 0
     fi
@@ -397,9 +448,17 @@ _cf_block_account() {
             fail=$(( fail + 1 )); continue
         fi
         if (( crc == 0 )); then
-            _cf_tsv_upsert "$ip" "account" "$aid" "$rid" "$expiry"
-            log_info "cloudflare ${CF_ACTION} ${ip} on account ${aid}"
-            ok=$(( ok + 1 ))
+            # A created rule whose ref won't persist is an unsweepable ban — count
+            # it as a FAIL so the block is retried (dup-reconcile heals the ref),
+            # not silently marked handled.
+            if _cf_tsv_upsert "$ip" "account" "$aid" "$rid" "$expiry"; then
+                log_info "cloudflare ${CF_ACTION} ${ip} on account ${aid}"
+                ok=$(( ok + 1 ))
+            else
+                SWATTER_LAST_BACKEND_ERR="rule ${rid} created on account ${aid} but ref not persisted (state dir unwritable)"
+                log_warn "CF block ${ip} on account ${aid}: ${SWATTER_LAST_BACKEND_ERR}"
+                fail=$(( fail + 1 ))
+            fi
         else
             SWATTER_LAST_BACKEND_ERR="$(printf '%s' "$resp" | _cf_err_summary)"
     # Defense-in-depth: never let the bearer token reach decisions.jsonl even if a

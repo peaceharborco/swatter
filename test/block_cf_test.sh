@@ -113,12 +113,18 @@ _CF_GET_RESP='{"success":true,"result":[{"id":"MANUAL1","mode":"whitelist","conf
 swatter_cf_block 1.2.3.4 3600 r x.com; check dup-foreign-failed "$?" "1"
 check dup-foreign-cause "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'mode=whitelist')" "1"
 
-# 8f) dup but the lookup itself fails (API blip / token lacks read) -> trust the
-#     duplicate (rc 0, no ref written) — must NOT resurrect the failed-retry loop.
+# 8f) dup but the lookup itself fails (API blip / token lacks read). Trust the
+#     duplicate ONLY when we already hold a ref (a handle to the live rule);
+#     otherwise a trusted handle-less rule is an orphan permanent ban.
+#   - NO ref on file -> fail(1) so the bounded durable-retry queue keeps healing.
 : > "${STATE_DIR}/cf-rules.tsv"
 _CF_GET_RESP='{"success":false,"errors":[{"message":"nope"}]}'
-swatter_cf_block 1.2.3.4 3600 r x.com; check dup-lookupfail-ok "$?" "0"
-check dup-lookupfail-noref "$(grep -c . "${STATE_DIR}/cf-rules.tsv")" "0"
+swatter_cf_block 1.2.3.4 3600 r x.com; check dup-lookupfail-noref-failed "$?" "1"
+check dup-lookupfail-noref-stillnoref "$(grep -c . "${STATE_DIR}/cf-rules.tsv")" "0"
+check dup-lookupfail-noref-cause "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'no ref on file')" "1"
+#   - a ref ALREADY on file -> we have a handle, so trusting the dup is safe (rc 0).
+printf '1.2.3.4\tzone\tzone123\tHANDLE1\t9999999999\n' > "${STATE_DIR}/cf-rules.tsv"
+swatter_cf_block 1.2.3.4 3600 r x.com; check dup-lookupfail-withref-ok "$?" "0"
 _cf_api() { printf '%s' "${_CF_API_RESP:-}"; }   # restore
 : > "${STATE_DIR}/cf-rules.tsv"
 
@@ -284,6 +290,32 @@ _CF_TOKEN=([A]=tokA); _CF_TOKEN_OF_ACCTID=(); _CF_ACCTS_LOADED=0
 _cf_load_accounts; check loadacct-stalecache-rc "$?" "0"
 check loadacct-stalecache-ignored "${_CF_TOKEN_OF_ACCTID[STALEID]:-none}" "none"
 check loadacct-stalecache-fresh   "${_CF_TOKEN_OF_ACCTID[freshID]:-}" "tokA"
+
+# ---- B2: a created rule whose ref can't be persisted is reported `failed` -----
+# The cf-rules.tsv ref is the ONLY handle sweep/unblock have on a live edge rule
+# (CF Access Rules have no native TTL), so a lost ref = an unsweepable permanent
+# ban. A create that lands at the edge but can't persist its ref must therefore
+# return failed(1), NOT a silent success — the durable-retry queue then re-drives
+# it and dup-reconcile heals the ref. Simulate an unwritable state dir by forcing
+# _cf_tsv_upsert to fail. (Placed LAST: the override is deliberately not restored.)
+SWATTER_MODE="enforce"
+_CF_TOKEN=([acctA]=tok)                 # the _cf_load_accounts tests above clobbered this
+_CF_ACCT_OF_DOMAIN[x.com]="acctA"
+_cf_zone_id() { printf 'zone123'; return 0; }
+_cf_api() { printf '%s' "${_CF_API_RESP:-}"; }
+_cf_tsv_upsert() { return 1; }          # persistence unavailable (disk full / perms)
+
+# fresh create success, but the ref won't persist -> failed(1) WITH a diagnostic cause
+_CF_API_RESP='{"success":true,"result":{"id":"ruleX"}}'
+swatter_cf_block 1.2.3.4 3600 r x.com; check b2-persistfail-failed "$?" "1"
+check b2-persistfail-cause "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'ref not persisted')" "1"
+
+# duplicate + lookup finds OUR rule, but the healed ref won't persist -> failed(1)
+_cf_api() { if [[ "$2" == "GET" ]]; then
+    printf '%s' '{"success":true,"result":[{"id":"EXISTING1","mode":"block","configuration":{"target":"ip","value":"1.2.3.4"}}]}'
+  else printf '%s' '{"success":false,"errors":[{"code":10009}]}'; fi; }
+swatter_cf_block 1.2.3.4 3600 r x.com; check b2-dup-persistfail-failed "$?" "1"
+check b2-dup-persistfail-cause "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'ref not persisted')" "1"
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"

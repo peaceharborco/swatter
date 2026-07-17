@@ -195,7 +195,7 @@ _report_emit_abuse() {
         printf '  %-22s %s\n' "exempted (allowlist):" "${RPT_EXEMPT}"
         printf '  %-22s %s\n' "watched (no action):" "${RPT_WATCH}"
         (( RPT_FAILED > 0 )) && printf '  %-22s %s\n' "backend-failed:" "${RPT_FAILED}${RPT_FAIL_CAUSE:+  (top: ${RPT_FAIL_CAUSE})}  — durably retried"
-        (( RPT_GAVEUP > 0 )) && printf '  %-22s %s\n' "retry-exhausted:" "${RPT_GAVEUP}  — block never landed, gave up"
+        (( RPT_GAVEUP > 0 )) && printf '  %-22s %s\n' "retry-exhausted:" "${RPT_GAVEUP}  — gave up retrying; verify manually (edge rule may be live w/o a handle)"
         echo
 
         echo "By Offense Type"
