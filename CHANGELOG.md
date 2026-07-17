@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`notify.sh` supports a Twilio Messaging Service SID.** The generic notifier
+  always sent `From=`, so a `TWILIO_FROM` of `MG…` (a Messaging Service, which
+  `alerts.sh` already handled) failed; it now uses `MessagingServiceSid=` for `MG…`.
+- **Swarm hub rejects an oversized body with no `Content-Length`** (hub — needs
+  `wrangler deploy`). The size guard read only the header, so a chunked/streamed
+  body bypassed it; the hub now enforces the byte cap on the body it actually reads.
 - **`import-bans` no longer stops at the per-run deny cap.** It routed through the
   same `MAX_CSF_DENIES_PER_RUN` throttle as the scan (default 10), so importing more
   than 10 bans silently dropped the rest. A deliberate operator import now lifts the

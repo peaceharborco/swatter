@@ -114,6 +114,15 @@ describe("routes (grok-review hardening)", () => {
     expect(res.status).toBe(413);
   });
 
+  it("rejects an oversized body with NO content-length (chunked) with 413", async () => {
+    // The header-only check missed a chunked/streamed body; the byte cap in
+    // readBody must still reject it even with no content-length set.
+    const big = "x".repeat(1_100_000);
+    const res = await call("/contribute", { method: "POST", headers: W,
+      body: JSON.stringify({ host_id: "boxA", pad: big, entries: [{ ip: "1.2.3.4" }] }) });
+    expect(res.status).toBe(413);
+  });
+
   it("malformed JSON body returns 400", async () => {
     const res = await call("/contribute", { method: "POST", headers: W, body: "{not json" });
     expect(res.status).toBe(400);

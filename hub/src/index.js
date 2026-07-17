@@ -10,14 +10,22 @@ const validHostId = (h) => typeof h === "string" && /^[\x21-\x7e]{1,128}$/.test(
 // Refuse to parse oversized bodies: entries are COUNT-capped only after a full
 // request.json(), so cap bytes first (Grok review).
 const MAX_BODY_BYTES = 1_048_576;
-function bodyTooLarge(request) {
-  const clen = Number(request.headers.get("content-length"));
-  return Number.isFinite(clen) && clen > MAX_BODY_BYTES;
-}
 function json(obj, status = 200, headers = {}) {
   return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json", ...headers } });
 }
-async function readJson(request) { try { return await request.json(); } catch { return null; } }
+// Read the JSON body, enforcing MAX_BODY_BYTES with OR without a Content-Length
+// header — a chunked/streamed body carries no CL and would bypass a header-only
+// check. request.text() is itself bounded by the Workers platform request-size
+// limit, so this can't buffer unboundedly. Returns { tooLarge, body }; body is
+// null on oversize or malformed JSON.
+async function readBody(request) {
+  const clen = Number(request.headers.get("content-length"));
+  if (Number.isFinite(clen) && clen > MAX_BODY_BYTES) return { tooLarge: true, body: null };
+  let text;
+  try { text = await request.text(); } catch { return { tooLarge: false, body: null }; }
+  if (text.length > MAX_BODY_BYTES) return { tooLarge: true, body: null };
+  try { return { tooLarge: false, body: JSON.parse(text) }; } catch { return { tooLarge: false, body: null }; }
+}
 
 async function handleContribute(request, env) {
   if (!checkAuth(request, env.SWARM_WRITE_TOKEN)) return json({ error: "unauthorized" }, 401);
@@ -28,8 +36,8 @@ async function handleContribute(request, env) {
     return json({ error: "rate limited" }, 429);
   if (env.GLOBAL_LIMITER && !(await env.GLOBAL_LIMITER.limit({ key: "global" })).success)
     return json({ error: "rate limited" }, 429);
-  if (bodyTooLarge(request)) return json({ error: "body too large" }, 413);
-  const body = await readJson(request);
+  const { tooLarge, body } = await readBody(request);
+  if (tooLarge) return json({ error: "body too large" }, 413);
   const entries = Array.isArray(body?.entries) ? body.entries : null;
   const host = validHostId(body?.host_id) ? body.host_id : null;
   if (!entries || !host) return json({ error: "valid host_id + entries required" }, 400);
@@ -55,8 +63,8 @@ async function handleContribute(request, env) {
 
 async function handleRegister(request, env) {
   if (!checkAuth(request, env.SWARM_ENROLL_TOKEN)) return json({ error: "unauthorized" }, 401);
-  if (bodyTooLarge(request)) return json({ error: "body too large" }, 413);
-  const body = await readJson(request);
+  const { tooLarge, body } = await readBody(request);
+  if (tooLarge) return json({ error: "body too large" }, 413);
   const host = validHostId(body?.host_id) ? body.host_id : null;
   if (!host) return json({ error: "valid host_id required (1-128 printable chars)" }, 400);
   const label = typeof body.label === "string" && body.label.length <= 256 ? body.label : null;
@@ -66,8 +74,8 @@ async function handleRegister(request, env) {
 
 async function handlePurge(request, env) {
   if (!checkAuth(request, env.SWARM_WRITE_TOKEN)) return json({ error: "unauthorized" }, 401);
-  if (bodyTooLarge(request)) return json({ error: "body too large" }, 413);
-  const body = await readJson(request);
+  const { tooLarge, body } = await readBody(request);
+  if (tooLarge) return json({ error: "body too large" }, 413);
   const host = validHostId(body?.host_id) ? body.host_id : null;
   if (!host) return json({ error: "valid host_id required" }, 400);
   const d = await purgeHost(env, { host });
