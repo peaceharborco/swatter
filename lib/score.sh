@@ -151,6 +151,10 @@ _swatter_apply_plane() {
         # at expiry so a returning offender is legitimately re-blocked after the
         # sweep. The DIRECT plane's perm passes ttl=0 -> a genuine never-expiring perm.
         [[ "${SWATTER_MODE}" == "enforce" ]] && swatter_store_plane_set "$ip" "$channel" "$action" "$ttl"
+        # The block landed — cancel any durable retry queued for this plane by an
+        # earlier failed attempt (no-op if none). Keyed on the routing plane
+        # (DIRECT|VIA_CF), the same key swatter_store_pending_set stored.
+        [[ "${SWATTER_MODE}" == "enforce" ]] && swatter_store_pending_clear "$ip" "$plane"
         # Report to AbuseIPDB once per IP: only the primary block (audit_action ==
         # action). An upgrade / dual-plane second leg carries a distinct
         # audit_action, so it records + blocks but does not re-report the same IP.
@@ -167,6 +171,9 @@ _swatter_apply_plane() {
         # it out of "failed" so a misconfig doesn't masquerade as a transient API
         # failure on every */5 run forever.
         _swatter_audit "$ip" "$folded" "skipped-config" "$channel" 0 "precondition action=${action} ${reason}" "$ev" "$rep"
+        # A now-deterministic config gap (unmapped vhost / no token) can never be
+        # satisfied by retrying — drop any intent an earlier transient failure queued.
+        [[ "${SWATTER_MODE}" == "enforce" ]] && swatter_store_pending_clear "$ip" "$plane"
     elif (( rc == SWATTER_RC_NOVHOST )); then
         # No nameable target vhost in this scan's evidence (raw-IP / no-Host hits).
         # Data-dependent, not a config error — the same IP may present a vhost next
@@ -194,6 +201,17 @@ _swatter_apply_plane() {
         fi
         log_warn "block ${ip} (${action}/${channel}) failed (rc=${rc})${SWATTER_LAST_BACKEND_ERR:+: ${SWATTER_LAST_BACKEND_ERR}}; recording 'failed' not '${action}'"
         _swatter_audit "$ip" "$folded" "failed" "$channel" "$ttl" "$fail_reason" "$ev_failed" "$rep"
+        # Durably queue the INTENT so this block is retried on a later scan even if
+        # the offender never reappears in the ingest window. Without this, a
+        # transient CF/csf backend error permanently drops the block for a
+        # single-burst offender (ingest is cursor-based — see swatter_store_pending_set).
+        # Enforce-only: report/dry-run never reaches this branch (the backend
+        # short-circuits to success), and a preview must not seed a real retry.
+        # Store the original evidence + audit_action so the drain replays the block
+        # faithfully (counts + reports like a primary; stays silent for a secondary
+        # leg). $ev (not $ev_failed) — the offense evidence, not the failure note.
+        [[ "${SWATTER_MODE}" == "enforce" ]] \
+            && swatter_store_pending_set "$ip" "$plane" "$action" "$ttl" "$reason" "$top_vhost" "$folded" "$rep" "$ev" "$audit_action"
     fi
     return 0
 }
@@ -289,6 +307,85 @@ _swatter_maybe_dual_plane() {
         "$top_vhost" "$healthy" "$folded" "$ev" "$rep" "dual-plane"
 }
 
+# Re-drive durably-queued failed blocks (see swatter_store_pending_set). Runs
+# every scan, off the stored queue rather than fresh log evidence, so a block that
+# hit a transient backend error is retried even after the offender's traffic has
+# aged out of the ingest cursor. Bounded so an intent that can never be satisfied
+# self-reaps: given up after PENDING_RETRY_MAX_ATTEMPTS re-attempts or
+# PENDING_RETRY_MAX_AGE_HOURS, whichever comes first. sqlite+enforce only; a
+# flatfile / report run has no queue and no-ops. Runs under the entrypoint flock
+# (called from swatter_scan) so it shares the single-writer guarantee.
+#   _swatter_retry_pending <healthy>
+_swatter_retry_pending() {
+    local healthy="$1"
+    [[ "${STORE:-sqlite}" == "sqlite" && "${SWATTER_MODE}" == "enforce" ]] || return 0
+    local rows; rows="$(swatter_store_pending_list)" || return 0
+    [[ -n "$rows" ]] || return 0
+    local now; now="$(swatter_now)"
+    local hours="${PENDING_RETRY_MAX_AGE_HOURS:-24}"; [[ "$hours" =~ ^[0-9]+$ ]] || hours=24
+    local max_age=$(( hours * 3600 ))
+    local max_att="${PENDING_RETRY_MAX_ATTEMPTS:-12}"; [[ "$max_att" =~ ^[0-9]+$ ]] || max_att=12
+    # Cap re-attempts per scan so a large queue (mass outage recovery) can never
+    # consume the whole MAX_BLOCKS_PER_RUN budget and starve THIS scan's fresh
+    # offenders. Rows past the cap simply persist for the next scan (oldest first).
+    local max_run="${PENDING_RETRY_MAX_PER_RUN:-10}"; [[ "$max_run" =~ ^[0-9]+$ ]] || max_run=10
+    local drained=0
+    local ip plane action ttl folded rep first_failed attempts audit_action reason top_vhost ev
+    # Iterate a SNAPSHOT: re-attempts mutate pending_blocks (bump attempts / clear),
+    # but the loop consumes the list captured above, so one drain touches each row once.
+    while IFS=$'\t' read -r ip plane action ttl folded rep first_failed attempts audit_action reason top_vhost ev; do
+        [[ -n "$ip" && -n "$plane" ]] || continue
+        [[ "$first_failed" =~ ^[0-9]+$ ]] || first_failed="$now"
+        [[ "$attempts"     =~ ^[0-9]+$ ]] || attempts=1
+        [[ -n "$audit_action" ]] || audit_action="$action"
+        [[ -n "$ev" ]] || ev='{}'
+        # The firewall channel this plane maps to (plane_blocks is keyed on channel,
+        # not the DIRECT|VIA_CF routing plane) — used for the coverage check and the
+        # retry-exhausted audit's channel field.
+        local want_ch; want_ch=$([[ "$plane" == "DIRECT" ]] && echo "${DIRECT_BACKEND:-csf}" || echo "cloudflare")
+        # Give up on an intent that will never land (self-limits the queue).
+        if (( attempts >= max_att )) || (( now - first_failed > max_age )); then
+            log_warn "durable-retry: giving up on ${ip}/${plane} after ${attempts} attempt(s), $(( (now - first_failed) / 3600 ))h queued; dropping"
+            _swatter_audit "$ip" "$folded" "retry-exhausted" "$want_ch" 0 "durable_retry_gaveup attempts=${attempts} ${reason}" '{"retry":1}' "$rep"
+            swatter_store_pending_clear "$ip" "$plane"
+            continue
+        fi
+        # Overridden since queueing (operator allow, or the token/IP went invalid):
+        # cancel rather than re-block. _swatter_apply_plane re-checks these too, but
+        # clearing here stops the row lingering until it ages out.
+        if ! swatter_is_valid_ip_or_cidr "$ip" || _swatter_is_unsafe_block_target "$ip" \
+           || swatter_is_never_block "$ip" >/dev/null 2>&1; then
+            swatter_store_pending_clear "$ip" "$plane"; continue
+        fi
+        # Already covered on this plane by a later scan — but the coverage must MATCH
+        # the intent: a live TEMP does NOT satisfy a queued PERM (the temp expires and
+        # the perm escalation would be silently lost — the very bug this fixes). So a
+        # perm intent clears only on a live perm; a temp intent clears on any live block.
+        local covered=0
+        if [[ "$action" == "perm" ]]; then
+            swatter_store_is_perm_on "$ip" "$want_ch" && covered=1
+        else
+            swatter_store_active_on "$ip" "$want_ch" && covered=1
+        fi
+        if (( covered )); then
+            swatter_store_pending_clear "$ip" "$plane"; continue
+        fi
+        # Leave cap headroom for fresh offenders: past the per-run retry cap, the row
+        # persists (unattempted, attempts NOT bumped) for the next scan.
+        (( drained >= max_run )) && continue
+        drained=$(( drained + 1 ))
+        # Re-attempt through the shared gated path, replaying the ORIGINAL evidence +
+        # audit_action so a primary block counts + reports on success and a secondary
+        # leg stays silent — exactly as the first attempt would have. retry:1 is merged
+        # into the evidence for provenance. Success clears the row (did branch); another
+        # failure re-enqueues with the pristine reason and bumps attempts.
+        local rev="$ev"
+        [[ "${SWATTER_HAVE_JQ:-0}" -eq 1 ]] && rev="$(printf '%s' "$ev" | jq -c '. + {retry:1}' 2>/dev/null || printf '%s' "$ev")"
+        _swatter_apply_plane "$ip" "$plane" "$action" "$ttl" "$reason" \
+            "$top_vhost" "$healthy" "$folded" "$rev" "$rep" "$audit_action"
+    done <<< "$rows"
+}
+
 # Main scan.
 swatter_scan() {
     # Fail closed only when a Cloudflare plane exists but its range list is
@@ -319,6 +416,11 @@ swatter_scan() {
 
     local ip score reqs ev novhost rep replabel suppress folded
     _SW_TOTAL_BLOCKS=0; SWATTER_RUN_WATCHED=0; SWATTER_RUN_ACTED=0; SWATTER_RUN_BREAKER=0
+    # Re-drive durably-queued failed blocks FIRST — before this scan's fresh
+    # offenders — so a transient backend failure is retried even when the offender
+    # never reappears in the log. Retries count against MAX_BLOCKS_PER_RUN (they go
+    # through the same gated path), so this must run after the counter reset above.
+    _swatter_retry_pending "$healthy"
     while IFS=$'\t' read -r ip score reqs ev; do
         [[ -n "$ip" ]] || continue
         SWATTER_RUN_WATCHED=$(( SWATTER_RUN_WATCHED + 1 ))

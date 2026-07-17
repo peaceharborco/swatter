@@ -50,7 +50,7 @@ swatter_report_build() {
     cutoff=$(( $(swatter_now) - $(_report_window_secs "$window") ))
     local log="${LOG_DIR}/decisions.jsonl"
 
-    RPT_ACTED=0 RPT_PERM=0 RPT_TEMP=0 RPT_CF=0 RPT_DIRECT=0 RPT_EXEMPT=0 RPT_WATCH=0 RPT_FAILED=0 RPT_FAIL_CAUSE=""
+    RPT_ACTED=0 RPT_PERM=0 RPT_TEMP=0 RPT_CF=0 RPT_DIRECT=0 RPT_EXEMPT=0 RPT_WATCH=0 RPT_FAILED=0 RPT_FAIL_CAUSE="" RPT_GAVEUP=0
     ERR_TOTAL=0 ERR_FATAL=0 ERR_GENUINE=0 ERR_NOISE=0
     OL_HITS=0 OL_IPS=0 OL_P80=0 OL_P443=0 OL_MODE="" OL_TOP_ROWS=""
     SWARM_FEED_N=0 SWARM_STALE=0 SWARM_PREBLOCKED=0 SWARM_CONTRIB=0 SWARM_LAST_PUB="none" SWARM_COUNTS_OK=1
@@ -173,12 +173,17 @@ _report_emit_abuse() {
     RPT_OFF2="$(printf '%s\n' "$_offlist" | sed -n 2p)"
 
     # Backend failures (block_failed) + their dominant cause, from the captured
-    # evidence.backend_err. These self-heal (next scan retries), so they inform
-    # but never escalate the grade — just make a silent 41/day legible.
+    # evidence.backend_err. These are now DURABLY retried off the pending_blocks
+    # queue (not dependent on the offender reappearing), so they inform but never
+    # escalate the grade — just make a silent 41/day legible.
     RPT_FAILED=$(printf '%s\n' "$recs" | jq -rc 'select(.action=="failed")' | grep -c . || true)
     RPT_FAIL_CAUSE="$(printf '%s\n' "$recs" \
         | jq -r 'select(.action=="failed") | .evidence.backend_err // empty' \
         | sort | uniq -c | sort -rn | sed -E 's/^ *[0-9]+ +//' | sed -n 1p)"
+    # Retries that were GIVEN UP after exhausting attempts/age: unlike a plain
+    # `failed` (which the queue keeps retrying), this is a block that genuinely
+    # never landed — the signal an operator actually needs to see.
+    RPT_GAVEUP=$(printf '%s\n' "$recs" | jq -rc 'select(.action=="retry-exhausted")' | grep -c . || true)
 
     {
         echo "Actions Taken"
@@ -189,7 +194,8 @@ _report_emit_abuse() {
         printf '  %-22s %s\n' "  via Cloudflare:"   "${RPT_CF}"
         printf '  %-22s %s\n' "exempted (allowlist):" "${RPT_EXEMPT}"
         printf '  %-22s %s\n' "watched (no action):" "${RPT_WATCH}"
-        (( RPT_FAILED > 0 )) && printf '  %-22s %s\n' "backend-failed:" "${RPT_FAILED}${RPT_FAIL_CAUSE:+  (top: ${RPT_FAIL_CAUSE})}  — retried next scan"
+        (( RPT_FAILED > 0 )) && printf '  %-22s %s\n' "backend-failed:" "${RPT_FAILED}${RPT_FAIL_CAUSE:+  (top: ${RPT_FAIL_CAUSE})}  — durably retried"
+        (( RPT_GAVEUP > 0 )) && printf '  %-22s %s\n' "retry-exhausted:" "${RPT_GAVEUP}  — block never landed, gave up"
         echo
 
         echo "By Offense Type"
@@ -321,8 +327,10 @@ _report_render_html() {
     # Bad Actors.
     local bf=""
     if (( ${RPT_FAILED:-0} > 0 )); then
-        bf=" &middot; <span style=\"color:#7A5313;font-weight:600;\">${RPT_FAILED} backend-failed</span>$( [[ -n "${RPT_FAIL_CAUSE:-}" ]] && printf ' <span style="color:%s;">(top: %s &mdash; retried next scan)</span>' "$slate" "$(printf '%s' "${RPT_FAIL_CAUSE}" | esc)" )"
+        bf=" &middot; <span style=\"color:#7A5313;font-weight:600;\">${RPT_FAILED} backend-failed</span>$( [[ -n "${RPT_FAIL_CAUSE:-}" ]] && printf ' <span style="color:%s;">(top: %s &mdash; durably retried)</span>' "$slate" "$(printf '%s' "${RPT_FAIL_CAUSE}" | esc)" )"
     fi
+    # Retries that were given up on — a block that genuinely never landed.
+    (( ${RPT_GAVEUP:-0} > 0 )) && bf="${bf} &middot; <span style=\"color:#8A1C1C;font-weight:700;\">${RPT_GAVEUP} retry-exhausted</span>"
     printf '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-top:1px solid %s;"><tr><td style="padding-top:14px;%s">Bad Actors</td><td style="padding-top:14px;%s;font-weight:700;font-size:20px;color:%s;text-align:right;">%s</td></tr></table>' \
         "$bdr" "$h3" "$f_h" "$pine" "${RPT_ACTED:-0}"
     printf '<div style="font-size:13px;color:%s;margin-top:5px;line-height:1.55;">%s</div><div style="font-size:12px;color:%s;margin-top:6px;">%s Permanent &middot; %s Temporary &middot; %s Via Cloudflare &middot; %s At Server &middot; %s Exempted%s</div>' \

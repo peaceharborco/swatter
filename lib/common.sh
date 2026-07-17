@@ -94,6 +94,20 @@ MAX_BLOCKS_PER_RUN=25
 MAX_CSF_DENIES_PER_RUN=10
 ALLOWLIST_MAX_AGE_DAYS=7
 
+# Durable retry of a block that hit a transient backend error (CF API 5xx/timeout,
+# csf/ipset command failure). The intent is queued (sqlite pending_blocks) and
+# re-driven each scan independent of whether the offender reappears in the log —
+# without this a single-burst offender's failed block is silently, permanently
+# dropped (ingest is cursor-based). An intent that never lands self-reaps after
+# MAX_ATTEMPTS re-attempts or MAX_AGE_HOURS, whichever first. On a */5 cron, 12
+# attempts ≈ 1h of retries; 24h is the hard ceiling.
+PENDING_RETRY_MAX_ATTEMPTS=12
+PENDING_RETRY_MAX_AGE_HOURS=24
+# Cap durable retries re-driven per scan so a large queue (mass-outage recovery)
+# can't consume the whole MAX_BLOCKS_PER_RUN budget and starve this scan's fresh
+# offenders. Keep it below MAX_BLOCKS_PER_RUN; excess rows wait for the next scan.
+PENDING_RETRY_MAX_PER_RUN=10
+
 # Dual-plane hard-intel blocking: an IP whose threat-intel reputation is at or
 # above INTEL_HARDBLOCK_MIN (Spamhaus DROP / AbuseIPDB emit 100) is never a
 # legitimate visitor, so a fresh PERM block is applied on BOTH planes — the

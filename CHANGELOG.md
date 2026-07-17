@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Failed blocks are now durably retried (silent permanent-drop bug).** A block
+  that hit a transient backend error (Cloudflare API 5xx/timeout, csf/ipset
+  command failure) recorded `action:"failed"` and deliberately no durable state,
+  relying on the offender reappearing in a later scan to be retried. But ingest is
+  cursor-based — each log line is scored by exactly one scan and never re-read — so
+  a single-burst / hit-and-run offender (or one whose burst outlasted a CF API
+  blip) was **silently, permanently never blocked**, even seconds later within the
+  600s `WINDOW_SECONDS`. The "self-heal on next scan" the comments and digest
+  claimed only held for a continuously-active offender. Fix: a `failed` block now
+  queues its intent (with the original evidence + audit label) in a new sqlite
+  `pending_blocks` table, and every scan drains the queue through the same gated
+  block path (`_swatter_retry_pending`), independent of fresh log evidence. The
+  retry replays the block faithfully — a primary block records its real temp/perm
+  action (so the digest counts it) and reports to AbuseIPDB on success, a secondary
+  dual-plane/upgrade leg stays silent — marked `evidence.retry=1` for provenance.
+  Coverage is intent-aware: a queued **perm** is retried until a live **perm**
+  lands (a still-live temp does NOT satisfy it — otherwise the perm escalation
+  would be silently dropped when the temp expired). Bounded three ways — given up
+  after `PENDING_RETRY_MAX_ATTEMPTS` (12) or `PENDING_RETRY_MAX_AGE_HOURS` (24),
+  and at most `PENDING_RETRY_MAX_PER_RUN` (10) retries per scan so a mass-outage
+  queue can't starve fresh offenders' `MAX_BLOCKS_PER_RUN` budget — with a give-up
+  logged and surfaced as `retry-exhausted` in the digest (the true "block never
+  landed" signal). Also covers the same-shape gaps: a failed csf/ipset block and a
+  failed dual-plane second leg. `swatter unblock` cancels a queued retry; a
+  since-allowlisted or now-covered IP is dropped rather than re-blocked. sqlite+
+  enforce only (flatfile/report no-op, like the rest of the enforcement ledger).
+  New regression suites `pending_retry_test.sh` (25 cases) and
+  `pending_retry_scan_test.sh` (7 cases) assert a queued block is re-driven with
+  **no** re-ingested evidence — the durability the previous tests never covered.
+- **Nightly digest wording corrected.** Backend failures were labelled "retried
+  next scan" (text and HTML), which was false for an aged-out offender before this
+  fix; now they are genuinely durably retried and labelled as such, with a
+  separate `retry-exhausted` line for blocks that truly never landed.
+
 ## [2.9.1] - 2026-07-11
 
 ### Fixed

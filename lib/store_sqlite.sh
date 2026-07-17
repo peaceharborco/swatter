@@ -45,6 +45,15 @@ CREATE TABLE IF NOT EXISTS plane_blocks(
   kind TEXT NOT NULL,
   expires_at INTEGER NOT NULL,
   PRIMARY KEY (ip, plane));
+CREATE TABLE IF NOT EXISTS pending_blocks(
+  ip TEXT NOT NULL, plane TEXT NOT NULL,
+  action TEXT NOT NULL, ttl INTEGER NOT NULL DEFAULT 0,
+  reason TEXT, top_vhost TEXT,
+  folded INTEGER NOT NULL DEFAULT 0, rep INTEGER NOT NULL DEFAULT 0,
+  ev TEXT, audit_action TEXT,
+  first_failed INTEGER NOT NULL, last_attempt INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (ip, plane));
 SQL
         )"; _irc=$?
         if (( _irc != 0 )); then
@@ -214,6 +223,9 @@ swatter_store_unblock() {
     local sip; sip="$(_sql_escape "$ip")"
     [[ "${STORE}" == "sqlite" ]] && _sql "UPDATE offenders SET perm=0 WHERE ip='${sip}';"
     swatter_store_plane_clear "$ip"
+    # Cancel any durable retry still queued for this IP — the operator has
+    # overridden the decision, so a later scan must not re-drive the failed block.
+    swatter_store_pending_clear "$ip"
 }
 
 # --- low-and-slow persistence (sqlite only; flatfile no-ops) ----------------
@@ -319,6 +331,78 @@ swatter_store_plane_clear() {
     [[ "${STORE}" == "sqlite" ]] || return 0
     local sip; sip="$(_sql_escape "$ip")"
     _sql "DELETE FROM plane_blocks WHERE ip='${sip}';"
+}
+
+# --- durable failed-block retry queue (sqlite only; flatfile no-ops) ---------
+# A block that fails on a genuine backend error (CF API 5xx/timeout, csf/ipset
+# command failure) leaves NO firewall rule and NO plane_blocks row. Because
+# ingest is cursor-based (lib/ingest.sh reads only bytes appended since the last
+# scan and never re-reads a consumed line), the offender is re-scored ONLY if it
+# keeps producing fresh evidence — so a single-burst / hit-and-run offender whose
+# block failed was silently, permanently dropped. This queue records the INTENT of
+# a failed block so _swatter_retry_pending can re-drive it on later scans off the
+# stored row, independent of whether the IP reappears in the log.
+#
+# NOTE the `plane` column here is the ROUTING plane (DIRECT|VIA_CF) that
+# _swatter_apply_plane takes as an argument — NOT the firewall channel
+# (csf|cloudflare) that plane_blocks is keyed on. One pending intent per (ip,
+# plane); a repeat failure bumps attempts via the upsert. Only genuine `failed`
+# outcomes are queued: skipped-cap (a deliberate throttle) and skipped-novhost (no
+# target to build a rule from) are intentionally NOT queued.
+swatter_store_pending_set() {
+    local ip="$1" plane="$2" action="$3" ttl="$4" reason="$5" top_vhost="$6" folded="$7" rep="$8" ev="${9:-}" audit_action="${10:-$3}"
+    _store_ip_ok "$ip" || return 0
+    [[ "${STORE}" == "sqlite" ]] || return 0
+    local now; now="$(swatter_now)"
+    # Strip TAB/newline from the fields the drain splits on IFS=$'\t' so an embedded
+    # tab/newline can't shift columns. reason/top_vhost are control-char-clean
+    # upstream and ev is jesc'd by score.awk (no tab/newline); this is the backstop.
+    reason="${reason//[$'\t\r\n']/ }"; top_vhost="${top_vhost//[$'\t\r\n']/ }"
+    ev="${ev//[$'\t\r\n']/ }"; audit_action="${audit_action//[$'\t\r\n']/ }"
+    [[ -n "$ev" ]] || ev="{}"
+    local sip splane saction sreason svhost sev saudit
+    sip="$(_sql_escape "$ip")"; splane="$(_sql_escape "$plane")"
+    saction="$(_sql_escape "$action")"; sreason="$(_sql_escape "$reason")"; svhost="$(_sql_escape "$top_vhost")"
+    sev="$(_sql_escape "$ev")"; saudit="$(_sql_escape "$audit_action")"
+    local ittl ifolded irep
+    [[ "${ttl:-0}"    =~ ^-?[0-9]+$ ]] && ittl="$ttl"       || ittl=0
+    [[ "${folded:-0}" =~ ^-?[0-9]+$ ]] && ifolded="$folded" || ifolded=0
+    [[ "${rep:-0}"    =~ ^-?[0-9]+$ ]] && irep="$rep"       || irep=0
+    # first_failed is pinned on the FIRST enqueue (drives the max-age reap); a
+    # repeat failure only bumps attempts + last_attempt and refreshes the intent.
+    # ev + audit_action are stored so the drain replays the block FAITHFULLY: a
+    # primary block (audit_action==action) counts + reports on retry success; a
+    # secondary leg (dual-plane/plane-upgrade) records its own label and skips the
+    # AbuseIPDB re-report, exactly as the original non-retry path would have.
+    _sql "INSERT INTO pending_blocks(ip,plane,action,ttl,reason,top_vhost,folded,rep,ev,audit_action,first_failed,last_attempt,attempts)
+          VALUES('${sip}','${splane}','${saction}',${ittl},'${sreason}','${svhost}',${ifolded},${irep},'${sev}','${saudit}',${now},${now},1)
+          ON CONFLICT(ip,plane) DO UPDATE SET
+            action='${saction}', ttl=${ittl}, reason='${sreason}', top_vhost='${svhost}',
+            folded=${ifolded}, rep=${irep}, ev='${sev}', audit_action='${saudit}',
+            last_attempt=${now}, attempts=attempts+1;"
+}
+
+# Echo every queued intent as a TSV row the drain consumes. ev is LAST (it is the
+# widest free-text field); every field is tab/newline-clean by construction above.
+#   ip⇥plane⇥action⇥ttl⇥folded⇥rep⇥first_failed⇥attempts⇥audit_action⇥reason⇥top_vhost⇥ev
+swatter_store_pending_list() {
+    [[ "${STORE}" == "sqlite" ]] || return 0
+    _sqlq "SELECT ip||char(9)||plane||char(9)||action||char(9)||ttl||char(9)||folded||char(9)||rep||char(9)||first_failed||char(9)||attempts||char(9)||COALESCE(audit_action,action)||char(9)||COALESCE(reason,'')||char(9)||COALESCE(top_vhost,'')||char(9)||COALESCE(ev,'{}')
+           FROM pending_blocks ORDER BY first_failed;"
+}
+
+# Drop a queued intent: a specific plane if given, else all planes for the IP
+# (used by `swatter unblock` to cancel a retry the operator has overridden).
+swatter_store_pending_clear() {
+    local ip="$1" plane="${2:-}"; _store_ip_ok "$ip" || return 0
+    [[ "${STORE}" == "sqlite" ]] || return 0
+    local sip; sip="$(_sql_escape "$ip")"
+    if [[ -n "$plane" ]]; then
+        local splane; splane="$(_sql_escape "$plane")"
+        _sql "DELETE FROM pending_blocks WHERE ip='${sip}' AND plane='${splane}';"
+    else
+        _sql "DELETE FROM pending_blocks WHERE ip='${sip}';"
+    fi
 }
 
 # Echo permanently-banned IPs, one per line (source for `swatter export-bans`).
