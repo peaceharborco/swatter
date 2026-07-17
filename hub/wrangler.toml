@@ -38,7 +38,17 @@ name = "GLOBAL_LIMITER"
 namespace_id = "1002"
 simple = { limit = 6000, period = 60 }
 
+# /register mints a per-host write token, so throttle enrollment per connecting IP
+# (bounds a leaked enroll token). Enrollment is rare, so this is tight.
+[[ratelimits]]
+name = "REGISTER_LIMITER"
+namespace_id = "1003"
+simple = { limit = 20, period = 60 }
+
 [triggers]
 crons = ["17 4 * * *"]
 
 # Secrets (NOT here): SWARM_WRITE_TOKEN, SWARM_READ_TOKEN, SWARM_ENROLL_TOKEN
+# Optional var to hard-retire the shared write token once every host has migrated to
+# a per-host token: SWARM_LEGACY_WRITE_UNTIL = "<unix ts>" (after it, legacy writes
+# are refused). Leave unset while migrating; set it as the final cutover.

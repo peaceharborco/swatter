@@ -33,6 +33,16 @@ _swarm_curl_cfg_token() {
     swatter_curl_cfg "header = \"Authorization: Bearer ${tok}\""
 }
 
+# The token file publish/purge authenticate with: the per-host token if this box
+# has one (issued at enroll), else the shared write token (legacy, until the box
+# re-enrolls). A migrated box that lost its per-host token will 401 rather than
+# silently fall back to the shared token — re-enroll --rotate to recover.
+_swarm_write_token_file() {
+    local ht="${SWARM_HOST_TOKEN_FILE:-${STATE_DIR}/swarm.host_token}"
+    if [[ -s "$ht" ]]; then printf '%s' "$ht"
+    else printf '%s' "${SWARM_WRITE_TOKEN_FILE:-}"; fi
+}
+
 # Publish the delta of CONFIRMED perm bans (enforced, still banned) to the hub.
 # Runs after a scan inside the scan lock; FAIL-SOFT: any failure warns, keeps
 # the cursor, returns 1 — it must never abort or delay a scan (spec §4.1/§12).
@@ -86,7 +96,7 @@ swatter_swarm_publish() {
         done
         payload+="]}"
 
-        cfg="$(_swarm_curl_cfg_token "${SWARM_WRITE_TOKEN_FILE}")" || return 1
+        cfg="$(_swarm_curl_cfg_token "$(_swarm_write_token_file)")" || return 1
         rtmp="$(mktemp "${TMPDIR:-/tmp}/swatter-swarmresp.XXXXXX")" || { rm -f "$cfg"; return 1; }
         printf 'header = "Content-Type: application/json"\n' >> "$cfg"
         code="$(printf '%s' "$payload" > "${rtmp}.req" && \
@@ -218,10 +228,11 @@ cmd_swarm() {
     # Every verb may touch STATE_DIR (host_id, feeds, cursor) and must work as
     # the FIRST swatter command on a fresh box (pre-ship review).
     swatter_init_dirs
-    local assume_yes=0 arg
+    local assume_yes=0 rotate=0 arg
     for arg in "$@"; do
         case "$arg" in
             --yes|--force) assume_yes=1 ;;
+            --rotate)      rotate=1 ;;   # enroll only; harmless elsewhere
             *) log_warn "swarm: ignoring unknown flag '${arg}'" ;;
         esac
     done
@@ -230,7 +241,7 @@ cmd_swarm() {
         enroll)
             _swarm_enabled || { log_error "swarm: set SWARM_ENABLE=true + SWARM_HUB_URL first"; return 1; }
             [[ -n "${SWARM_ENROLL_TOKEN_FILE:-}" ]] || { log_error "swarm enroll: SWARM_ENROLL_TOKEN_FILE not set (operator-held token)"; return 1; }
-            local host_id label cfg rtmp code
+            local host_id label cfg rtmp code   # rotate parsed in the shared flag loop above
             host_id="$(swatter_swarm_host_id)" || return 1
             # Sanitize before hand-built JSON: hostnames can carry bytes JSON
             # can't (review). Safe charset only, bounded length.
@@ -240,7 +251,14 @@ cmd_swarm() {
             cfg="$(_swarm_curl_cfg_token "${SWARM_ENROLL_TOKEN_FILE}")" || return 1
             printf 'header = "Content-Type: application/json"\n' >> "$cfg"
             rtmp="$(mktemp "${TMPDIR:-/tmp}/swatter-swarmreg.XXXXXX")" || { rm -f "$cfg"; return 1; }
-            printf '{"host_id":"%s","label":"%s"}' "$host_id" "$label" > "${rtmp}.req"
+            # rotate=true forces the hub to reissue a per-host token for an already-
+            # tokened box (recovery / deliberate rotation); a plain enroll only issues
+            # on first enrollment.
+            if (( rotate )); then
+                printf '{"host_id":"%s","label":"%s","rotate":true}' "$host_id" "$label" > "${rtmp}.req"
+            else
+                printf '{"host_id":"%s","label":"%s"}' "$host_id" "$label" > "${rtmp}.req"
+            fi
             code="$(curl --max-time 15 -sS -K "$cfg" -o "$rtmp" -w '%{http_code}' \
                          --data-binary "@${rtmp}.req" "${SWARM_HUB_URL%/}/register" 2>/dev/null)"
             local crc=$?
@@ -248,9 +266,29 @@ cmd_swarm() {
             if (( crc != 0 )) || [[ "$code" != "200" ]]; then
                 rm -f "$rtmp"; log_error "swarm enroll FAILED (http ${code:-none} rc=${crc})"; return 1
             fi
+            # Persist the per-host write token if the hub issued one (first enroll or
+            # --rotate). Store it atomically at 0600; NEVER print it. Fail hard if it
+            # can't be stored — a hub with a token_hash but a box with no token is
+            # locked out (401 on publish), recoverable only via re-enroll --rotate.
+            local token ht="${SWARM_HOST_TOKEN_FILE:-${STATE_DIR}/swarm.host_token}"
+            token="$(sed -n 's/.*"token":"\([0-9a-fA-F]\{16,\}\)".*/\1/p' "$rtmp" | head -1)"
             rm -f "$rtmp"
-            log_info "swarm enroll ok — host_id ${host_id} registered"
-            echo "enrolled: ${host_id} (label: ${label})"
+            if [[ -n "$token" ]]; then
+                if ! ( umask 0177; printf '%s\n' "$token" > "${ht}.tmp" ) || ! mv "${ht}.tmp" "$ht"; then
+                    rm -f "${ht}.tmp"
+                    log_error "swarm enroll: hub issued a per-host token but this box could not store it (${ht}) — fix perms/space and re-run: swatter swarm enroll --rotate"
+                    return 1
+                fi
+                token=""   # drop from memory
+                log_info "swarm enroll ok — host_id ${host_id} registered (per-host token stored)"
+                echo "enrolled: ${host_id} (label: ${label}) — per-host token stored at ${ht}"
+            elif [[ -s "$ht" ]]; then
+                log_info "swarm enroll ok — host_id ${host_id} (label updated; keeping existing per-host token)"
+                echo "enrolled: ${host_id} (label: ${label}) — already tokened; existing per-host token kept"
+            else
+                log_error "swarm enroll: the hub returned no per-host token and this box has none. If this host is already enrolled on the hub, re-run: swatter swarm enroll --rotate (from a box holding the enroll token). If the hub predates per-host tokens, upgrade + deploy it first."
+                return 1
+            fi
             echo "This box now counts toward fleet corroboration. Keep the enroll token OFF this box unless it re-enrolls."
             ;;
         status)
@@ -262,6 +300,7 @@ cmd_swarm() {
             echo "  action:      ${SWARM_ACTION:-boost} (min corroboration: ${SWARM_MIN_CORROBORATION:-2})"
             echo "  publish:     ${SWARM_PUBLISH:-true} (cursor: $( [[ -s "$cursor_file" ]] && cat "$cursor_file" || echo none))"
             echo "  host_id:     $( [[ -s "${STATE_DIR}/swarm.host_id" ]] && tr -d '[:space:]' < "${STATE_DIR}/swarm.host_id" || echo '<not created — created on first publish/enroll>')"
+            echo "  host token:  $( [[ -s "${SWARM_HOST_TOKEN_FILE:-${STATE_DIR}/swarm.host_token}" ]] && echo 'present (per-host auth)' || echo 'absent (using shared write token — run: swatter swarm enroll)')"
             if [[ " ${INTEL_PROVIDERS:-} " != *" swarm "* ]]; then
                 echo "  consume:     INACTIVE — add 'swarm' to INTEL_PROVIDERS in ${SWATTER_CONF} to consume the feed" >&2
             fi
@@ -306,7 +345,7 @@ cmd_swarm() {
             fi
             local host_id cfg rtmp code
             host_id="$(swatter_swarm_host_id)" || return 1
-            cfg="$(_swarm_curl_cfg_token "${SWARM_WRITE_TOKEN_FILE}")" || return 1
+            cfg="$(_swarm_curl_cfg_token "$(_swarm_write_token_file)")" || return 1
             printf 'header = "Content-Type: application/json"\n' >> "$cfg"
             rtmp="$(mktemp "${TMPDIR:-/tmp}/swatter-swarmpurge.XXXXXX")" || { rm -f "$cfg"; return 1; }
             printf '{"host_id":"%s"}' "$host_id" > "${rtmp}.req"

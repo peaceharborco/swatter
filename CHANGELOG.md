@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **Swarm hub: per-host write tokens (was a shared write token + client-chosen
+  `host_id`).** Any `SWARM_WRITE_TOKEN` holder could publish as ANY enrolled host —
+  forge fleet corroboration to ban a victim, or `/purge` any host. Now `/register`
+  (enroll-token gated) issues a token bound to the `host_id`, stored 0600 on the box;
+  `/contribute` and `/purge` derive identity from that token and ignore body
+  `host_id`, so a leaked token impersonates only ONE host. A plain re-enroll of an
+  already-tokened host does NOT rotate (label-only) — `swatter swarm enroll --rotate`
+  reissues (recovery / deliberate rotation) and invalidates the old token.
+  `/register` is now rate-limited. A legacy compat window keeps un-migrated hosts
+  writing via the shared token during rollout (a migrated host can never be written
+  via the shared token); `SWARM_LEGACY_WRITE_UNTIL` hard-retires it. Deploy is
+  **migration-first** (`wrangler d1 migrations apply swatter-swarm --remote` THEN
+  `wrangler deploy` — `deploy` does NOT auto-apply D1 migrations, and every write
+  now reads `token_hash`), then `swatter swarm enroll` on each host. Grok design- and
+  code-reviewed. Full runbook in
+  `docs/superpowers/specs/2026-07-17-swarm-per-host-tokens-design.md`.
+
 ### Changed
 - **AbuseIPDB reporting is now perm-only by default** (`ABUSEIPDB_REPORT_MIN_ACTION`,
   default `perm`). A first-seen temp block — including a swarm-corroborated temp —

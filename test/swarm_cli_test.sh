@@ -38,15 +38,51 @@ curl() {
     return 0
 }
 
-# --- enroll happy path: POSTs /register with host_id + SANITIZED label
+# --- enroll happy path: POSTs /register with host_id + SANITIZED label, and
+#     PERSISTS the per-host token the hub returns (0600), never printing it.
+HTOK="${STATE_DIR}/swarm.host_token"
 hid="$(swatter_swarm_host_id)"
-CURL_RESP="{\"enrolled\":\"${hid}\"}"
+TOK64="$(printf 'a%.0s' {1..64})"   # a 64-char hex-ish token
+CURL_RESP="{\"enrolled\":\"${hid}\",\"rotated\":false,\"token\":\"${TOK64}\"}"
 hostname() { printf 'host"with\\evil\nbytes.example.com'; }   # hostile hostname
-cmd_swarm enroll </dev/null >/dev/null 2>&1; check enroll-rc "$?" "0"
+out="$(cmd_swarm enroll </dev/null 2>&1)"; check enroll-rc "$?" "0"
 check enroll-url "$(grep -c 'URL=https://hub.example/register' "$POSTS")" "1"
 check enroll-hostid "$(grep -c "\"host_id\":\"${hid}\"" "$POSTS")" "1"
 # label was sanitized to [A-Za-z0-9._-]: no quote/backslash/newline in payload
 grep -q 'hostwithevilbytes.example.com' "$POSTS" && PASS=$((PASS+1)) || { echo "FAIL enroll-label-sanitized"; FAIL=$((FAIL+1)); }
+check enroll-token-stored   "$(tr -d '[:space:]' < "$HTOK" 2>/dev/null)" "$TOK64"
+check enroll-token-mode     "$(stat -c '%a' "$HTOK" 2>/dev/null || stat -f '%Lp' "$HTOK" 2>/dev/null)" "600"
+printf '%s' "$out" | grep -q "$TOK64" && { echo "FAIL enroll-token-not-printed"; FAIL=$((FAIL+1)); } || PASS=$((PASS+1))
+
+# --- _swarm_write_token_file prefers the per-host token when present, else falls
+#     back to the shared write token (so publish/purge bind to this box's identity).
+_wtf_saved="${SWARM_WRITE_TOKEN_FILE:-}"
+SWARM_WRITE_TOKEN_FILE="${STATE_DIR}/wtok"; printf 'wtok' > "$SWARM_WRITE_TOKEN_FILE"
+check wtf-prefers-host   "$(_swarm_write_token_file)" "$HTOK"
+_htok_bak="$(cat "$HTOK")"; rm -f "$HTOK"
+check wtf-fallback-write "$(_swarm_write_token_file)" "$SWARM_WRITE_TOKEN_FILE"
+printf '%s' "$_htok_bak" > "$HTOK"; SWARM_WRITE_TOKEN_FILE="$_wtf_saved"
+
+# --- plain re-enroll with NO token in the response (hub: already tokened) keeps
+#     the existing token file and still succeeds.
+CURL_RESP="{\"enrolled\":\"${hid}\",\"rotated\":false}"
+cmd_swarm enroll </dev/null >/dev/null 2>&1; check reenroll-notoken-rc "$?" "0"
+check reenroll-keeps-token "$(tr -d '[:space:]' < "$HTOK" 2>/dev/null)" "$TOK64"
+
+# --- --rotate: the hub issues a new token; it replaces the stored one.
+TOK64B="$(printf 'b%.0s' {1..64})"
+CURL_RESP="{\"enrolled\":\"${hid}\",\"rotated\":true,\"token\":\"${TOK64B}\"}"
+cmd_swarm enroll --rotate </dev/null >/dev/null 2>&1; check enroll-rotate-rc "$?" "0"
+check enroll-rotate-flag  "$(grep -c '"rotate":true' "$POSTS")" "1"
+check enroll-rotate-token "$(tr -d '[:space:]' < "$HTOK" 2>/dev/null)" "$TOK64B"
+
+# --- no token in response AND no local token file -> hard fail (lockout guard).
+rm -f "$HTOK"
+CURL_RESP="{\"enrolled\":\"${hid}\",\"rotated\":false}"
+cmd_swarm enroll </dev/null >/dev/null 2>&1; check enroll-notoken-lockout-rc "$?" "1"
+# restore a token for the later publish/purge tests (they prefer it).
+CURL_RESP="{\"enrolled\":\"${hid}\",\"rotated\":false,\"token\":\"${TOK64}\"}"
+cmd_swarm enroll </dev/null >/dev/null 2>&1
 unset -f hostname
 
 # --- enroll without token file -> rc 1

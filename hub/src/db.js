@@ -1,8 +1,51 @@
-export async function registerHost(env, { host, label, now }) {
+// SHA-256 hex of a string (Web Crypto; available in Workers).
+export async function sha256Hex(s) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(buf)].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+function randomTokenHex() {
+  const b = new Uint8Array(32);
+  crypto.getRandomValues(b);
+  return [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+// Register or update a host. Issues a NEW per-host token (and stores its hash) when
+// the host is new (no token_hash) OR rotate===true; otherwise updates the label
+// only and returns no token — so a plain re-enroll can't silently rotate/take over
+// an already-tokened box. Returns { token: <hex>|null, rotated: bool }.
+export async function registerHost(env, { host, label, now, rotate }) {
+  const existing = await env.DB.prepare("SELECT token_hash FROM hosts WHERE host=?").bind(host).first();
+  const hasToken = !!existing && existing.token_hash != null;
+  if (hasToken && rotate !== true) {
+    await env.DB.prepare("UPDATE hosts SET label=?2 WHERE host=?1").bind(host, label ?? null).run();
+    return { token: null, rotated: false };
+  }
+  const token = randomTokenHex();
+  const token_hash = await sha256Hex(token);
   await env.DB.prepare(
-    `INSERT INTO hosts (host, enrolled_at, label) VALUES (?1, ?2, ?3)
-     ON CONFLICT(host) DO UPDATE SET label=?3`
-  ).bind(host, now, label ?? null).run();
+    `INSERT INTO hosts (host, enrolled_at, label, token_hash) VALUES (?1, ?2, ?3, ?4)
+     ON CONFLICT(host) DO UPDATE SET label=?3, token_hash=?4`
+  ).bind(host, now, label ?? null, token_hash).run();
+  return { token, rotated: hasToken };
+}
+
+// Resolve the host_id a per-host token authenticates as (or null). Lookup by hash;
+// the plaintext token is never stored. A NULL token_hash can never match (the
+// presented token hashes to a non-null hex).
+export async function hostForToken(env, presented) {
+  if (!presented) return null;
+  const token_hash = await sha256Hex(presented);
+  const row = await env.DB.prepare("SELECT host FROM hosts WHERE token_hash=?").bind(token_hash).first();
+  return row ? row.host : null;
+}
+
+// For the legacy shared-write-token path: does this host row exist, and has it been
+// migrated to a per-host token? A migrated host must NOT be writable via the shared
+// token (that would re-open impersonation).
+export async function hostTokenState(env, host) {
+  const row = await env.DB.prepare("SELECT token_hash FROM hosts WHERE host=?").bind(host).first();
+  if (!row) return { exists: false, migrated: false };
+  return { exists: true, migrated: row.token_hash != null };
 }
 
 export async function isEnrolled(env, host) {

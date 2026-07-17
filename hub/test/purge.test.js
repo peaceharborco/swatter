@@ -19,15 +19,19 @@ const call = async (path, init) => {
 const W = { authorization: "Bearer " + env.SWARM_WRITE_TOKEN, "content-type": "application/json" };
 const E = { authorization: "Bearer " + env.SWARM_ENROLL_TOKEN, "content-type": "application/json" };
 const R = { authorization: "Bearer " + env.SWARM_READ_TOKEN };
+async function enroll(host) {
+  const j = await (await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: host }) })).json();
+  return { authorization: "Bearer " + j.token, "content-type": "application/json" };
+}
 
 describe("POST /purge", () => {
   it("removes the host's sightings and orphaned offenders, keeps corroborated ones", async () => {
-    await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA" }) });
-    await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxB" }) });
-    await call("/contribute", { method: "POST", headers: W, body: JSON.stringify({ host_id: "boxA", entries: [{ ip: "1.1.1.1" }, { ip: "2.2.2.2" }] }) });
-    await call("/contribute", { method: "POST", headers: W, body: JSON.stringify({ host_id: "boxB", entries: [{ ip: "2.2.2.2" }] }) });
+    const A = await enroll("boxA");
+    const B = await enroll("boxB");
+    await call("/contribute", { method: "POST", headers: A, body: JSON.stringify({ entries: [{ ip: "1.1.1.1" }, { ip: "2.2.2.2" }] }) });
+    await call("/contribute", { method: "POST", headers: B, body: JSON.stringify({ entries: [{ ip: "2.2.2.2" }] }) });
 
-    const res = await call("/purge", { method: "POST", headers: W, body: JSON.stringify({ host_id: "boxA" }) });
+    const res = await call("/purge", { method: "POST", headers: A, body: JSON.stringify({}) });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ purged_sightings: 2, purged_offenders: 1 });
 
@@ -35,7 +39,7 @@ describe("POST /purge", () => {
     const feed = (await (await call("/feed", { headers: R })).text()).trim();
     expect(feed).toBe("2.2.2.2");
     // boxA stays ENROLLED (purge is data-removal, not unenrollment).
-    const again = await call("/contribute", { method: "POST", headers: W, body: JSON.stringify({ host_id: "boxA", entries: [{ ip: "3.3.3.3" }] }) });
+    const again = await call("/contribute", { method: "POST", headers: A, body: JSON.stringify({ entries: [{ ip: "3.3.3.3" }] }) });
     expect((await again.json()).enrolled).toBe(true);
   });
 

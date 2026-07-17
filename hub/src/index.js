@@ -1,8 +1,37 @@
 import { checkAuth } from "./auth.js";
 import { isValidIpOrCidr, isUnsafeTarget } from "./validate.js";
-import { contributeMany, registerHost, isEnrolled, feedRows, prune, purgeHost } from "./db.js";
+import { contributeMany, registerHost, hostForToken, hostTokenState, isEnrolled, feedRows, prune, purgeHost } from "./db.js";
 
 const nowSec = () => Math.floor(Date.now() / 1000);
+const bearer = (request) => {
+  const m = (request.headers.get("authorization") || "").match(/^Bearer (.+)$/);
+  return m ? m[1] : null;
+};
+// The shared write token is retired once SWARM_LEGACY_WRITE_UNTIL (unix ts) passes.
+const legacyWriteExpired = (env) => {
+  const until = Number(env.SWARM_LEGACY_WRITE_UNTIL);
+  return Number.isFinite(until) && until > 0 && nowSec() > until;
+};
+// Resolve the authenticated writer host for /contribute and /purge:
+//   1. a per-host token -> that host (body host_id IGNORED);
+//   2. else the legacy shared write token -> body host_id, but ONLY while it is
+//      un-migrated (token_hash NULL) and the legacy window is open — a migrated
+//      host can never be written via the shared token;
+//   3. else unauthorized.
+// Returns { host } on success, or { status, error } to return directly.
+async function authWriteIdentity(request, env, body) {
+  const tokHost = await hostForToken(env, bearer(request));
+  if (tokHost) return { host: tokHost };
+  if (checkAuth(request, env.SWARM_WRITE_TOKEN)) {
+    if (legacyWriteExpired(env)) return { status: 401, error: { error: "shared write token retired — use a per-host token" } };
+    const bodyHost = validHostId(body?.host_id) ? body.host_id : null;
+    if (!bodyHost) return { status: 400, error: { error: "valid host_id required" } };
+    if ((await hostTokenState(env, bodyHost)).migrated)
+      return { status: 401, error: { error: "host uses a per-host token; shared write token refused" } };
+    return { host: bodyHost };   // un-migrated or no row (isEnrolled gate handles no-row)
+  }
+  return { status: 401, error: { error: "unauthorized" } };
+}
 // ONE host_id rule for /register AND /contribute (Grok review: register
 // accepted ids contribute then 400-rejected, bricking the enroll→publish
 // lifecycle). Printable ASCII, no spaces, 1-128 chars.
@@ -30,9 +59,8 @@ async function readBody(request) {
 }
 
 async function handleContribute(request, env) {
-  if (!checkAuth(request, env.SWARM_WRITE_TOKEN)) return json({ error: "unauthorized" }, 401);
   // Per-connecting-IP AND global limits (spec §4.2) — global bounds a distributed
-  // leaked-token holder the per-IP one can't.
+  // leaked-token holder the per-IP one can't. Rate-limit before the auth DB lookup.
   const ip = request.headers.get("cf-connecting-ip") || "unknown";
   if (env.CONTRIBUTE_LIMITER && !(await env.CONTRIBUTE_LIMITER.limit({ key: ip })).success)
     return json({ error: "rate limited" }, 429);
@@ -40,9 +68,11 @@ async function handleContribute(request, env) {
     return json({ error: "rate limited" }, 429);
   const { tooLarge, body } = await readBody(request);
   if (tooLarge) return json({ error: "body too large" }, 413);
+  const auth = await authWriteIdentity(request, env, body);
+  if (auth.status) return json(auth.error, auth.status);
+  const host = auth.host;   // identity from the token (or legacy body host_id)
   const entries = Array.isArray(body?.entries) ? body.entries : null;
-  const host = validHostId(body?.host_id) ? body.host_id : null;
-  if (!entries || !host) return json({ error: "valid host_id + entries required" }, 400);
+  if (!entries) return json({ error: "valid entries[] required" }, 400);
   if (entries.length > Number(env.MAX_ENTRIES)) return json({ error: "too many entries" }, 413);
   // WRITE-GATE on enrollment: an unenrolled host_id must NOT create sightings /
   // offenders (round-2 review: a leaked write token spamming random host_ids
@@ -65,22 +95,31 @@ async function handleContribute(request, env) {
 
 async function handleRegister(request, env) {
   if (!checkAuth(request, env.SWARM_ENROLL_TOKEN)) return json({ error: "unauthorized" }, 401);
+  // Rate-limit register: the enroll token now mints write identity, so throttle
+  // token minting per connecting IP (a leaked enroll token's blast radius).
+  const ip = request.headers.get("cf-connecting-ip") || "unknown";
+  if (env.REGISTER_LIMITER && !(await env.REGISTER_LIMITER.limit({ key: ip })).success)
+    return json({ error: "rate limited" }, 429);
   const { tooLarge, body } = await readBody(request);
   if (tooLarge) return json({ error: "body too large" }, 413);
   const host = validHostId(body?.host_id) ? body.host_id : null;
   if (!host) return json({ error: "valid host_id required (1-128 printable chars)" }, 400);
-  const label = typeof body.label === "string" && body.label.length <= 256 ? body.label : null;
-  await registerHost(env, { host, label, now: nowSec() });
-  return json({ enrolled: host }, 200);
+  const label = typeof body?.label === "string" && body.label.length <= 256 ? body.label : null;
+  const rotate = body?.rotate === true;
+  const { token, rotated } = await registerHost(env, { host, label, now: nowSec(), rotate });
+  const resp = { enrolled: host, rotated };
+  if (token) resp.token = token;   // returned ONCE — on first issue or an explicit rotate
+  return json(resp, 200);
 }
 
 async function handlePurge(request, env) {
-  if (!checkAuth(request, env.SWARM_WRITE_TOKEN)) return json({ error: "unauthorized" }, 401);
   const { tooLarge, body } = await readBody(request);
   if (tooLarge) return json({ error: "body too large" }, 413);
-  const host = validHostId(body?.host_id) ? body.host_id : null;
-  if (!host) return json({ error: "valid host_id required" }, 400);
-  const d = await purgeHost(env, { host });
+  const auth = await authWriteIdentity(request, env, body);
+  if (auth.status) return json(auth.error, auth.status);
+  // Per-host path purges the TOKEN's host (body host_id ignored) — can't purge
+  // another host; legacy path purges the un-migrated body host_id.
+  const d = await purgeHost(env, { host: auth.host });
   return json({ purged_sightings: d.sightings, purged_offenders: d.offenders }, 200);
 }
 

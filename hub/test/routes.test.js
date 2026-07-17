@@ -21,6 +21,12 @@ const call = async (path, init, envOverride) => {
 const W = { authorization: "Bearer " + env.SWARM_WRITE_TOKEN, "content-type": "application/json" };
 const R = { authorization: "Bearer " + env.SWARM_READ_TOKEN };
 const E = { authorization: "Bearer " + env.SWARM_ENROLL_TOKEN, "content-type": "application/json" };
+// Enroll a host and return its per-host write headers (the shared write token is
+// refused for a migrated host). Registered hosts now authenticate by their token.
+async function enroll(host, label) {
+  const j = await (await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: host, label }) })).json();
+  return { authorization: "Bearer " + j.token, "content-type": "application/json" };
+}
 
 describe("routes", () => {
   it("contribute rejects a read token; register rejects a write token", async () => {
@@ -29,9 +35,9 @@ describe("routes", () => {
   });
 
   it("register then contribute makes the host count", async () => {
-    expect((await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA", label: "cds1" }) })).status).toBe(200);
-    const res = await call("/contribute", { method: "POST", headers: W,
-      body: JSON.stringify({ host_id: "boxA", entries: [
+    const T = await enroll("boxA", "cds1");
+    const res = await call("/contribute", { method: "POST", headers: T,
+      body: JSON.stringify({ entries: [
         { ip: "1.2.3.4", category: "scan" }, { ip: "999.999.999.999" }, { ip: "0.0.0.0/0" }] }) });
     expect(res.status).toBe(200);
     // Frozen contract: /contribute returns {accepted, rejected, enrolled}.
@@ -59,8 +65,8 @@ describe("routes", () => {
   });
 
   it("bare feed lists ip/cidr; empty feed is an empty 200", async () => {
-    await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA" }) });
-    await call("/contribute", { method: "POST", headers: W, body: JSON.stringify({ host_id: "boxA", entries: [{ ip: "203.0.113.7" }, { ip: "198.51.100.0/24" }] }) });
+    const T = await enroll("boxA");
+    await call("/contribute", { method: "POST", headers: T, body: JSON.stringify({ entries: [{ ip: "203.0.113.7" }, { ip: "198.51.100.0/24" }] }) });
     const bare = await call("/feed", { headers: R });
     expect(bare.headers.get("content-type")).toMatch(/text\/plain/);
     expect((await bare.text()).trim().split("\n").sort()).toEqual(["198.51.100.0/24", "203.0.113.7"]);
@@ -73,9 +79,9 @@ describe("routes", () => {
   });
 
   it("rejects an oversized entries batch with 413", async () => {
-    await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA" }) });
+    const T = await enroll("boxA");
     const many = Array.from({ length: Number(env.MAX_ENTRIES) + 1 }, (_, i) => ({ ip: "10.0." + ((i>>8)&255) + "." + (i&255) }));
-    const res = await call("/contribute", { method: "POST", headers: W, body: JSON.stringify({ host_id: "boxA", entries: many }) });
+    const res = await call("/contribute", { method: "POST", headers: T, body: JSON.stringify({ entries: many }) });
     expect(res.status).toBe(413);
   });
 
@@ -96,9 +102,9 @@ describe("routes (grok-review hardening)", () => {
   });
 
   it("non-string category does not 500 — stored as null", async () => {
-    await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA" }) });
-    const res = await call("/contribute", { method: "POST", headers: W,
-      body: JSON.stringify({ host_id: "boxA", entries: [{ ip: "1.2.3.4", category: { bad: 1 } }, { ip: "5.6.7.8", category: 123 }] }) });
+    const T = await enroll("boxA");
+    const res = await call("/contribute", { method: "POST", headers: T,
+      body: JSON.stringify({ entries: [{ ip: "1.2.3.4", category: { bad: 1 } }, { ip: "5.6.7.8", category: 123 }] }) });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ accepted: 2, rejected: 0, enrolled: true });
     const feed = await (await call("/feed?format=json", { headers: R })).json();
@@ -129,9 +135,9 @@ describe("routes (grok-review hardening)", () => {
   });
 
   it("?limit clamps and signals truncation over HTTP", async () => {
-    await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA" }) });
-    await call("/contribute", { method: "POST", headers: W,
-      body: JSON.stringify({ host_id: "boxA", entries: [{ ip: "1.1.1.1" }, { ip: "2.2.2.2" }] }) });
+    const T = await enroll("boxA");
+    await call("/contribute", { method: "POST", headers: T,
+      body: JSON.stringify({ entries: [{ ip: "1.1.1.1" }, { ip: "2.2.2.2" }] }) });
     const capped = await call("/feed?limit=1", { headers: R });
     expect((await capped.text()).trim()).toBe("1.1.1.1");
     expect(capped.headers.get("x-swarm-truncated")).toBe("true");
@@ -141,9 +147,9 @@ describe("routes (grok-review hardening)", () => {
   });
 
   it("json feed rows carry the exact frozen shape", async () => {
-    await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA" }) });
-    await call("/contribute", { method: "POST", headers: W,
-      body: JSON.stringify({ host_id: "boxA", entries: [{ ip: "9.9.9.9", category: "scan" }] }) });
+    const T = await enroll("boxA");
+    await call("/contribute", { method: "POST", headers: T,
+      body: JSON.stringify({ entries: [{ ip: "9.9.9.9", category: "scan" }] }) });
     const rows = await (await call("/feed?format=json", { headers: R })).json();
     expect(rows.length).toBe(1);
     expect(Object.keys(rows[0]).sort()).toEqual(["category", "expires", "host_count", "ip"]);
@@ -154,10 +160,78 @@ describe("routes (grok-review hardening)", () => {
   });
 
   it("full MAX_ENTRIES batch succeeds (chunked, no per-entry round trips)", async () => {
-    await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA" }) });
+    const T = await enroll("boxA");
     const many = Array.from({ length: Number(env.MAX_ENTRIES) }, (_, i) => ({ ip: "10.2." + ((i>>8)&255) + "." + (i&255) }));
-    const res = await call("/contribute", { method: "POST", headers: W, body: JSON.stringify({ host_id: "boxA", entries: many }) });
+    const res = await call("/contribute", { method: "POST", headers: T, body: JSON.stringify({ entries: many }) });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ accepted: many.length, rejected: 0, enrolled: true });
+  });
+});
+
+describe("per-host tokens", () => {
+  const bearerHdr = (t) => ({ authorization: "Bearer " + t, "content-type": "application/json" });
+
+  it("register issues a token once; plain re-enroll returns none; --rotate reissues + invalidates", async () => {
+    const r1 = await (await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA", label: "a" }) })).json();
+    expect(typeof r1.token).toBe("string");
+    expect(r1.rotated).toBe(false);
+    const tok1 = r1.token;
+    // Plain re-enroll: label update, NO new token (can't silently rotate/take over).
+    const r2 = await (await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA", label: "b" }) })).json();
+    expect(r2.token).toBeUndefined();
+    expect(r2.rotated).toBe(false);
+    expect((await call("/contribute", { method: "POST", headers: bearerHdr(tok1), body: JSON.stringify({ entries: [{ ip: "1.2.3.4" }] }) })).status).toBe(200);
+    // Explicit rotate: new token, old token now 401s.
+    const r3 = await (await call("/register", { method: "POST", headers: E, body: JSON.stringify({ host_id: "boxA", rotate: true }) })).json();
+    expect(typeof r3.token).toBe("string");
+    expect(r3.token).not.toBe(tok1);
+    expect(r3.rotated).toBe(true);
+    expect((await call("/contribute", { method: "POST", headers: bearerHdr(tok1), body: JSON.stringify({ entries: [{ ip: "1.2.3.4" }] }) })).status).toBe(401);
+    expect((await call("/contribute", { method: "POST", headers: bearerHdr(r3.token), body: JSON.stringify({ entries: [{ ip: "1.2.3.4" }] }) })).status).toBe(200);
+  });
+
+  it("a per-host token is bound to its host regardless of body host_id", async () => {
+    const A = await enroll("boxA");
+    const B = await enroll("boxB");
+    await call("/contribute", { method: "POST", headers: B, body: JSON.stringify({ entries: [{ ip: "7.7.7.7" }] }) });
+    // boxA's token but a body forging boxB: if the token wins, host_count becomes 2.
+    await call("/contribute", { method: "POST", headers: A, body: JSON.stringify({ host_id: "boxB", entries: [{ ip: "7.7.7.7" }] }) });
+    const rows = await (await call("/feed?format=json", { headers: R })).json();
+    expect(rows.find(r => r.ip === "7.7.7.7").host_count).toBe(2);   // boxA + boxB, forged id ignored
+  });
+
+  it("the shared write token is REFUSED for a migrated host", async () => {
+    await enroll("boxA");   // boxA has a token_hash -> migrated
+    const res = await call("/contribute", { method: "POST", headers: W, body: JSON.stringify({ host_id: "boxA", entries: [{ ip: "1.2.3.4" }] }) });
+    expect(res.status).toBe(401);
+  });
+
+  it("the shared write token still works for an UN-migrated (legacy) host", async () => {
+    await env.DB.prepare("INSERT INTO hosts (host, enrolled_at, label, token_hash) VALUES (?1, ?2, NULL, NULL)").bind("legacyBox", 1000).run();
+    const res = await call("/contribute", { method: "POST", headers: W, body: JSON.stringify({ host_id: "legacyBox", entries: [{ ip: "1.2.3.4" }] }) });
+    expect(res.status).toBe(200);
+    expect((await res.json()).enrolled).toBe(true);
+  });
+
+  it("a bad or absent write credential is 401", async () => {
+    expect((await call("/contribute", { method: "POST", headers: bearerHdr("nope"), body: JSON.stringify({ entries: [{ ip: "1.2.3.4" }] }) })).status).toBe(401);
+    expect((await call("/contribute", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ entries: [{ ip: "1.2.3.4" }] }) })).status).toBe(401);
+  });
+
+  it("purge with a per-host token cannot purge another host", async () => {
+    const A = await enroll("boxA");
+    const B = await enroll("boxB");
+    await call("/contribute", { method: "POST", headers: A, body: JSON.stringify({ entries: [{ ip: "1.1.1.1" }] }) });
+    await call("/contribute", { method: "POST", headers: B, body: JSON.stringify({ entries: [{ ip: "2.2.2.2" }] }) });
+    await call("/purge", { method: "POST", headers: A, body: JSON.stringify({ host_id: "boxB" }) });   // A's token, forges boxB
+    const ips = (await (await call("/feed", { headers: R })).text()).trim().split("\n").sort();
+    expect(ips).toEqual(["2.2.2.2"]);   // boxA's own IP purged; boxB untouched
+  });
+
+  it("SWARM_LEGACY_WRITE_UNTIL in the past refuses the shared write token", async () => {
+    await env.DB.prepare("INSERT INTO hosts (host, enrolled_at, label, token_hash) VALUES (?1, ?2, NULL, NULL)").bind("legacyBox", 1000).run();
+    const pastEnv = { ...env, SWARM_LEGACY_WRITE_UNTIL: "1" };
+    const res = await call("/contribute", { method: "POST", headers: W, body: JSON.stringify({ host_id: "legacyBox", entries: [{ ip: "1.2.3.4" }] }) }, pastEnv);
+    expect(res.status).toBe(401);
   });
 });

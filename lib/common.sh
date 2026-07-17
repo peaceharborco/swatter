@@ -177,6 +177,12 @@ ABUSEIPDB_DAILY_QUOTA=1000
 : "${SWARM_WRITE_TOKEN_FILE:=/etc/swatter/swarm.write.token}"
 : "${SWARM_READ_TOKEN_FILE:=/etc/swatter/swarm.read.token}"
 : "${SWARM_ENROLL_TOKEN_FILE:=}"
+# Per-host write token, issued by the hub at `swatter swarm enroll` and stored 0600
+# HERE (not operator-managed). Preferred over the shared SWARM_WRITE_TOKEN_FILE for
+# publish/purge once present — binds this box's writes to its own identity. Empty =
+# resolve to ${STATE_DIR}/swarm.host_token at use time (STATE_DIR isn't known yet
+# here; mirrors swarm.host_id).
+: "${SWARM_HOST_TOKEN_FILE:=}"
 : "${SWARM_PUBLISH:=true}"
 : "${SWARM_ACTION:=boost}"
 : "${SWARM_MIN_CORROBORATION:=2}"
