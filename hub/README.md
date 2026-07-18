@@ -63,7 +63,28 @@ write path, and rotate/remove `SWARM_WRITE_TOKEN`.
   (required for `corroborated-block`); `X-Swarm-Truncated: true` if capped
 - `GET /health` — `{ok:true}`
 
+## Limits (tune in `wrangler.toml`)
+
+All abuse caps live in `wrangler.toml`, so a self-hosted hub is bounded out of
+the box:
+
+- **Per-request** — bodies over 1 MiB and `/contribute` batches over
+  `MAX_ENTRIES` (`[vars]`, 1000) are refused with **413**. The host CLI never
+  sends more than the hub accepts.
+- **Feed size** — `/feed` returns at most `FEED_MAX` (`[vars]`, 50k) rows
+  (`?limit=N` for fewer) and sets `X-Swarm-Truncated: true` when capped.
+- **Rate limits** (`[[ratelimits]]`) — `/contribute` and `/purge` share a
+  per-connecting-IP write budget (120/min) plus a global write budget
+  (6000/min, bounds a distributed leaked-token holder); `/register` is tight
+  (20/min per IP) because enrollment is rare. Over budget → **429**.
+
+A 413/429 never breaks a box: publish is fail-soft — the cursor is kept and the
+whole delta is re-sent on the next scan (hub writes are upserts, so re-sends
+are harmless).
+
 ## Maintenance
 
 - Daily cron (04:17 UTC) prunes expired entries; `SWARM_TTL` (`[vars]`, 7d) is
-  hub-authoritative. Rotate a leaked token via `wrangler secret put` + redeploy.
+  hub-authoritative. Rotate a leaked shared secret via `wrangler secret put` +
+  redeploy; rotate a per-host token with `swatter swarm enroll --rotate` on that
+  box.
