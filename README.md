@@ -175,10 +175,15 @@ a key only for the providers you want; each is free:
 | Project Honey Pot | Free (membership) | Join projecthoneypot.org → request an **http:BL access key** (12 chars) from your member dashboard. Set `HTTPBL_KEY`. Needs `dig`/`host` installed. |
 
 Put keys in your **own** `/etc/swatter/swatter.conf` (root-only, `0600`) — never
-in the repo, never shared. The shipped `swatter.example.conf` has every key set
+in the repo, never shared — or, better, point each provider at a root-only key
+**file** (`ABUSEIPDB_KEY_FILE`, `GREYNOISE_KEY_FILE`, `HTTPBL_KEY_FILE`; one
+line, `0400`, and the file wins over an inline key) so the secret never sits in
+the conf at all. The shipped `swatter.example.conf` has every key set
 to empty by default. At runtime, keys never appear on a curl command line
 (where any local user could read them out of `ps`): every credentialed request
-passes its secret through a per-call `0600` config file (`curl -K`). The one
+passes its secret through a per-call `0600` config file (`curl -K`), kept under
+Swatter's private state directory — not `/tmp` — and swept by a daily GC so
+nothing lingers even if a run is killed mid-request. The one
 exception is Project Honey Pot's http:BL, whose protocol embeds the key in the
 DNS query itself — that key is lookup-only by design.
 
@@ -412,7 +417,21 @@ is unset (reporting would be inert).
 
 ## Fleet ban-sync
 
-On a multi-server fleet, share the permanent-ban list across hosts:
+Two ways to share confirmed offenders across a multi-server fleet:
+
+**Swarm hub (automated)** — self-host the [Swatter Swarm Hub](hub/README.md), a
+tiny Cloudflare Worker + D1 database that fits in the free tier. Each box
+publishes its confirmed permanent bans after every scan and consumes the
+merged, time-decaying fleet feed as the `swarm` intel provider. Enrollment
+(`swatter swarm enroll`) issues each box its **own** write token, so one
+compromised box can't impersonate another or poison the fleet under a shared
+credential. By default a fleet sighting only *boosts* an already-suspicious
+local score (`SWARM_ACTION=boost`); set `corroborated-block` to pre-block an IP
+once `SWARM_MIN_CORROBORATION` distinct hosts have independently confirmed it.
+When enabled, the nightly digest gains a Swarm plane showing what the box gave
+and got. Setup, hub API, and token model: [`hub/README.md`](hub/README.md).
+
+**Manual export/import** — no hub, just files:
 
 ```bash
 swatter export-bans /tmp/bans.txt       # write perm-ban list to file (or stdout)
