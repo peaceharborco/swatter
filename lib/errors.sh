@@ -175,12 +175,45 @@ _errors_validate_noise() {
 }
 _errors_validate_noise
 
+# Fatal classifier: a fatal whose message matches ERROR_FATAL_SCANNER and whose
+# signature repeats fewer than ERROR_FATAL_SCANNER_REPEATS times in the window
+# is scanner-induced — a bot executing a PHP file directly, outside the app
+# bootstrap — not an outage. Real breakage of the same shape (a broken plugin,
+# a half-deployed theme) repeats on every page view and crosses the threshold.
+# This is a match-POSITIVE classifier, so the failure modes invert relative to
+# ERROR_NOISE: an empty pattern would match every line and classify every fatal
+# as scanner-induced (a real outage graded green). Empty or invalid falls back
+# to the built-in default; to disable the classifier entirely, set
+# ERROR_FATAL_SCANNER_REPEATS=1 (every matching fatal then counts as genuine).
+_ERR_FATAL_SCANNER_DEFAULT='PHP Fatal error: Uncaught Error: (Call to undefined function|Undefined constant)'
+_errors_validate_fatal_scanner() {
+    if [[ -z "${ERROR_FATAL_SCANNER//[[:space:]]/}" ]]; then
+        log_warn "errors: ERROR_FATAL_SCANNER is empty; using built-in default (set ERROR_FATAL_SCANNER_REPEATS=1 to disable the classifier)"
+        ERROR_FATAL_SCANNER="$_ERR_FATAL_SCANNER_DEFAULT"
+    else
+        local rc=0
+        printf '' | grep -Eq "${ERROR_FATAL_SCANNER}" 2>/dev/null || rc=$?
+        if (( rc == 2 )); then
+            log_warn "errors: ERROR_FATAL_SCANNER is not a valid regex; using built-in default"
+            ERROR_FATAL_SCANNER="$_ERR_FATAL_SCANNER_DEFAULT"
+        fi
+    fi
+    # 0 and 1 both disable the classifier (no signature count is < them), which
+    # is the RED-safe direction — never clamp them upward.
+    case "${ERROR_FATAL_SCANNER_REPEATS:-}" in
+        *[!0-9]*|'')
+            log_warn "errors: ERROR_FATAL_SCANNER_REPEATS='${ERROR_FATAL_SCANNER_REPEATS:-}' is not a non-negative integer; using 3"
+            ERROR_FATAL_SCANNER_REPEATS=3 ;;
+    esac
+}
+_errors_validate_fatal_scanner
+
 # Build the "Server errors" digest section on stdout, and set globals:
-#   ERR_TOTAL ERR_FATAL ERR_GENUINE ERR_NOISE
+#   ERR_TOTAL ERR_FATAL ERR_FATAL_GENUINE ERR_FATAL_SCANNER ERR_GENUINE ERR_NOISE
 swatter_errors_section() {
     local window="$1" cutoff
     cutoff=$(( $(swatter_now) - $(_report_window_secs "$window") ))
-    ERR_TOTAL=0 ERR_FATAL=0 ERR_GENUINE=0 ERR_NOISE=0
+    ERR_TOTAL=0 ERR_FATAL=0 ERR_FATAL_GENUINE=0 ERR_FATAL_SCANNER=0 ERR_GENUINE=0 ERR_NOISE=0
 
     local stream; stream="$(_errors_consolidated "$cutoff")"
     [[ -n "$stream" ]] || { echo "Server errors: none in the last ${window}."; return 0; }
@@ -203,8 +236,40 @@ swatter_errors_section() {
     ERR_FATAL=$(printf '%s\n' "$fatal" | grep -c . || true)
     ERR_NOISE=$(( ERR_TOTAL - ERR_GENUINE ))
 
+    # Split fatals into genuine vs scanner-induced. Signature = the line with
+    # its timestamp stripped — PHP fatal messages are stable (file:line, no
+    # pids/clients), so identical crashes collapse and real breakage crosses
+    # the repeat gate. If classification produces nothing despite fatals being
+    # present, count every fatal as genuine — fail toward RED, never green.
+    # (That guard also covers the regex-dialect gap: the pattern is validated
+    # with grep -E but applied by awk, and a grep-legal/awk-illegal pattern
+    # just empties `marked`.) The regex rides in via ENVIRON, not -v, so awk
+    # never escape-processes operator-supplied backslashes.
+    local fatal_genuine="" fatal_scanner=""
+    if (( ERR_FATAL > 0 )); then
+        local marked
+        marked="$(printf '%s\n' "$fatal" | SWATTER_FS_RE="${ERROR_FATAL_SCANNER}" \
+            awk -v reps="${ERROR_FATAL_SCANNER_REPEATS}" '
+                { sig=$0; sub(/^\[[0-9-]+ [0-9:]+\] /,"",sig)
+                  line[NR]=$0; sigof[NR]=sig; cnt[sig]++ }
+                END { re=ENVIRON["SWATTER_FS_RE"]
+                      for (i=1;i<=NR;i++)
+                          print ((sigof[i] ~ re && cnt[sigof[i]] < reps) ? "S" : "G") "\t" line[i] }')"
+        if [[ -z "$marked" ]]; then
+            log_warn "errors: fatal classification failed; counting all fatals as genuine"
+            fatal_genuine="$fatal"
+        else
+            fatal_genuine="$(printf '%s\n' "$marked" | grep '^G' | cut -f2- || true)"
+            fatal_scanner="$(printf '%s\n' "$marked" | grep '^S' | cut -f2- || true)"
+        fi
+    fi
+    ERR_FATAL_GENUINE=$(printf '%s\n' "$fatal_genuine" | grep -c . || true)
+    ERR_FATAL_SCANNER=$(( ERR_FATAL - ERR_FATAL_GENUINE ))
+
+    local fshow="Fatal: ${ERR_FATAL}"
+    (( ERR_FATAL_SCANNER > 0 )) && fshow="Fatal: ${ERR_FATAL_GENUINE} genuine · ${ERR_FATAL_SCANNER} scanner-induced"
     {
-        echo "Non-fatal: ${ERR_GENUINE}  ·  Fatal: ${ERR_FATAL}  ·  filtered as known noise: ${ERR_NOISE}"
+        echo "Non-fatal: ${ERR_GENUINE}  ·  ${fshow}  ·  filtered as known noise: ${ERR_NOISE}"
         echo
         if (( ERR_GENUINE > 0 )); then
             echo "Issue signatures (count x normalized error):"
@@ -225,9 +290,14 @@ swatter_errors_section() {
               | awk '{n=$1; $1=""; sub(/^ /,""); printf "  %4d x  %s\n", n, $0}'
             echo
         fi
-        if (( ERR_FATAL > 0 )); then
+        if (( ERR_FATAL_GENUINE > 0 )); then
             echo "FATAL entries (verbatim):"
-            printf '%s\n' "$fatal" | head -25 | sed 's/^/  /'
+            printf '%s\n' "$fatal_genuine" | head -25 | sed 's/^/  /'
+            echo
+        fi
+        if (( ERR_FATAL_SCANNER > 0 )); then
+            echo "Scanner-induced FATALs (bots executing PHP files directly — no outage):"
+            printf '%s\n' "$fatal_scanner" | head -25 | sed 's/^/  /'
             echo
         fi
     }

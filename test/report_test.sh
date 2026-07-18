@@ -132,7 +132,8 @@ check text-footer-division "$(printf '%s' "$tbody" | grep -c 'Peace Harbor Studi
 check text-footer-gh    "$(printf '%s' "$tbody" | grep -c 'github.com/peaceharborco/swatter')" "1"
 
 # Status logic — traffic light, worst signal wins. (f=fatal e=non-fatal ol=origin b=blocks)
-_grade() { ERR_FATAL="$1" ERR_GENUINE="$2" OL_HITS="$3" RPT_ACTED="$4" REPORT_WINDOW=24h REPORT_TRIAGE_HINT="" REPORT_GRADE_FORCE=""; _report_grade; printf '%s' "$RPT_GRADE"; }
+_grade() { unset ERR_FATAL_GENUINE ERR_FATAL_SCANNER
+  ERR_FATAL="$1" ERR_GENUINE="$2" OL_HITS="$3" RPT_ACTED="$4" REPORT_WINDOW=24h REPORT_TRIAGE_HINT="" REPORT_GRADE_FORCE=""; _report_grade; printf '%s' "$RPT_GRADE"; }
 check status-quiet-green   "$(_grade 0 0 0 0)"      "GREEN"    # nothing at all
 check status-noise-green   "$(_grade 0 26 0 165)"   "GREEN"    # routine noise + blocks stay green
 check status-blocks-green  "$(_grade 0 0 0 900)"    "GREEN"    # a big attack Swatter handled is still green
@@ -149,7 +150,8 @@ ERR_FATAL=0 ERR_GENUINE=20 OL_HITS=0 RPT_ACTED=0 REPORT_WINDOW=24h REPORT_TRIAGE
 check reco-generic "$(printf '%s' "$RPT_RECO" | grep -c 'server-logs')" "0"
 
 # --- Traffic-light boundaries, wording, and subject-icon agreement (v2.8.0) ---
-_setgrade() { ERR_FATAL="$1" ERR_GENUINE="$2" OL_HITS="${3:-0}" RPT_ACTED="${4:-0}" \
+_setgrade() { unset ERR_FATAL_GENUINE ERR_FATAL_SCANNER
+    ERR_FATAL="$1" ERR_GENUINE="$2" OL_HITS="${3:-0}" RPT_ACTED="${4:-0}" \
     REPORT_WINDOW=24h REPORT_TRIAGE_HINT="" REPORT_GRADE_FORCE="${5:-}"; _report_grade; }
 # YELLOW starts exactly at REPORT_GRADE_C_ERRORS (100) — 99 is still GREEN.
 _setgrade 0 99  0 0; check bound-99-green    "$RPT_GRADE" "GREEN"
@@ -175,6 +177,46 @@ check force-red-no-zerofatal "$(printf '%s %s' "$RPT_GRADE_SUB" "$RPT_RECO" | gr
 # An unrecognized REPORT_GRADE_FORCE is ignored (warns) and the computed tier stands.
 _setgrade 2 0 0 0 bogus 2>/dev/null; check force-bogus-ignored "$RPT_GRADE" "RED"
 REPORT_GRADE_FORCE=""   # reset the global _setgrade left set, so later cases aren't forced/noisy
+
+# --- Scanner-induced fatal classification: grade on the GENUINE count --------
+# Classified window helper: ERR_FATAL total, then the genuine/scanner split.
+_setgrade_cls() { ERR_FATAL="$1" ERR_FATAL_GENUINE="$2" ERR_FATAL_SCANNER="$3" ERR_GENUINE="${4:-0}" \
+    OL_HITS=0 RPT_ACTED="${5:-0}" REPORT_WINDOW=24h REPORT_TRIAGE_HINT="" REPORT_GRADE_FORCE=""; _report_grade; }
+# Scanner-only fatals never trip RED; the sub-text says why the Fatal count isn't zero.
+_setgrade_cls 3 0 3 5 165
+check scanner-only-green   "$RPT_GRADE" "GREEN"
+check scanner-only-sub     "$(printf '%s' "$RPT_GRADE_SUB" | grep -c 'scanner-induced')" "1"
+check scanner-only-nofalse "$(printf '%s' "$RPT_GRADE_SUB" | grep -c 'No fatal errors')" "0"
+# One genuine fatal among scanner ones is still RED, counted as 1.
+_setgrade_cls 3 1 2 5 0
+check scanner-mixed-red    "$RPT_GRADE" "RED"
+check scanner-mixed-count  "$(printf '%s' "$RPT_GRADE_SUB" | grep -c '1 fatal error ')" "1"
+# Unclassified window (GENUINE unset) falls back to the raw total — toward RED.
+_setgrade 2 0 0 0; check unclassified-red "$RPT_GRADE" "RED"
+# Verdict and subject follow the same effective count: green lamp, no "3 FATAL" tail.
+ERR_FATAL=3 ERR_FATAL_GENUINE=0 ERR_FATAL_SCANNER=3 ERR_GENUINE=5 OL_HITS=0 RPT_ACTED=165
+check verdict-scanner-yellow "$(_report_verdict | cut -f1)" "yellow"   # non-fatal volume rules
+ERR_GENUINE=0
+check verdict-scanner-green  "$(_report_verdict | cut -f1)" "green"
+check verdict-scanner-tail   "$(_report_verdict | grep -c '0 FATAL')" "1"
+_setgrade_cls 3 0 3 0 165
+check subj-scanner-icon      "$(_report_subject 24h | grep -c '^🟢')" "1"
+check subj-scanner-nofatal   "$(_report_subject 24h | grep -c '3 FATAL')" "0"
+# Errors summary line: scanner-only wording, not "crashed; investigate now".
+ERR_FATAL=3 ERR_FATAL_GENUINE=0 ERR_FATAL_SCANNER=3 ERR_GENUINE=0
+check summary-scanner-calm   "$(_report_summary_errors | grep -c 'investigate now')" "0"
+check summary-scanner-word   "$(_report_summary_errors | grep -c 'scanner-induced')" "1"
+ERR_FATAL_GENUINE=1
+check summary-genuine-urgent "$(_report_summary_errors | grep -c 'investigate now')" "1"
+# Scanner branch must not claim "handled cleanly" when non-fatal volume is at
+# YELLOW level — the status card says investigate.
+ERR_FATAL=2 ERR_FATAL_GENUINE=0 ERR_FATAL_SCANNER=2 ERR_GENUINE=122
+check summary-scanner-vol    "$(_report_summary_errors | grep -c 'handled cleanly')" "0"
+check summary-scanner-look   "$(_report_summary_errors | grep -c 'worth a look')" "1"
+# Grade recap counts true non-fatals: a scanner-only window is "0 non-fatal", not 2.
+_setgrade_cls 2 0 2 2 165
+check recap-nonfatal-honest  "$(printf '%s' "$RPT_GRADE_SUB" | grep -c '0 non-fatal errors')" "1"
+unset ERR_FATAL_GENUINE ERR_FATAL_SCANNER   # don't leak the classified state into later cases
 
 # --- Swarm plane: present only when enabled; never touches grade/verdict/silence ---
 SW_ST="$(mktemp -d "${TMPDIR:-/tmp}/swatter-rptsw.XXXXXX")"; mkdir -p "${SW_ST}/feeds"

@@ -230,9 +230,10 @@ REPORT_LOGO_ALT=""
 # ("Review the sections below") so the public default suggests nothing bespoke.
 REPORT_TRIAGE_HINT=""
 # Status thresholds (traffic light GREEN/YELLOW/RED). Tunable per host. RED = any
-# fatal error. Only ELEVATED non-fatal error volume turns the status YELLOW —
-# routine noise and a high block count stay GREEN (blocks mean Swatter is doing
-# its job, not a problem). The two thresholds keep their historical names.
+# GENUINE fatal error — fatals classified scanner-induced by ERROR_FATAL_SCANNER
+# (below) don't trip it. Only ELEVATED non-fatal error volume turns the status
+# YELLOW — routine noise and a high block count stay GREEN (blocks mean Swatter
+# is doing its job, not a problem). The two thresholds keep their historical names.
 REPORT_GRADE_D_ERRORS=300         # >= this many non-fatal errors -> YELLOW "act now" wording (error flood)
 REPORT_GRADE_C_ERRORS=100         # >= this many non-fatal errors -> YELLOW (elevated, investigate)
 
@@ -267,6 +268,16 @@ ERROR_FPM_GLOB="/opt/cpanel/ea-php8*/root/usr/var/log/php-fpm/error.log"
 ERROR_MYSQL_GLOB="/var/lib/mysql/*.err"
 ERROR_PHP_HOME_GLOB="/home"
 ERROR_NOISE="prefetch request body failed|error reading status line from remote server|invalid URI path|Invalid method in request|no compatible SSL setup for policy|client denied by server configuration|Error dispatching request to"
+
+# Fatals matching this pattern that repeat fewer than REPEATS times in the
+# window are scanner-induced (a bot executing a PHP file directly, outside the
+# app bootstrap) and do not trip RED — real breakage of the same shape repeats
+# on every page view and crosses the threshold. TRADE-OFF: a genuine one-off
+# fatal of this shape on a near-zero-traffic site rides below the threshold
+# until it repeats; set REPEATS=1 to disable the classifier if that trade is
+# wrong for the box.
+ERROR_FATAL_SCANNER='PHP Fatal error: Uncaught Error: (Call to undefined function|Undefined constant)'
+ERROR_FATAL_SCANNER_REPEATS=3
 
 # The bad-path table ships with the repo by default; installs relocate it.
 BADPATHS_CONF="${BADPATHS_CONF:-${SWATTER_ROOT_DIR}/config/badpaths.conf}"

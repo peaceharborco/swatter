@@ -29,6 +29,8 @@ check intel-has-dshield "$(case " ${INTEL_PROVIDERS} " in *' dshield '*) echo ye
 check fromname-no-parens "$(case "${REPORT_FROM_NAME}" in *'('*|*')'*) echo bad;; *) echo ok;; esac)" "ok"
 check fromname-brackets  "$(case "${REPORT_FROM_NAME}" in 'Swatter ['*']') echo ok;; *) echo no;; esac)" "ok"
 # SMS grade-alert defaults: OFF out of the box, sensible trigger grades + dedup.
+check fatal-scanner-set   "$([[ -n "${ERROR_FATAL_SCANNER}" ]] && echo yes || echo no)" "yes"
+check fatal-scanner-reps  "${ERROR_FATAL_SCANNER_REPEATS}" "3"
 check alert-sms-off      "${ALERT_SMS_METHOD}" ""
 check alert-sms-grades   "${ALERT_SMS_GRADES}" "RED"
 check alert-sms-dedup    "${ALERT_SMS_DEDUP_HOURS}" "6"

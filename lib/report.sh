@@ -52,6 +52,10 @@ swatter_report_build() {
 
     RPT_ACTED=0 RPT_PERM=0 RPT_TEMP=0 RPT_CF=0 RPT_DIRECT=0 RPT_EXEMPT=0 RPT_WATCH=0 RPT_FAILED=0 RPT_FAIL_CAUSE="" RPT_GAVEUP=0
     ERR_TOTAL=0 ERR_FATAL=0 ERR_GENUINE=0 ERR_NOISE=0
+    # Unset, not zeroed: the errors plane sets these when it classifies the
+    # window's fatals. Unset = unclassified, and the grade falls back to the
+    # raw ERR_FATAL total — an unclassified fatal fails toward RED, never green.
+    unset ERR_FATAL_GENUINE ERR_FATAL_SCANNER
     OL_HITS=0 OL_IPS=0 OL_P80=0 OL_P443=0 OL_MODE="" OL_TOP_ROWS=""
     SWARM_FEED_N=0 SWARM_STALE=0 SWARM_PREBLOCKED=0 SWARM_CONTRIB=0 SWARM_LAST_PUB="none" SWARM_COUNTS_OK=1
 
@@ -355,7 +359,7 @@ _report_render_html() {
 
     # Server Errors (gated).
     if [[ "${ERROR_DIGEST_ENABLE}" == "true" ]]; then
-        local efc="$pine"; (( ${ERR_FATAL:-0} > 0 )) && efc="$ember"
+        local efc="$pine"; (( $(_report_fatal_effective) > 0 )) && efc="$ember"
         printf '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-top:1px solid %s;"><tr><td style="padding-top:14px;%s">Server Errors</td><td style="padding-top:14px;%s;font-weight:700;font-size:20px;color:%s;text-align:right;">%s</td></tr></table>' \
             "$bdr" "$h3" "$f_h" "$efc" "${ERR_GENUINE:-0}"
         printf '<div style="font-size:13px;color:%s;margin-top:5px;line-height:1.55;">%s</div><div style="font-size:12px;color:%s;margin-top:6px;"><b>%s</b> Non-Fatal &middot; <b style="color:%s;">%s</b> Fatal</div>' \
@@ -392,19 +396,26 @@ _report_send() {
 }
 
 # Factual one-line summary for the email subject: "LEVEL<TAB>SUMMARY". The status
+# Fatal count the grade/verdict/summary key on: the genuine count when the
+# errors plane has classified this window's fatals (ERR_FATAL_GENUINE set —
+# scanner-induced fatals, bots executing PHP files directly, are not outages),
+# else the raw total — an unclassified fatal fails toward RED, never green.
+_report_fatal_effective() { printf '%s' "${ERR_FATAL_GENUINE:-${ERR_FATAL:-0}}"; }
+
 # LAMP (RPT_GRADE_ICON, set by _report_grade on the traffic-light thresholds) is
 # what carries severity in the subject, so the SUMMARY text stays neutral counts
 # — no ⚠, no severity word — to avoid a green lamp sitting beside alarmist text
 # for sub-threshold error volume. The LEVEL field is vestigial (only the summary
 # after the tab is consumed, by _report_subject); kept for the tab contract.
 _report_verdict() {
+    local f; f="$(_report_fatal_effective)"
     local level="green" lead="healthy"
-    if   (( ${ERR_FATAL:-0}   > 0 )); then level="red";    lead="${ERR_FATAL} FATAL"
+    if   (( f > 0 ));                      then level="red";    lead="${f} FATAL"
     elif (( ${ERR_GENUINE:-0} > 0 )); then level="yellow"; lead="${ERR_GENUINE} server error(s)"
     fi
     local tail="${RPT_ACTED:-0} blocked"
     (( ${OL_HITS:-0} > 0 )) && tail="${tail} · ${OL_HITS} origin-lock"
-    [[ "$level" == "green" ]] && tail="${tail}, ${ERR_FATAL:-0} FATAL"
+    [[ "$level" == "green" ]] && tail="${tail}, ${f} FATAL"
     printf '%s\t%s · %s' "$level" "$lead" "$tail"
 }
 
@@ -416,7 +427,9 @@ _report_verdict() {
 #   GREEN  — nothing actionable. Blocks and origin-lock hits live here: they're
 #            Swatter working, not a problem, so they never leave GREEN.
 #   YELLOW — elevated non-fatal error volume worth a look (was C/D).
-#   RED    — a fatal error: a service or app may be down (was F).
+#   RED    — a GENUINE fatal error: a service or app may be down (was F).
+#            Scanner-induced fatals (classified by the errors plane via
+#            ERROR_FATAL_SCANNER) never trip RED; unclassified fatals do.
 #
 # REPORT_GRADE_FORCE=green|yellow|red overrides the computed tier so an operator
 # can force a status for a `--test` preview — run it once per status
@@ -427,7 +440,8 @@ _report_verdict() {
 # too — don't persist it. An unrecognized value is ignored (with a warning) and
 # the computed tier stands.
 _report_grade() {
-    local f="${ERR_FATAL:-0}" e="${ERR_GENUINE:-0}" b="${RPT_ACTED:-0}" ol="${OL_HITS:-0}"
+    local f; f="$(_report_fatal_effective)"
+    local fsc="${ERR_FATAL_SCANNER:-0}" e="${ERR_GENUINE:-0}" b="${RPT_ACTED:-0}" ol="${OL_HITS:-0}"
     local win="${REPORT_WINDOW:-24h}" hint="${REPORT_TRIAGE_HINT:-}"
     local dE="${REPORT_GRADE_D_ERRORS:-300}" cE="${REPORT_GRADE_C_ERRORS:-100}"
 
@@ -451,13 +465,22 @@ _report_grade() {
         *)      RPT_GRADE=GREEN;  RPT_GRADE_WORD="All Clear";   RPT_GRADE_ICON="🟢" ;;
     esac
 
-    local es; es="$( (( e == 1 )) || echo s )"    # pluralizers
+    # ERR_GENUINE includes fatal lines (by design), so the recap's "non-fatal"
+    # count must subtract them or a scanner-only window reads "2 non-fatal
+    # errors ... 2 scanner-induced fatals" about the same 2 lines.
+    local enf=$(( e - fsc - f )); (( enf < 0 )) && enf=0
+    local es; es="$( (( enf == 1 )) || echo s )"    # pluralizers
     local bs; bs="$( (( b == 1 )) || echo s )"
     local fs; fs="$( (( f == 1 )) || echo s )"
-    local recap="${e} non-fatal error${es} and ${b} block${bs} in the last ${win}."
+    local recap="${enf} non-fatal error${es} and ${b} block${bs} in the last ${win}."
+    # "No fatal errors" is only honest when none were even scanner-induced;
+    # otherwise say what the body's Fatal count actually is, so a green/yellow
+    # status never contradicts a non-zero Fatal line below it.
+    local nofatal="No fatal errors"
+    (( fsc > 0 )) && nofatal="No genuine fatals — ${fsc} scanner-induced (bots executing PHP files directly, not an outage)"
     # Shared tier predicates, computed once so the headline and recommendation
     # switches below key on the same conditions and can't drift apart.
-    local quiet=0; (( f == 0 && e == 0 && b == 0 && ol == 0 )) && quiet=1
+    local quiet=0; (( f == 0 && fsc == 0 && e == 0 && b == 0 && ol == 0 )) && quiet=1
     local flood=0; (( e >= dE )) && flood=1
     case "$RPT_GRADE_LEVEL" in
         green)
@@ -468,10 +491,10 @@ _report_grade() {
                 # Genuine errors present but below the alert threshold — don't call
                 # that "just Swatter doing its job" (those are real errors, not blocks).
                 RPT_GRADE_HEADLINE="All Clear — Nothing's On Fire"
-                RPT_GRADE_SUB="${recap} No fatal errors — below the volume that needs action."
+                RPT_GRADE_SUB="${recap} ${nofatal} — below the volume that needs action."
             else
                 RPT_GRADE_HEADLINE="All Clear — Nothing's On Fire"
-                RPT_GRADE_SUB="${recap} No fatal errors, no outage — just Swatter doing its job."
+                RPT_GRADE_SUB="${recap} ${nofatal}, no outage — just Swatter doing its job."
             fi ;;
         yellow)
             if (( flood )); then
@@ -479,12 +502,13 @@ _report_grade() {
                 RPT_GRADE_SUB="${recap} A high error count — check it before it escalates."
             else
                 RPT_GRADE_HEADLINE="Worth Investigating"
-                RPT_GRADE_SUB="${recap} No fatal errors, but the volume is above routine."
+                RPT_GRADE_SUB="${recap} ${nofatal}, but the volume is above routine."
             fi ;;
         red)
             RPT_GRADE_HEADLINE="Action Needed"
             if (( f > 0 )); then
                 RPT_GRADE_SUB="${f} fatal error${fs} — a service or app may be down."
+                (( fsc > 0 )) && RPT_GRADE_SUB="${RPT_GRADE_SUB} (${fsc} more scanner-induced, not counted.)"
             else
                 # Forced-red preview (REPORT_GRADE_FORCE=red with no fatal counted).
                 RPT_GRADE_SUB="A service or app may be down."
@@ -596,10 +620,22 @@ _report_summary_origin() {
     echo "Bots hitting the raw server IP to bypass Cloudflare — a mix of known attackers and unclassified scanners, ${disp}."
 }
 _report_summary_errors() {
-    local f="${ERR_FATAL:-0}" e="${ERR_GENUINE:-0}"
+    local f; f="$(_report_fatal_effective)"
+    local fsc="${ERR_FATAL_SCANNER:-0}" e="${ERR_GENUINE:-0}"
     if (( f > 0 )); then
         local fs; fs="$( (( f == 1 )) || echo s )"
         echo "${f} fatal error${fs} — a service or app crashed; investigate now. ${e} non-fatal alongside."
+    elif (( fsc > 0 )); then
+        # Non-fatal residual (ERR_GENUINE includes the scanner fatals): the calm
+        # wording is only honest when that volume is below the YELLOW threshold —
+        # never claim "handled cleanly" beside an Investigate/Act-Now status card.
+        local enf=$(( e - fsc )); (( enf < 0 )) && enf=0
+        local fscs; fscs="$( (( fsc == 1 )) || echo s )"
+        if (( enf >= ${REPORT_GRADE_C_ERRORS:-100} )); then
+            echo "${fsc} scanner-induced fatal${fscs} (bots executing PHP files directly — not an outage), plus ${enf} non-fatal errors — volume above routine, worth a look."
+        else
+            echo "${fsc} scanner-induced fatal${fscs} — bots executing PHP files directly, not a crash or outage. The rest handled cleanly."
+        fi
     elif (( e > 0 )); then
         echo "Mostly scanner-induced proxy noise and rejected probes the server handled cleanly. No crashes or outages."
     else

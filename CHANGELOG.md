@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-07-18
+
+### Changed
+- **RED status now requires a GENUINE fatal — scanner-induced fatals no longer
+  cry wolf.** A fatal matching `ERROR_FATAL_SCANNER` (default: PHP
+  `Call to undefined function` / `Undefined constant` uncaught errors — the
+  signature of a bot executing a PHP file directly, outside the app bootstrap)
+  that repeats fewer than `ERROR_FATAL_SCANNER_REPEATS` (default 3) times in
+  the window is classified scanner-induced: it still appears in the digest
+  (own labeled section, counted in the `Fatal:` breakdown) but does not trip
+  the RED status or its SMS. Real breakage of the same shape repeats on every
+  page view, crosses the threshold, and stays RED. Fail-safe by construction:
+  an empty/invalid pattern falls back to the built-in default, a failed
+  classification counts every fatal as genuine, and an unclassified window
+  grades on the raw total — degradation always leans RED, never green.
+  Trade-off (documented in the example conf): a genuine one-off fatal of this
+  shape on a near-zero-traffic site rides below the threshold until it
+  repeats; `ERROR_FATAL_SCANNER_REPEATS=1` disables the classifier.
+
 ## [2.9.5] - 2026-07-17
 
 ### Security
@@ -947,7 +966,8 @@ plane-correct blocking (CSF for direct-to-origin, Cloudflare IP Access Rules for
 via-proxy), a hardcoded Cloudflare never-block set, and fail-closed behavior when
 the range list is stale.
 
-[Unreleased]: https://github.com/peaceharborco/swatter/compare/v2.9.5...HEAD
+[Unreleased]: https://github.com/peaceharborco/swatter/compare/v2.10.0...HEAD
+[2.10.0]: https://github.com/peaceharborco/swatter/compare/v2.9.5...v2.10.0
 [2.9.5]: https://github.com/peaceharborco/swatter/compare/v2.9.4...v2.9.5
 [2.9.4]: https://github.com/peaceharborco/swatter/compare/v2.9.3...v2.9.4
 [2.9.3]: https://github.com/peaceharborco/swatter/compare/v2.9.2...v2.9.3

@@ -467,8 +467,10 @@ on the receiving hosts to keep ban lists in sync across a fleet.
 report (verdict line → stat tiles → per-plane tables). Each report leads with a
 **traffic-light status** — 🟢 GREEN (all clear: blocks and origin-lock drops
 live here, that's Swatter working), 🟡 YELLOW (elevated non-fatal error volume,
-worth a look), 🔴 RED (a fatal error — a service or app may be down) — shown in
-the subject line so the inbox list reads at a glance. It covers up to four
+worth a look), 🔴 RED (a genuine fatal error — a service or app may be down;
+one-off fatals from bots executing PHP files directly are classified
+scanner-induced and stay off the RED trigger, see `ERROR_FATAL_SCANNER`) —
+shown in the subject line so the inbox list reads at a glance. It covers up to four
 planes of server health:
 
 - **Bad actors** — blocks taken (perm/temp), grouped by offense type, bad-path
