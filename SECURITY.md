@@ -43,6 +43,10 @@ In scope:
 
 - The `swatter` CLI and `lib/` modules (scoring, classification, allowlisting,
   firewall backends, intel providers, reporting/alerting).
+- The swarm hub Worker under `hub/` (token/auth model, feed integrity, rate
+  limits) — the fleet trust boundary. A flaw that lets one credential
+  impersonate another host, forge fleet corroboration, or poison the shared
+  feed is in scope.
 - The installer and cron/logrotate units under `install/`.
 - Anything that could cause Swatter to block traffic it should allow, **fail to
   fail-closed**, leak configured credentials, or escalate beyond its intended
@@ -51,7 +55,9 @@ In scope:
 Out of scope:
 
 - Vulnerabilities in third-party threat-intel feeds or APIs themselves.
-- CSF, iptables/ipset, Cloudflare, or the host OS — report those upstream.
+- CSF, iptables/ipset, the Cloudflare platform itself (Workers/D1/WAF), or the
+  host OS — report those upstream. (The hub *code* in `hub/` is in scope, per
+  above.)
 - Misconfiguration of a user's own `swatter.conf` (e.g. an over-broad allowlist).
 
 ## Good-faith safe harbor

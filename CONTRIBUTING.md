@@ -11,24 +11,32 @@ linter stay green, and the diff is focused.**
 - `shellcheck`
 - `jq` and `curl` are runtime-optional (intel / Cloudflare plane); not needed to
   run the test suite.
+- Node 22+ — only if you touch the swarm hub (`hub/`).
 
 On Debian/Ubuntu: `sudo apt-get install -y gawk shellcheck`.
 
 ## Running the tests
 
-The same two commands CI runs — run both before opening a PR:
+The same commands CI runs — run them before opening a PR:
 
 ```bash
 # 1. Lint (must be clean at error severity)
-shellcheck --severity=error bin/swatter lib/*.sh install/*.sh test/*.sh
+shellcheck --severity=error bin/swatter lib/*.sh lib/providers/*.sh install/*.sh test/*.sh
 
-# 2. Test suite
+# 2. Test suite (exits non-zero if any suite fails)
 make test
 ```
 
 Individual test files under `test/` are plain executable scripts and can be run
 directly, e.g. `bash test/score_test.sh`. Each `lib/` module has a matching
 `*_test.sh`.
+
+If your change touches the swarm hub, run its suite too (vitest against real
+`workerd` — CI runs this as a separate job):
+
+```bash
+cd hub && npm ci && npm test
+```
 
 ## Pull-request checklist
 
@@ -51,7 +59,7 @@ docs(readme): clarify the ipset backend
 ```
 
 Common scopes: `intel`, `classify`, `score`, `block`, `report`, `notify`,
-`allowlist`, `cf`, `install`, `docs`.
+`allowlist`, `cf`, `swarm`, `hub`, `install`, `docs`.
 
 ## Code style
 
