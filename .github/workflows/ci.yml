@@ -13,10 +13,23 @@ jobs:
       - name: Install gawk + shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y -qq gawk shellcheck
       - name: Shellcheck (error severity)
-        run: shellcheck --severity=error bin/swatter lib/*.sh install/*.sh test/*.sh
-      - name: Score pipeline tests
-        run: bash test/score_test.sh
-      - name: Cloudflare detection + fail-closed tests
-        run: bash test/detect_test.sh
-      - name: Origin-lock tests
-        run: bash test/origin_lock_test.sh
+        run: shellcheck --severity=error bin/swatter lib/*.sh lib/providers/*.sh install/*.sh test/*.sh
+      - name: Full test suite
+        run: make test
+
+  hub:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hub
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: hub/package-lock.json
+      - name: Install hub dependencies
+        run: npm ci
+      - name: Hub test suite (vitest + workerd)
+        run: npm test

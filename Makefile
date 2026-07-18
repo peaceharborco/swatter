@@ -1,9 +1,14 @@
 # Swatter — maintainer tasks. The tool itself is plain bash; this is convenience.
 .PHONY: test release
 
-# Run the full test suite.
+# Run the full test suite. Exits non-zero if any suite fails (CI depends on this).
 test:
-	@for t in test/*_test.sh; do printf '%-22s ' "$$(basename $$t)"; bash "$$t" | tail -1; done
+	@fail=0; for t in test/*_test.sh; do \
+		printf '%-22s ' "$$(basename $$t)"; \
+		out="$$(bash "$$t")"; rc=$$?; \
+		printf '%s\n' "$$out" | tail -1; \
+		[ $$rc -eq 0 ] || fail=1; \
+	done; exit $$fail
 
 # Cut a release. Pass the version or a bump word, plus optional flags:
 #   make release V=1.2.3
