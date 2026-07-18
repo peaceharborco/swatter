@@ -45,7 +45,7 @@ rm -f "$TF"
 STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/swatter-hard.XXXXXX")"; trap 'rm -rf "$STATE_DIR"' EXIT
 cfg="$(swatter_curl_cfg 'header = "X-Test: 1"')"
 check curlcfg-under-statedir "$([[ "$cfg" == "${STATE_DIR}/.curlcfg/"* ]] && echo yes || echo no)" "yes"
-check curlcfg-not-in-tmp     "$([[ "$cfg" == /tmp/* ]] && echo yes || echo no)" "no"
+check curlcfg-not-in-tmp     "$([[ "$(dirname -- "$cfg")" == "${TMPDIR:-/tmp}" ]] && echo yes || echo no)" "no"
 check curlcfg-file-0600      "$(mode "$cfg")" "600"
 check curlcfg-dir-0700       "$(mode "${STATE_DIR}/.curlcfg")" "700"
 rm -f "$cfg"
