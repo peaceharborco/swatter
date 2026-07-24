@@ -819,7 +819,7 @@ error responses), so even the default tuning won't ban an owner for logging in.
 | `swatter metrics [--print]` | write (or print) the Prometheus textfile |
 | `swatter export-bans [file]` | write the perm-ban list to a file (or stdout) |
 | `swatter import-bans <file>` | block each listed IP as perm (skips allowlisted / invalid) |
-| `swatter escalate-preview [--window N]` | who would escalate to a perm, read-only from the ledger (sqlite only) |
+| `swatter escalate-preview [--window N]` | who would escalate to a perm, or is one offense away, read-only from the ledger (sqlite only) |
 | `swatter rollback-ladder --since <epoch\|iso> [--dry-run]` | bulk-undo permanent bans the recidivism ladder placed |
 
 ---

@@ -624,7 +624,7 @@ cmd_metrics() {
     if [[ "${1:-}" == "--print" ]]; then swatter_metrics_emit; else swatter_metrics_write; fi
 }
 
-usage() { sed -n '2,31p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,32p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
 
 main() {
     local sub="${1:-}"; shift || true

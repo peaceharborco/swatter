@@ -10,12 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Recidivism ladder: preview and rollback.** New `swatter escalate-preview
   [--window N]` (read-only, ledger-only, sqlite store) answers "who would
-  escalate to a perm at N days" without touching cursors, locks, or state —
-  safe to run against a live host mid-scan. New `swatter rollback-ladder
-  --since <epoch|iso> [--dry-run]` bulk-undoes permanent bans the ladder
-  placed: one state-lock acquisition for the whole run, continues past a
-  per-IP backend failure, and exits non-zero if any IP was left partially
-  unblocked.
+  escalate to a perm at N days, or is one offense away" without touching
+  cursors, locks, or state — safe to run against a live host mid-scan. New
+  `swatter rollback-ladder --since <epoch|iso> [--dry-run]` bulk-undoes
+  permanent bans the ladder placed: one state-lock acquisition for the whole
+  run, continues past a per-IP backend failure, and exits non-zero if any IP
+  was left partially unblocked.
 - **Perm-rate tripwire.** New `PERM_RATE_ALERT_PER_RUN` (default 5) and
   `PERM_RATE_ALERT_PER_DAY` (default 15) fire an alert on the same run that
   crosses them — the nightly digest alone would otherwise report a runaway

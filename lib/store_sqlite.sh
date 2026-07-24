@@ -151,6 +151,12 @@ swatter_store_recent_temp_count() {
 #   status: at-bar   = prior >= REPEAT_N   (already at/over the raw bar)
 #           one-away = prior == REPEAT_N-1 (the next offense is the one that perms)
 # Column 2 is the PRIOR count, so the ban this produces reads recidivism=<col2>+1.
+# This bar is REPEAT_N-based and does not model REPEAT_N_CRITICAL_SINGLE, so it
+# can list an all-critical IP that actually needs another temp first — errs
+# toward over-reporting, never under. That guarantee depends on the
+# REPEAT_N_CRITICAL_SINGLE >= REPEAT_N clamp in lib/common.sh: without it, an
+# all-critical IP's effective threshold could fall below REPEAT_N and this
+# preview would under-report again.
 #   swatter_escalate_preview [window_days]
 swatter_escalate_preview() {
     local win="${1:-${REPEAT_WINDOW_DAYS}}"
@@ -228,8 +234,10 @@ swatter_store_temps_all_critical_single() {
     # No once-per-process dedup: every caller reads this through a command
     # substitution (`allcrit="$(...)"`), so a flag set here lives and dies in
     # that subshell — a guard would look like throttling while actually doing
-    # nothing. It fires once per ladder-eligible offender per scan instead,
-    # which is bounded by MAX_BLOCKS_PER_RUN and is a config gap worth repeating.
+    # nothing. It fires once per ladder-eligible offender per scan instead —
+    # MAX_BLOCKS_PER_RUN doesn't bound it; that cap lives inside
+    # _swatter_apply_plane (lib/score.sh), which runs AFTER this warning, so
+    # volume actually tracks the number of over-SCORE_TEMP offenders per scan.
     if [[ "${STORE}" != "sqlite" ]]; then
         log_warn "REPEAT_N_CRITICAL_SINGLE is INERT on STORE=flatfile (needs the reason-indexed ledger); escalation uses REPEAT_N=${REPEAT_N} for all-CRITICAL-single offenders too"
         echo 0; return 0
