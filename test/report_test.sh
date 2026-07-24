@@ -294,6 +294,25 @@ norecid_body="$(swatter_report_build 24h)"
 check digest-recid-quiet "$(printf '%s' "$norecid_body" | grep -c 'recidivism ladder')" "0"
 rm -rf "$LOG_DIR"
 
+# NON-PERM records carrying evidence.recidivism must NOT be counted. lib/score.sh
+# stamps the evidence BEFORE the backend call, so every non-success path audits
+# it too: exempt, skipped-failclosed, skipped-cap/config/novhost, failed. A
+# counter keyed on the evidence alone renders the self-contradicting pair
+# "permanent blocks: 0" / "2 of those permanent block(s) came from repeat
+# offenses" — bans reported that were never placed. Seed exactly that shape.
+LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/swatter-rptrecidnp.XXXXXX")"
+printf '{"ts":%s,"ip":"1.2.3.7","score":91,"action":"skipped-failclosed","channel":"csf","ttl":0,"reason":"score=91 recidivism=3/30d","reputation":0,"mode":"enforce","evidence":{"recidivism":3}}\n' "$_recid_now" > "$LOG_DIR/decisions.jsonl"
+printf '{"ts":%s,"ip":"1.2.3.8","score":91,"action":"exempt","channel":"none","ttl":0,"reason":"intel:allowlisted recidivism=3/30d","reputation":0,"mode":"enforce","evidence":{"recidivism":3}}\n' "$_recid_now" >> "$LOG_DIR/decisions.jsonl"
+nonperm_body="$(swatter_report_build 24h)"
+check digest-recid-nonperm-text "$(printf '%s' "$nonperm_body" | grep -c 'recidivism ladder')" "0"
+# Same global drives the HTML tile, so assert there too (one fix, both renders).
+_nprecid_bodyfile="$(mktemp "${TMPDIR:-/tmp}/swatter-rptrecidnp-body.XXXXXX")"
+swatter_report_build 24h > "$_nprecid_bodyfile"
+check digest-recid-nonperm-global "${RPT_RECID}" "0"
+html_nonperm="$(_report_render_html "$(cat "$_nprecid_bodyfile")")"
+check digest-recid-nonperm-html "$(printf '%s' "$html_nonperm" | grep -c 'recidivism ladder')" "0"
+rm -f "$_nprecid_bodyfile"; rm -rf "$LOG_DIR"
+
 # --- recidivism count in the HTML digest -----------------------------------
 # The email is delivered multipart/alternative and mail clients (Gmail,
 # Outlook, Apple Mail) render only the HTML part, so the Bad Actors tile in

@@ -167,7 +167,18 @@ _report_emit_abuse() {
 
     # Ladder perms in-window. Match evidence.recidivism (stamped on every ladder
     # perm by lib/score.sh), NOT .reason — same rule as evidence.swarm below.
-    RPT_RECID=$(printf '%s\n' "$recs" | jq -rc 'select(.evidence.recidivism != null)' | grep -c . || true)
+    #
+    # The .action=="perm" filter is load-bearing, not decoration. lib/score.sh
+    # stamps evidence.recidivism into $ev BEFORE _swatter_apply_plane runs, so
+    # every NON-success path audits that same evidence: exempt, skipped-cap,
+    # skipped-failclosed, skipped-config, skipped-novhost, failed. Without the
+    # filter the digest reports "permanent blocks: 0" and, one line later,
+    # "2 of those permanent block(s) came from repeat offenses" — counting bans
+    # that were never placed. Most reachable path: an IP allowlisted via
+    # `swatter allow` after accruing REPEAT_N-1 temps hits the ladder branch on
+    # its next offense (evidence stamped) and is then exempted; a fail-closed
+    # run produces it at scale.
+    RPT_RECID=$(printf '%s\n' "$recs" | jq -rc 'select(.action=="perm" and .evidence.recidivism != null)' | grep -c . || true)
 
     # Capture the top 1-2 offense labels (for the plain-language summary). Globals
     # persist because the builder runs emit-abuse via redirection, not a subshell.
