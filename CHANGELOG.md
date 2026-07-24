@@ -44,6 +44,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validated as positive integers at config load — an invalid value falls back
   to its default with a logged warning instead of quietly misbehaving (an
   empty `REPEAT_N`, for one, previously made every temp perm-eligible).
+- **`escalate-preview` no longer under-reports by exactly one offense.** It
+  selected IPs with `>= REPEAT_N` prior temps, but the decider counts the
+  *pending* offense (`prior + 1 >= REPEAT_N`), so the IPs about to be banned
+  first — those holding `REPEAT_N-1` temps — were missing from the very list
+  an operator reads before widening the window. The bar is now `REPEAT_N-1`,
+  the count column is named `temps_prior`, and a new `status` column marks
+  each row `one-away` or `at-bar`.
+- **The nightly digest counted recidivism on decisions that placed no ban.**
+  `evidence.recidivism` is stamped before the backend call, so `exempt`,
+  `skipped-failclosed`, `skipped-cap/config/novhost` and `failed` records all
+  carry it; the counter now also requires `action=perm`. Fixes digests reading
+  "permanent blocks: 0" directly above "2 of those permanent block(s) came
+  from repeat offenses". Same fix covers the HTML tile.
+- `PERM_RATE_ALERT_PER_RUN` / `PERM_RATE_ALERT_PER_DAY` are now validated
+  (integers 1-1000) like the escalation knobs. An empty value made the
+  tripwire fire every run with zero perms placed (hourly alerts, forever); a
+  non-numeric one aborted `swatter_scan` outright under `set -u`.
+- `REPEAT_N_CRITICAL_SINGLE` below `REPEAT_N` is now clamped up to `REPEAT_N`
+  with a warning. The knob only ever raises the bar, but nothing enforced
+  that: `REPEAT_N_CRITICAL_SINGLE=1` (a plausible reading as "+1 more") turned
+  the one path built to be less aggressive into the most aggressive one.
+- `swatter rollback-ladder` now warns that rolled-back perms already reported
+  to AbuseIPDB are **not** withdrawn, when `ABUSEIPDB_REPORT=true` — mirroring
+  the existing swarm-hub notice.
+- The CRITICAL-single gate now logs a warning when it is inert (`STORE=flatfile`
+  cannot evaluate it, and falling back to `REPEAT_N` degrades toward *more*
+  banning). Documented as sqlite-only, along with the window-length warm-up
+  period after upgrading on any store.
 
 ## [2.10.0] - 2026-07-18
 

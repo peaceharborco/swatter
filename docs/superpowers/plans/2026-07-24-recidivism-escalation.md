@@ -309,6 +309,15 @@ Expected: FAIL on `repeat-n-empty` (got empty, want `3`), `repeat-n-alpha`, `rep
 
 In `lib/common.sh`, add immediately before the closing `}` of `swatter_load_config` (after the `BADPATHS_CONF` block):
 
+> **The snippet below is OUT OF DATE — the shipped code in `lib/common.sh` is authoritative.** This
+> version predates the octal fix: a leading-zero numeral like `"020"` passes `^[0-9]+$` but bash
+> `(( ))` reads it as OCTAL (16), and `"089"`/`"099"` throw "value too great for base", aborting the
+> bounds check with no `log_warn` and letting the raw string through. The shipped validator forces
+> base 10 with `10#` *and* reassigns the canonical decimal value, so no downstream plain `(( ))` can
+> re-parse the padded string. It also validates `REPEAT_N_CRITICAL_SINGLE`, `PERM_RATE_ALERT_PER_RUN`
+> and `PERM_RATE_ALERT_PER_DAY`, and clamps `REPEAT_N_CRITICAL_SINGLE` up to `REPEAT_N` (that knob
+> only ever raises the bar). Do not re-apply this snippet verbatim on a re-run of the plan.
+
 ```bash
     # Escalation knobs are interpolated straight into bash arithmetic
     # (lib/score.sh's `prior + 1 >= REPEAT_N`, lib/store_sqlite.sh's window
@@ -913,6 +922,14 @@ EOS
 ```
 
 Register `rollback-ladder) shift; swatter_with_state_lock 120 cmd_rollback_ladder "$@" ;;` — **one** lock acquisition for the whole run, with a longer wait than `unblock`'s 30s default, so the loop cannot abort mid-list against the `*/5` cron.
+
+> **That dispatch line is NON-FUNCTIONAL as written — see the shipped `bin/swatter`.** Two defects:
+> `swatter_with_state_lock` only *gates* entry (it acquires the lock and returns; it does not run a
+> command under it, unlike a `flock -c`-style wrapper), so `cmd_rollback_ladder` would never execute
+> and the subcommand would silently do nothing; and `main()` has already consumed the subcommand
+> (`local sub="${1:-}"; shift`), so the extra `shift` eats the first real argument. The shipped code
+> dispatches plainly — `rollback-ladder) cmd_rollback_ladder "$@" ;;` — and takes the lock *inside*
+> the command, once, before any work, skipping it for `--dry-run`. Do not re-apply this line.
 
 - [ ] **Step 6: Verify and commit**
 
