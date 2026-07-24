@@ -436,6 +436,14 @@ _swatter_retry_pending() {
     done <<< "$rows"
 }
 
+# Escalation threshold for this IP. Normally REPEAT_N; raised when EVERY
+# in-window temp was a single-request CRITICAL probe (see REPEAT_N_CRITICAL_SINGLE).
+#   _swatter_recid_threshold <all_critical:0|1>
+_swatter_recid_threshold() {
+    if [[ "${1:-0}" == "1" ]]; then printf '%s' "${REPEAT_N_CRITICAL_SINGLE:-4}"
+    else printf '%s' "${REPEAT_N}"; fi
+}
+
 # Main scan.
 swatter_scan() {
     # Fail closed only when a Cloudflare plane exists but its range list is
@@ -508,6 +516,8 @@ swatter_scan() {
         local reason="score=${folded}"
         [[ -n "$replabel" ]] && reason="${reason} intel=${replabel}(${rep})"
         [[ -n "$asn_label" ]] && reason="${reason} asn=${asn_label}+${W_ASN:-12}"
+        local drule; drule="$(printf '%s' "$ev" | sed -n 's/.*"decisive_rule":"\([^"]*\)".*/\1/p')"
+        [[ -n "$drule" ]] && reason="${reason} rule=${drule}"
 
         # Suppression is total — exempt everywhere — UNLESS a honeypot hit and
         # HONEYPOT_OVERRIDES_SUPPRESS=true together override it (operator opt-in;
@@ -540,8 +550,11 @@ swatter_scan() {
             _swatter_perm_gate "$ip" "$plane" "$want_ch" "$folded" "$reason" "$ev" "$rep" "$top_vhost" "$healthy" && continue
             local prior; prior="$(swatter_store_recent_temp_count "$ip")"
             [[ "$prior" =~ ^[0-9]+$ ]] || prior=0
+            local allcrit thresh
+            allcrit="$(swatter_store_temps_all_critical_single "$ip" "$(( $(swatter_now) - REPEAT_WINDOW_DAYS*86400 ))")"
+            thresh="$(_swatter_recid_threshold "$allcrit")"
             local action ttl=0
-            if (( prior + 1 >= REPEAT_N )); then
+            if (( prior + 1 >= thresh )); then
                 action="perm"
                 # Make the escalation self-explanatory: without this a ladder
                 # perm's reason reads only `score=91 intel=...`, so neither the
@@ -550,6 +563,7 @@ swatter_scan() {
                 # offense-type vocabulary the digest groups on (report.sh
                 # _RPT_RULE_LABELS); recidivism is a different axis.
                 reason="${reason} recidivism=$(( prior + 1 ))/${REPEAT_WINDOW_DAYS}d"
+                (( allcrit )) && reason="${reason} crit-single"
                 ev="$(_swatter_ev_stamp "$ev" recidivism "$(( prior + 1 ))")"
             else
                 action="temp"; ttl="$(_swatter_pick_ttl "$prior")"

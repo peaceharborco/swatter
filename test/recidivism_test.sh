@@ -107,6 +107,57 @@ fi
 # No-jq path returns the original untouched.
 check stamp-nojq      "$(SWATTER_HAVE_JQ=0 _swatter_ev_stamp '{"a":1}' recidivism 3)" '{"a":1}'
 
+# --- CRITICAL-single gate --------------------------------------------------
+# A one-request CRITICAL probe is already a temp (score.awk floors it at 90 and
+# bypasses MIN_REQS). Three such singles must NOT be enough for a permanent ban;
+# a fourth is. Multi-signal offenders still escalate at REPEAT_N.
+check crit-gate-default "${REPEAT_N_CRITICAL_SINGLE}" "4"
+check crit-all-raises  "$(_swatter_recid_threshold 1)" "4"   # all-critical -> 4
+check crit-mixed-normal "$(_swatter_recid_threshold 0)" "3"  # any non-critical -> REPEAT_N
+
+# swatter_store_temps_all_critical_single reads the LEDGER (not the firewall
+# comment, which lib/block_csf.sh truncates to 120 chars) so it always sees the
+# full reason string.
+SINCE_CRIT="$(( NOW - REPEAT_WINDOW_DAYS*DAY ))"
+seed_reason() { # ip days_ago reason
+  local ip="$1" days="$2" reason="$3"
+  sqlite3 "$db" "INSERT INTO actions(ip,ts,action,channel,ttl,score,reason,dry_run)
+    VALUES('${ip}',$(( NOW - days*DAY )),'temp','csf',3600,91,'${reason}',0);"
+}
+
+# Zero temps in window: must report 0 ("all critical"), not misreport an empty
+# set as all-critical.
+check crit-zero-temps "$(swatter_store_temps_all_critical_single 10.0.9.1 "$SINCE_CRIT")" "0"
+
+# Two prior CRITICAL-single temps: the 3rd offense computed against them must
+# NOT reach perm (threshold is raised to REPEAT_N_CRITICAL_SINGLE=4).
+seed_reason 10.0.9.2 6 "score=91 rule=critical_badpath"
+seed_reason 10.0.9.2 5 "score=91 rule=critical_badpath"
+allcrit="$(swatter_store_temps_all_critical_single 10.0.9.2 "$SINCE_CRIT")"
+prior="$(swatter_store_recent_temp_count 10.0.9.2)"
+thresh="$(_swatter_recid_threshold "$allcrit")"
+check crit-2prior-allcrit  "$allcrit" "1"
+check crit-3rd-no-perm     "$(( prior + 1 >= thresh ? 1 : 0 ))" "0"
+
+# Record that 3rd single (now 3 prior, all critical): the 4th offense DOES perm.
+seed_reason 10.0.9.2 4 "score=91 rule=critical_badpath"
+allcrit="$(swatter_store_temps_all_critical_single 10.0.9.2 "$SINCE_CRIT")"
+prior="$(swatter_store_recent_temp_count 10.0.9.2)"
+thresh="$(_swatter_recid_threshold "$allcrit")"
+check crit-3prior-allcrit  "$allcrit" "1"
+check crit-4th-perms       "$(( prior + 1 >= thresh ? 1 : 0 ))" "1"
+
+# Two prior temps, one of them multi-signal (not a CRITICAL single): the 3rd
+# offense still perms at the normal REPEAT_N=3 — this offender is unaffected
+# by the gate.
+seed_reason 10.0.9.3 6 "score=91 rule=critical_badpath"
+seed_reason 10.0.9.3 5 "score=85 rule=scanner_profile"
+allcrit="$(swatter_store_temps_all_critical_single 10.0.9.3 "$SINCE_CRIT")"
+prior="$(swatter_store_recent_temp_count 10.0.9.3)"
+thresh="$(_swatter_recid_threshold "$allcrit")"
+check crit-mixed-not-allcrit "$allcrit" "0"
+check crit-mixed-perms-at-3  "$(( prior + 1 >= thresh ? 1 : 0 ))" "1"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

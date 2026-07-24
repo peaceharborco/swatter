@@ -100,6 +100,11 @@ RATE_SAT=8
 
 TTL_LADDER="3600 21600 86400 259200"
 REPEAT_N=3
+# A CRITICAL bad-path hit is a temp at ANY volume (score.awk floors it at 90 and
+# bypasses MIN_REQS), so a chain of single probes would otherwise reach a
+# permanent ban in REPEAT_N hits — cheap for an attacker to drive against a third
+# party's IP. When EVERY in-window temp was such a single, require this many.
+: "${REPEAT_N_CRITICAL_SINGLE:=4}"
 REPEAT_WINDOW_DAYS=7
 CRITICAL_TTL_FLOOR=86400
 

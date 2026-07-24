@@ -185,6 +185,30 @@ swatter_ladder_perms_since() {
             ORDER BY ip;"
 }
 
+# 1 when EVERY enforced in-window temp for this IP was a single-request CRITICAL
+# probe (reason carries badpath CRITICAL and the request count is 1), else 0.
+# Used to raise the escalation bar — see _swatter_recid_threshold. Reads the
+# LEDGER, not the firewall comment (lib/block_csf.sh truncates that to 120
+# chars), so a longer reason is never mistaken for a mixed-evidence offense.
+# Zero temps in window is NOT "all critical" — it just means there is nothing
+# yet to raise the bar over.
+#   swatter_store_temps_all_critical_single <ip> <since_epoch>
+swatter_store_temps_all_critical_single() {
+    local ip="$1" since="$2"
+    [[ "${STORE}" == "sqlite" ]] || { echo 0; return 0; }
+    _store_ip_ok "$ip" || { echo 0; return 0; }
+    # Read-only guarantee: sqlite3 creates the DB file merely by opening a
+    # connection to a path that doesn't exist yet. Check for the file first so
+    # a query never plants a phantom DB (mirrors swatter_store_perm_count_since).
+    [[ -e "$(_swatter_db)" ]] || { echo 0; return 0; }
+    local sip; sip="$(_sql_escape "$ip")"
+    local tot crit
+    tot="$(_sqlq "SELECT COUNT(*) FROM actions WHERE ip='${sip}' AND action='temp' AND dry_run=0 AND ts>${since};")"
+    crit="$(_sqlq "SELECT COUNT(*) FROM actions WHERE ip='${sip}' AND action='temp' AND dry_run=0 AND ts>${since} AND reason LIKE '%critical_badpath%';")"
+    [[ "$tot" =~ ^[0-9]+$ && "$crit" =~ ^[0-9]+$ ]] || { echo 0; return 0; }
+    (( tot > 0 && tot == crit )) && echo 1 || echo 0
+}
+
 # Enforced perm decisions since <ts> — the durable rolling source for the
 # perm-rate tripwire (decisions.jsonl rotates; the ledger does not).
 #   swatter_store_perm_count_since <epoch>
