@@ -227,6 +227,18 @@ seed_cli_db "$d3" "$CNOW"
 out_on="$(PATH="$fakebin3:$PATH" SWARM_ENABLE=true SWATTER_CONF="$c3" \
     bash "${ROOT}/bin/swatter" rollback-ladder --since $(( CNOW - 5*86400 )) 2>&1)"
 check swarm-notice-present "$(printf '%s' "$out_on" | grep -c 'NOT retracted')" "1"
+
+# The AbuseIPDB notice is the same class of gap and must be surfaced the same
+# way: with ABUSEIPDB_REPORT=true (and the default MIN_ACTION=perm, so ladder
+# perms are precisely what gets reported), a rolled-back customer IP is still
+# publicly listed as an abuser. Silence here means the operator following the
+# documented recovery path never learns of it.
+check abuse-notice-absent "$(printf '%s' "$out_off" | grep -c 'NOT withdrawn')" "0"
+seed_cli_db "$d3" "$CNOW"
+out_ab="$(PATH="$fakebin3:$PATH" ABUSEIPDB_REPORT=true SWATTER_CONF="$c3" \
+    bash "${ROOT}/bin/swatter" rollback-ladder --since $(( CNOW - 5*86400 )) 2>&1)"
+check abuse-notice-present "$(printf '%s' "$out_ab" | grep -c 'NOT withdrawn')" "1"
+check abuse-notice-names-abuseipdb "$(printf '%s' "$out_ab" | grep -c 'AbuseIPDB has no API to delete a report')" "1"
 rm -rf "$d3" "$c3" "$fakebin3"
 
 # --- 2d. `--since` as the last bare arg must not hang. With `set -uo pipefail`

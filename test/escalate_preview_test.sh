@@ -25,19 +25,38 @@ seed() { sqlite3 "$db" "INSERT INTO actions(ip,ts,action,channel,ttl,score,reaso
 
 # Escalates at 30d (3 temps in-window), not at 7d.
 seed 10.1.0.1 25 temp; seed 10.1.0.1 12 temp; seed 10.1.0.1 1 temp
-# Only 2 in-window -> not a candidate.
+# Only 2 in-window. The decider counts the PENDING offense — `(( prior + 1 >=
+# thresh ))` in lib/score.sh — so 2 PRIOR temps at REPEAT_N=3 means the very
+# next offense is a permanent ban. This IP is the whole reason the preview
+# exists; a `HAVING c >= REPEAT_N` bar omitted exactly this row, handing the
+# operator a clean list one offense before the ladder fired.
 seed 10.1.0.2 25 temp; seed 10.1.0.2 1 temp
-# 3 temps but one is dry_run=1 -> not a candidate.
+# 3 temps but one is dry_run=1 -> only 2 enforced -> still a candidate, but as
+# 2 (report-mode temps never count toward the ladder).
 seed 10.1.0.3 25 temp; seed 10.1.0.3 12 temp 1; seed 10.1.0.3 1 temp
-# 3 temps but unblocked after the first two -> watermark drops them.
+# 3 temps but unblocked after the first two -> watermark drops them, leaving 1
+# -> below REPEAT_N-1 -> not a candidate.
 seed 10.1.0.4 25 temp; seed 10.1.0.4 20 temp; seed 10.1.0.4 15 unblock; seed 10.1.0.4 1 temp
+# A single in-window temp -> 1 prior, next offense is only its 2nd -> excluded.
+seed 10.1.0.5 3 temp
 
 out="$(REPEAT_WINDOW_DAYS=30 swatter_escalate_preview 30)"
 check prev-includes    "$(printf '%s\n' "$out" | awk -F'\t' '$1=="10.1.0.1"{print $2}')" "3"
-check prev-excl-two    "$(printf '%s\n' "$out" | grep -c '^10\.1\.0\.2' || true)" "0"
-check prev-excl-dryrun "$(printf '%s\n' "$out" | grep -c '^10\.1\.0\.3' || true)" "0"
+check prev-includes-at-bar "$(printf '%s\n' "$out" | awk -F'\t' '$1=="10.1.0.1"{print $4}')" "at-bar"
+# The off-by-one regression guard: REPEAT_N-1 priors MUST be listed, marked as
+# one-away, because the pending offense is what tips them over.
+check prev-incl-oneaway     "$(printf '%s\n' "$out" | awk -F'\t' '$1=="10.1.0.2"{print $2}')" "2"
+check prev-oneaway-status   "$(printf '%s\n' "$out" | awk -F'\t' '$1=="10.1.0.2"{print $4}')" "one-away"
+check prev-dryrun-not-counted "$(printf '%s\n' "$out" | awk -F'\t' '$1=="10.1.0.3"{print $2}')" "2"
 check prev-excl-unblk  "$(printf '%s\n' "$out" | grep -c '^10\.1\.0\.4' || true)" "0"
+check prev-excl-one    "$(printf '%s\n' "$out" | grep -c '^10\.1\.0\.5' || true)" "0"
 check prev-7d-empty    "$(REPEAT_WINDOW_DAYS=7 swatter_escalate_preview 7 | grep -c . || true)" "0"
+
+# REPEAT_N=1 degenerates the bar to 0, which must mean "any IP with an enforced
+# in-window temp" — not a SQL error and not an empty list.
+n1="$(REPEAT_N=1 REPEAT_WINDOW_DAYS=30 swatter_escalate_preview 30)"
+check prev-n1-includes-single "$(printf '%s\n' "$n1" | awk -F'\t' '$1=="10.1.0.5"{print $2}')" "1"
+check prev-n1-status          "$(printf '%s\n' "$n1" | awk -F'\t' '$1=="10.1.0.5"{print $4}')" "at-bar"
 
 # Read-only: no cursor file created, ledger row count unchanged.
 before="$(sqlite3 "$db" 'SELECT COUNT(*) FROM actions;')"

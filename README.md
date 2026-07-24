@@ -456,7 +456,14 @@ A single CRITICAL bad-path hit (say, one `/.env` probe) is already a temp at
 any request volume, so a bare `REPEAT_N` would perm-ban an IP after just 3 such
 probes — cheap for an attacker to trigger against a third party's address. When
 **every** in-window temp for an IP is one of these single CRITICAL probes,
-escalation instead requires `REPEAT_N_CRITICAL_SINGLE` (default 4) of them. A
+escalation instead requires `REPEAT_N_CRITICAL_SINGLE` (default 4) of them.
+This gate is **sqlite store only** — it matches on the `rule=` stamp recorded
+in the ledger, which `STORE=flatfile` cannot query, so on a flatfile host it is
+inert and escalation falls back to plain `REPEAT_N` (Swatter logs a warning
+when that happens). It is also inert for the first `REPEAT_WINDOW_DAYS` after
+upgrading on **any** store: temps recorded before the upgrade carry no `rule=`
+in their reason, so they never read as CRITICAL singles and the bar stays at
+`REPEAT_N` until the pre-upgrade history ages out of the window. A
 ladder perm carries the math that produced it: `recidivism=<n>/<days>d` in the
 decision reason and `evidence.recidivism` in the stored evidence, alongside
 `rule=<decisive_rule>` showing which detector actually fired. The nightly
@@ -487,9 +494,9 @@ preview/rollback commands below.
   perm within two or three re-temps. Don't chase it as a false-positive pattern.
 
 ```bash
-# Read-only: who WOULD escalate at a given window, from the ledger alone. No
-# ingest, no cursor advance, no lock — safe to run against a live host mid-scan.
-# sqlite store only.
+# Read-only: who perms on their NEXT offense at a given window, from the ledger
+# alone. No ingest, no cursor advance, no lock — safe to run against a live host
+# mid-scan. sqlite store only.
 swatter escalate-preview --window 30 > candidates.tsv
 
 # Bulk-undo permanent bans the ladder placed since a given time (epoch or an
@@ -500,6 +507,33 @@ swatter escalate-preview --window 30 > candidates.tsv
 swatter rollback-ladder --since "2026-07-20 00:00:00" --dry-run   # preview first
 swatter rollback-ladder --since "2026-07-20 00:00:00"             # then apply
 ```
+
+`escalate-preview` writes four tab-separated columns —
+`ip  temps_prior  last_temp_utc  status` — plus a legend on stderr, so
+redirecting stdout gives you a clean TSV.
+
+- **`temps_prior` is the count already on the ledger, not the count that bans.**
+  The decider counts the *pending* offense as well (`prior + 1 >= REPEAT_N`), so
+  an IP listed with `temps_prior=2` at `REPEAT_N=3` earns `recidivism=3/<days>d`
+  the next time it offends. Read the column as "one more and it's permanent".
+- **`status`** is `one-away` when `temps_prior == REPEAT_N-1` and `at-bar` when
+  it is already at or over `REPEAT_N`. **Both perm on their next offense** — the
+  list deliberately includes the one-away rows, because those are precisely the
+  IPs a window widening bans first.
+- The preview does **not** model `REPEAT_N_CRITICAL_SINGLE`, so an offender
+  whose in-window temps were all single CRITICAL probes may get another temp
+  instead of the ban. The list errs toward over-reporting, never under.
+
+Recovery after a rollback:
+
+- **A ladder perm may already have been reported to AbuseIPDB.** If
+  `ABUSEIPDB_REPORT=true` (with the default `ABUSEIPDB_REPORT_MIN_ACTION=perm`,
+  ladder perms are exactly what gets reported), the customer IP you just rolled
+  back is publicly listed as an abuser. `rollback-ladder` prints a notice when
+  that config is on; clearing it means asking AbuseIPDB to remove the reports
+  (their contact form / "remove my reports" process), which Swatter cannot do
+  for you.
+- **The swarm hub has no per-IP retract** — see the gotcha above.
 
 ## Beyond reputation: ASN, traps, persistence, metrics
 

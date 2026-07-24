@@ -133,12 +133,24 @@ swatter_store_recent_temp_count() {
     fi
 }
 
-# Offline escalation preview: which IPs would reach REPEAT_N temps inside a
-# candidate window, computed from the LEDGER ONLY. No ingest, no cursor
+# Offline escalation preview: which IPs would PERM on their next offense inside
+# a candidate window, computed from the LEDGER ONLY. No ingest, no cursor
 # advance, no mode change — safe to run against a live production host, which
 # is the whole point (a report-mode "canary" cannot see history, because ingest
 # is byte-cursor based and only ever reads new log bytes).
-# Echoes: ip \t temps_in_window \t last_temp_iso
+#
+# The bar is REPEAT_N-1, NOT REPEAT_N. The decider counts the PENDING offense:
+# lib/score.sh does `(( prior + 1 >= thresh ))`, so an IP perms once it holds
+# REPEAT_N-1 PRIOR temps. Selecting `>= REPEAT_N` here would omit exactly the
+# IPs that are about to be banned first — i.e. the preview would show a clean
+# list right up to the moment the ladder fires, which is the opposite of what
+# an operator widening REPEAT_WINDOW_DAYS is reading it for. At REPEAT_N=1 the
+# bar degenerates to 0, which correctly means "any IP with a temp in window".
+#
+# Echoes: ip \t temps_PRIOR_in_window \t last_temp_iso \t status
+#   status: at-bar   = prior >= REPEAT_N   (already at/over the raw bar)
+#           one-away = prior == REPEAT_N-1 (the next offense is the one that perms)
+# Column 2 is the PRIOR count, so the ban this produces reads recidivism=<col2>+1.
 #   swatter_escalate_preview [window_days]
 swatter_escalate_preview() {
     local win="${1:-${REPEAT_WINDOW_DAYS}}"
@@ -155,13 +167,14 @@ swatter_escalate_preview() {
     local since; since=$(( $(swatter_now) - win*86400 ))
     # Mirrors swatter_store_recent_temp_count exactly: enforced temps only,
     # inside the window, after any operator unblock.
-    _sqlq "SELECT a.ip, COUNT(*) AS c, datetime(MAX(a.ts),'unixepoch')
+    _sqlq "SELECT a.ip, COUNT(*) AS c, datetime(MAX(a.ts),'unixepoch'),
+                  CASE WHEN COUNT(*) >= ${n} THEN 'at-bar' ELSE 'one-away' END
              FROM actions a
             WHERE a.action='temp' AND a.dry_run=0 AND a.ts > ${since}
               AND a.ts > (SELECT COALESCE(MAX(u.ts),0) FROM actions u
                            WHERE u.ip = a.ip AND u.action='unblock')
             GROUP BY a.ip
-           HAVING c >= ${n}
+           HAVING c >= ${n} - 1
             ORDER BY c DESC, a.ip;" | tr '|' '\t'
 }
 
@@ -206,7 +219,21 @@ swatter_ladder_perms_since() {
 #   swatter_store_temps_all_critical_single <ip> <since_epoch>
 swatter_store_temps_all_critical_single() {
     local ip="$1" since="$2"
-    [[ "${STORE}" == "sqlite" ]] || { echo 0; return 0; }
+    # Flatfile has no reason-indexed query, so the gate cannot be evaluated —
+    # and 0 is NOT a safe refusal here: it degrades toward the LOWER threshold
+    # (REPEAT_N), i.e. toward MORE banning, which is the opposite of what this
+    # knob advertises. Say so out loud rather than let a flatfile host believe
+    # it has a protection it does not have.
+    #
+    # No once-per-process dedup: every caller reads this through a command
+    # substitution (`allcrit="$(...)"`), so a flag set here lives and dies in
+    # that subshell — a guard would look like throttling while actually doing
+    # nothing. It fires once per ladder-eligible offender per scan instead,
+    # which is bounded by MAX_BLOCKS_PER_RUN and is a config gap worth repeating.
+    if [[ "${STORE}" != "sqlite" ]]; then
+        log_warn "REPEAT_N_CRITICAL_SINGLE is INERT on STORE=flatfile (needs the reason-indexed ledger); escalation uses REPEAT_N=${REPEAT_N} for all-CRITICAL-single offenders too"
+        echo 0; return 0
+    fi
     _store_ip_ok "$ip" || { echo 0; return 0; }
     # Read-only guarantee: sqlite3 creates the DB file merely by opening a
     # connection to a path that doesn't exist yet. Check for the file first so

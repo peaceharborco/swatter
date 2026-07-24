@@ -27,7 +27,7 @@
 #   swatter export-bans [file]     write perm-ban list to file (or stdout)
 #   swatter import-bans <file>     block each listed IP as perm (skips never-block/invalid)
 #   swatter swarm {enroll|status|disable|purge}  fleet reputation sharing (see SWARM_* config)
-#   swatter escalate-preview [--window N]  who WOULD escalate (read-only)
+#   swatter escalate-preview [--window N]  who perms on their NEXT offense (read-only)
 #   swatter rollback-ladder --since <epoch|iso> [--dry-run]   undo ladder perms
 #   swatter version
 
@@ -487,7 +487,25 @@ cmd_escalate_preview() {
     [[ "$win" =~ ^[0-9]+$ ]] && (( win >= 1 )) || die "escalate-preview: --window must be a positive integer"
     # Read-only: no state lock needed, and deliberately not taken so this can be
     # run while the */5 scan is mid-flight.
-    printf 'ip\ttemps\tlast_temp_utc\n'
+    #
+    # The legend goes to STDERR, not stdout: the header line is the whole
+    # machine-readable contract (`... | awk -F'\t'`), and a multi-line note in
+    # the middle of it would break every downstream reader. The column is named
+    # temps_prior on purpose — it is the count ALREADY on the ledger, and the
+    # decider counts the PENDING offense too, so a listed IP's eventual ban
+    # reads recidivism=<temps_prior>+1.
+    cat >&2 <<EOS
+escalate-preview: window=${win}d REPEAT_N=${REPEAT_N}
+  temps_prior  enforced temps ALREADY counted; the next offense adds one more,
+               so the resulting ban reads recidivism=<temps_prior>+1
+  status       at-bar   = temps_prior >= REPEAT_N (at/over the raw bar)
+               one-away = temps_prior == REPEAT_N-1
+  Both statuses perm on their NEXT offense — that is what this list is for.
+  Not modeled here: REPEAT_N_CRITICAL_SINGLE raises the bar for offenders whose
+  in-window temps were all single CRITICAL probes, so a few listed IPs will get
+  one more temp instead. The list errs toward over-reporting, never under.
+EOS
+    printf 'ip\ttemps_prior\tlast_temp_utc\tstatus\n'
     swatter_escalate_preview "$win"
 }
 
@@ -571,6 +589,22 @@ cmd_rollback_ladder() {
         fi
     done <<< "$ips"
     printf 'rollback-ladder: %d selected, %d unblocked, %d partial\n' "$total" "$ok" "$bad"
+    # Same class of gap as the swarm notice below, and the operator following
+    # the documented recovery path has no other way to learn about it: a ladder
+    # perm is reported to AbuseIPDB when ABUSEIPDB_REPORT=true (and with the
+    # default ABUSEIPDB_REPORT_MIN_ACTION=perm, ladder perms are EXACTLY what
+    # gets reported — see lib/score.sh's report gate). Unblocking locally does
+    # not withdraw that report, so a rolled-back customer IP stays publicly
+    # listed as an abuser with nothing on screen to say so.
+    if [[ "${ABUSEIPDB_REPORT:-false}" == "true" ]]; then
+        cat >&2 <<'EOS'
+NOTE: perm bans already reported to AbuseIPDB are NOT withdrawn by this command.
+      ABUSEIPDB_REPORT=true, so these IPs were reported as abusers when they were
+      banned and remain publicly listed. AbuseIPDB has no API to delete a report:
+      request removal through their contact form ("remove my reports" / report
+      correction) from the account that owns the API key.
+EOS
+    fi
     # The swarm gap is real and must not be silent: the hub has no per-IP
     # retract, only a host-wide purge with a 7-day TTL.
     if [[ "${SWARM_ENABLE:-false}" == "true" ]]; then

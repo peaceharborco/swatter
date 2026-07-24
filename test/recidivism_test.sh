@@ -182,6 +182,17 @@ check watermark-crit-prior   "$prior" "2"
 check watermark-crit-allcrit "$allcrit" "1"
 check watermark-crit-no-perm "$(( prior + 1 >= thresh ? 1 : 0 ))" "0"
 
+# --- flatfile: the gate is inert, and must SAY so -------------------------
+# Returning 0 on flatfile is not a safe refusal: allcrit=0 means the threshold
+# falls back to REPEAT_N, i.e. the store without the gate bans SOONER than the
+# store with it. Silent degradation toward more banning is the one thing this
+# must not do, so the flatfile path warns instead of answering quietly.
+_ffwarn="${STATE_DIR}/critwarn.txt"
+STORE=flatfile swatter_store_temps_all_critical_single 10.0.9.2 "$SINCE_CRIT" \
+    >"${STATE_DIR}/critout.txt" 2>"$_ffwarn"
+check flatfile-crit-warns "$(grep -c 'INERT on STORE=flatfile' "$_ffwarn" || true)" "1"
+check flatfile-crit-zero  "$(cat "${STATE_DIR}/critout.txt")" "0"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
