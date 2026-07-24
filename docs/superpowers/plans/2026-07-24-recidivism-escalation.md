@@ -1118,8 +1118,8 @@ Append to `test/recidivism_test.sh`, before the totals block:
 # bypasses MIN_REQS). Three such singles must NOT be enough for a permanent ban;
 # a fourth is. Multi-signal offenders still escalate at REPEAT_N.
 check crit-gate-default "${REPEAT_N_CRITICAL_SINGLE}" "4"
-check crit-3-not-perm "$(_swatter_recid_threshold 1 1)" "4"   # all-critical -> 4
-check crit-mixed-perm "$(_swatter_recid_threshold 0 1)" "3"   # any non-critical -> REPEAT_N
+check crit-all-raises  "$(_swatter_recid_threshold 1)" "4"   # all-critical -> 4
+check crit-mixed-normal "$(_swatter_recid_threshold 0)" "3"  # any non-critical -> REPEAT_N
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1146,7 +1146,7 @@ In `lib/score.sh`, above `swatter_scan`:
 ```bash
 # Escalation threshold for this IP. Normally REPEAT_N; raised when EVERY
 # in-window temp was a single-request CRITICAL probe (see REPEAT_N_CRITICAL_SINGLE).
-#   _swatter_recid_threshold <all_critical:0|1> <_unused>
+#   _swatter_recid_threshold <all_critical:0|1>
 _swatter_recid_threshold() {
     if [[ "${1:-0}" == "1" ]]; then printf '%s' "${REPEAT_N_CRITICAL_SINGLE:-4}"
     else printf '%s' "${REPEAT_N}"; fi
@@ -1178,6 +1178,17 @@ For this to work, the escalation reason must carry the decisive rule. In `swatte
         local drule; drule="$(printf '%s' "$ev" | sed -n 's/.*"decisive_rule":"\([^"]*\)".*/\1/p')"
         [[ -n "$drule" ]] && reason="${reason} rule=${drule}"
 ```
+
+**This changes the reason string for EVERY decision, not just perms** — it is the
+one edit in this plan with blast radius outside the escalation branch. Before
+implementing, grep the suite for assertions on exact reason text
+(`grep -rn 'score=' test/ | grep -i reason`) and check `test/report_test.sh`,
+`test/scan_wire_test.sh`, and `test/notify_test.sh`. Fix any that break by
+matching a substring rather than the whole string. If a large number break,
+report DONE_WITH_CONCERNS rather than rewriting many assertions — the
+alternative is to read `decisive_rule` from `$ev` inside
+`swatter_store_temps_all_critical_single`'s caller instead of persisting it to
+`reason`, and that tradeoff is the controller's call.
 
 - [ ] **Step 5: Wire the gate into the escalation branch**
 
