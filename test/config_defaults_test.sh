@@ -51,6 +51,35 @@ check report-cron-default     "${REPORT_CRON}" "0 4"
 check report-cron-tz-default  "${REPORT_CRON_TZ}" ""
 check ol-digest-default       "${ORIGIN_LOCK_DIGEST}" "auto"
 check ol-log-default          "${ORIGIN_LOCK_LOG}" ""
+
+# --- escalation knob defaults + validation ---------------------------------
+check repeat-n-default   "${REPEAT_N}" "3"
+check repeat-window-def  "${REPEAT_WINDOW_DAYS}" "7"
+
+# Validation runs at the END of swatter_load_config, after the conf is sourced,
+# so an operator typo cannot bypass it. An empty REPEAT_N is the dangerous one:
+# unvalidated it makes (( prior+1 >= REPEAT_N )) true on the FIRST offense, so
+# every IP is permanently banned. Each case must fall back to the shipped value.
+_vconf="$(mktemp "${TMPDIR:-/tmp}/swatter-vconf.XXXXXX")"
+trap 'rm -f "$_vconf"' EXIT
+
+vcheck() { # vcheck <name> <conf-line> <var> <want>
+  local name="$1" line="$2" var="$3" want="$4"
+  printf '%s\n' "$line" > "$_vconf"
+  ( SWATTER_CONF="$_vconf"; swatter_load_config >/dev/null 2>&1
+    printf '%s' "${!var}" ) > "${_vconf}.out"
+  check "$name" "$(cat "${_vconf}.out")" "$want"
+}
+
+vcheck repeat-n-empty     'REPEAT_N=""'                REPEAT_N            "3"
+vcheck repeat-n-alpha     'REPEAT_N="abc"'             REPEAT_N            "3"
+vcheck repeat-n-zero      'REPEAT_N=0'                 REPEAT_N            "3"
+vcheck repeat-n-huge      'REPEAT_N=999'               REPEAT_N            "3"
+vcheck repeat-n-valid     'REPEAT_N=4'                 REPEAT_N            "4"
+vcheck window-empty       'REPEAT_WINDOW_DAYS=""'      REPEAT_WINDOW_DAYS  "7"
+vcheck window-suffix      'REPEAT_WINDOW_DAYS="30d"'   REPEAT_WINDOW_DAYS  "7"
+vcheck window-over-cap    'REPEAT_WINDOW_DAYS=365'     REPEAT_WINDOW_DAYS  "7"
+vcheck window-valid       'REPEAT_WINDOW_DAYS=30'      REPEAT_WINDOW_DAYS  "30"
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

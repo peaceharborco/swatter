@@ -310,6 +310,26 @@ swatter_load_config() {
     if [[ -f /etc/swatter/badpaths.conf ]]; then
         BADPATHS_CONF=/etc/swatter/badpaths.conf
     fi
+
+    # Escalation knobs are interpolated straight into bash arithmetic
+    # (lib/score.sh's `prior + 1 >= REPEAT_N`, lib/store_sqlite.sh's window
+    # subtraction), where a malformed value fails SILENTLY and in opposite
+    # directions: an empty REPEAT_WINDOW_DAYS yields a 0-day window (escalation
+    # never fires — fail-safe), but an empty REPEAT_N makes (( 1 >= 0 )) true, so
+    # EVERY first offense becomes a permanent ban. Validate here — the end of the
+    # conf load — so an operator typo cannot bypass it, and both the sqlite and
+    # flatfile counting paths are covered (they read the same globals).
+    local _n
+    _n="${REPEAT_N:-}"
+    if ! [[ "$_n" =~ ^[0-9]+$ ]] || (( _n < 1 || _n > 20 )); then
+        log_warn "REPEAT_N='${_n}' invalid (want integer 1-20); using 3"
+        REPEAT_N=3
+    fi
+    _n="${REPEAT_WINDOW_DAYS:-}"
+    if ! [[ "$_n" =~ ^[0-9]+$ ]] || (( _n < 1 || _n > 90 )); then
+        log_warn "REPEAT_WINDOW_DAYS='${_n}' invalid (want integer 1-90); using 7"
+        REPEAT_WINDOW_DAYS=7
+    fi
 }
 
 # ---------------------------------------------------------------------------

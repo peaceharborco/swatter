@@ -34,3 +34,9 @@ consumer as-is.
 Redundancy note: Swatter's own nightly report and `/server-logs` already surface
 block / error / origin-lock counts, so #1 is mainly for putting the numbers on
 the NetData dashboard specifically.
+
+- [ ] Same silent-arithmetic hazard as the escalation knobs (validated 2026-07-24)
+      exists on `SCORE_TEMP`, `MAX_BLOCKS_PER_RUN`, `WINDOW_SECONDS`, and
+      `MIN_REQS`: an empty or non-numeric value degrades silently rather than
+      erroring. `PERSIST_N` and `TTL_LADDER` already have fallbacks. Apply the
+      same end-of-`swatter_load_config` validation.
