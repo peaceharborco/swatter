@@ -294,6 +294,33 @@ norecid_body="$(swatter_report_build 24h)"
 check digest-recid-quiet "$(printf '%s' "$norecid_body" | grep -c 'recidivism ladder')" "0"
 rm -rf "$LOG_DIR"
 
+# --- recidivism count in the HTML digest -----------------------------------
+# The email is delivered multipart/alternative and mail clients (Gmail,
+# Outlook, Apple Mail) render only the HTML part, so the Bad Actors tile in
+# _report_render_html must carry the same count as the plain-text body.
+# swatter_report_build is called via REDIRECTION (not $(...)) so the RPT_RECID
+# global it sets actually persists into this shell for _report_render_html to
+# read -- a command substitution would run the builder in a subshell and the
+# global would be lost, same reasoning as swatter_report()'s own comment.
+LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/swatter-htmlrecid.XXXXXX")"
+printf '{"ts":%s,"ip":"1.2.3.4","score":91,"action":"perm","channel":"csf","ttl":0,"reason":"score=91 recidivism=3/30d","reputation":0,"mode":"enforce","evidence":{"recidivism":3}}\n' "$_recid_now" > "$LOG_DIR/decisions.jsonl"
+printf '{"ts":%s,"ip":"1.2.3.5","score":80,"action":"temp","channel":"csf","ttl":3600,"reason":"score=80","reputation":0,"mode":"enforce","evidence":{}}\n' "$_recid_now" >> "$LOG_DIR/decisions.jsonl"
+ERROR_DIGEST_ENABLE="false"; ORIGIN_LOCK_DIGEST="auto"; FAKE_OL=0
+_htmlrecid_bodyfile="$(mktemp "${TMPDIR:-/tmp}/swatter-htmlrecid-body.XXXXXX")"
+swatter_report_build 24h > "$_htmlrecid_bodyfile"
+html_recid="$(_report_render_html "$(cat "$_htmlrecid_bodyfile")")"
+check html-recid-shown "$(printf '%s' "$html_recid" | grep -Fc '1 via recidivism ladder')" "1"
+rm -f "$_htmlrecid_bodyfile"; rm -rf "$LOG_DIR"
+
+# Quiet window: an evidence:{} perm (no recidivism) leaves the HTML tile silent.
+LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/swatter-htmlrecid0.XXXXXX")"
+printf '{"ts":%s,"ip":"1.2.3.6","score":95,"action":"perm","channel":"csf","ttl":0,"reason":"score=95","reputation":0,"mode":"enforce","evidence":{}}\n' "$_recid_now" > "$LOG_DIR/decisions.jsonl"
+_htmlrecid0_bodyfile="$(mktemp "${TMPDIR:-/tmp}/swatter-htmlrecid0-body.XXXXXX")"
+swatter_report_build 24h > "$_htmlrecid0_bodyfile"
+html_norecid="$(_report_render_html "$(cat "$_htmlrecid0_bodyfile")")"
+check html-recid-quiet "$(printf '%s' "$html_norecid" | grep -c 'recidivism ladder')" "0"
+rm -f "$_htmlrecid0_bodyfile"; rm -rf "$LOG_DIR"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

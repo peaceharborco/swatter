@@ -44,7 +44,7 @@ _report_window_secs() {
 }
 
 # Build the plain-text digest body on stdout. Sets globals used for the subject:
-#   RPT_ACTED RPT_PERM RPT_TEMP RPT_CF RPT_DIRECT RPT_EXEMPT RPT_WATCH
+#   RPT_ACTED RPT_PERM RPT_TEMP RPT_CF RPT_DIRECT RPT_EXEMPT RPT_WATCH RPT_RECID
 swatter_report_build() {
     local window="$1" cutoff
     cutoff=$(( $(swatter_now) - $(_report_window_secs "$window") ))
@@ -340,10 +340,13 @@ _report_render_html() {
     fi
     # Retries that were given up on — a block that genuinely never landed.
     (( ${RPT_GAVEUP:-0} > 0 )) && bf="${bf} &middot; <span style=\"color:#8A1C1C;font-weight:700;\">${RPT_GAVEUP} retry-exhausted</span>"
+    # Recidivism-driven perms — observability only, shown only when non-zero.
+    local rc=""
+    (( ${RPT_RECID:-0} > 0 )) && rc=" &middot; <span style=\"font-weight:600;\">${RPT_RECID} via recidivism ladder</span>"
     printf '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-top:1px solid %s;"><tr><td style="padding-top:14px;%s">Bad Actors</td><td style="padding-top:14px;%s;font-weight:700;font-size:20px;color:%s;text-align:right;">%s</td></tr></table>' \
         "$bdr" "$h3" "$f_h" "$pine" "${RPT_ACTED:-0}"
-    printf '<div style="font-size:13px;color:%s;margin-top:5px;line-height:1.55;">%s</div><div style="font-size:12px;color:%s;margin-top:6px;">%s Permanent &middot; %s Temporary &middot; %s Via Cloudflare &middot; %s At Server &middot; %s Exempted%s</div>' \
-        "$ink" "$(_report_summary_actors | esc)" "$slate" "${RPT_PERM:-0}" "${RPT_TEMP:-0}" "${RPT_CF:-0}" "${RPT_DIRECT:-0}" "${RPT_EXEMPT:-0}" "$bf"
+    printf '<div style="font-size:13px;color:%s;margin-top:5px;line-height:1.55;">%s</div><div style="font-size:12px;color:%s;margin-top:6px;">%s Permanent &middot; %s Temporary &middot; %s Via Cloudflare &middot; %s At Server &middot; %s Exempted%s%s</div>' \
+        "$ink" "$(_report_summary_actors | esc)" "$slate" "${RPT_PERM:-0}" "${RPT_TEMP:-0}" "${RPT_CF:-0}" "${RPT_DIRECT:-0}" "${RPT_EXEMPT:-0}" "$rc" "$bf"
 
     # Origin-Lock (gated).
     if _ol_digest_should_render "${OL_HITS:-0}"; then
