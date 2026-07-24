@@ -527,7 +527,10 @@ cmd_rollback_ladder() {
     # cmd_import_bans, which call it once and then do their work inline), so
     # acquire it here, once, before doing any work, and hold it (the fd stays
     # open for the rest of this process) for the entire selection+unblock loop.
-    swatter_with_state_lock 120 || die "a swatter scan is running (lock held) — try again in a moment"
+    # Skipped for --dry-run: a preview mutates nothing, so — deliberately,
+    # mirroring cmd_escalate_preview's read-only no-lock design — it must be
+    # runnable while a scan holds the lock, not blocked behind it for up to 120s.
+    (( dry )) || swatter_with_state_lock 120 || die "a swatter scan is running (lock held) — try again in a moment"
     local ips; ips="$(swatter_ladder_perms_since "$since")" || die "rollback-ladder: ledger query failed"
     if [[ -z "$ips" ]]; then echo "no ladder perms since ${since}"; return 0; fi
     local total=0 ok=0 bad=0
@@ -539,13 +542,32 @@ cmd_rollback_ladder() {
         # halfway is worse than one that finishes and reports which IPs need a
         # retry. Ledger is cleared either way (matches cmd_unblock): a later
         # retry of the same IP must not be blocked by stale perm state.
+        #
+        # Both backends are called UNCONDITIONALLY (no &&-short-circuit): a
+        # ladder perm can be dual-planed (CSF + Cloudflare, see
+        # _swatter_maybe_dual_plane in lib/score.sh), so a failed direct-plane
+        # unblock must never skip the Cloudflare unblock for the same IP — that
+        # would leave a live CF access rule with no report that CF was ever
+        # attempted, i.e. exactly the half-applied state this command exists to
+        # prevent.
+        local ip_failed=0 failmsg=""
         SWATTER_LAST_BACKEND_ERR=""
-        if swatter_block_direct_unblock "$ip" && swatter_cf_unblock "$ip"; then
-            swatter_store_unblock "$ip"; ok=$(( ok + 1 ))
-            echo "unblocked ${ip}"
+        if ! swatter_block_direct_unblock "$ip"; then
+            ip_failed=1
+            failmsg="direct${SWATTER_LAST_BACKEND_ERR:+ (${SWATTER_LAST_BACKEND_ERR})}"
+        fi
+        SWATTER_LAST_BACKEND_ERR=""
+        if ! swatter_cf_unblock "$ip"; then
+            ip_failed=1
+            failmsg="${failmsg:+${failmsg}; }cloudflare${SWATTER_LAST_BACKEND_ERR:+ (${SWATTER_LAST_BACKEND_ERR})}"
+        fi
+        swatter_store_unblock "$ip"
+        if (( ip_failed )); then
+            bad=$(( bad + 1 ))
+            echo "PARTIAL ${ip}: ${failmsg} failed; ledger cleared, firewall may still hold" >&2
         else
-            swatter_store_unblock "$ip"; bad=$(( bad + 1 ))
-            echo "PARTIAL ${ip}: a backend failed${SWATTER_LAST_BACKEND_ERR:+ (${SWATTER_LAST_BACKEND_ERR})}; ledger cleared, firewall may still hold" >&2
+            ok=$(( ok + 1 ))
+            echo "unblocked ${ip}"
         fi
     done <<< "$ips"
     printf 'rollback-ladder: %d selected, %d unblocked, %d partial\n' "$total" "$ok" "$bad"

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # test/rollback_ladder_test.sh — bulk rollback of ladder perms: selection from
 # sqlite (not the rotated log), single lock acquisition, tolerance of a per-IP
-# backend failure, --dry-run mutating nothing, and the swarm-gap notice.
+# backend failure (both planes called unconditionally, no &&-short-circuit),
+# --dry-run mutating nothing, and the swarm-gap notice.
 set -uo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "${HERE}/.." && pwd)"
@@ -161,6 +162,55 @@ check partial-summary "$(printf '%s' "$out2" | grep -c 'rollback-ladder: 2 selec
 permcount2="$(sqlite3 "$d2/swatter.db" "SELECT COUNT(*) FROM offenders WHERE perm=1;")"
 check partial-ledger-cleared "$permcount2" "0"
 rm -rf "$d2" "$c2" "$fakebin2"
+
+# --- 2c (dual-plane spy). A failed DIRECT-plane unblock must NOT skip the
+# Cloudflare unblock for the SAME ip (no &&-short-circuit): a ladder perm can
+# be dual-planed (CSF + Cloudflare — see _swatter_maybe_dual_plane in
+# lib/score.sh). Seed a real cf-rules.tsv ref for BOTH ips, make csf fail for
+# one of them, and prove swatter_cf_unblock still runs for it: a fake `curl`
+# that always reports {"success":true} lets the real _cf_delete_ref path
+# execute end to end, so the spy is "the ref for the csf-failing ip is
+# actually gone afterward" — impossible if `swatter_cf_unblock` were skipped.
+d2b="$(mktemp -d "${TMPDIR:-/tmp}/swatter-rb2b.XXXXXX")"; c2b="$(mktemp "${TMPDIR:-/tmp}/swatter-rb2b-conf.XXXXXX")"
+mkconf "$d2b" "$c2b"; seed_cli_db "$d2b" "$CNOW"
+{
+    echo "CF_CREDS_FILE=\"$d2b/cf-creds\""
+} >> "$c2b"
+printf 'acctA\ttokA\n' > "$d2b/cf-creds"
+refs2b="$d2b/cf-rules.tsv"
+printf '10.3.0.1\tzone\tzoneA\tRULE1\t9999999999\n10.3.0.2\tzone\tzoneA\tRULE2\t9999999999\n' > "$refs2b"
+fakebin2b="$(mktemp -d "${TMPDIR:-/tmp}/swatter-rb-fake2b.XXXXXX")"
+cat > "$fakebin2b/csf" <<'EOF'
+#!/bin/sh
+for a in "$@"; do
+    [ "$a" = "10.3.0.1" ] && exit 1
+done
+exit 0
+EOF
+chmod +x "$fakebin2b/csf"
+curllog2b="$d2b/curl-calls.log"
+cat > "$fakebin2b/curl" <<'EOF'
+#!/bin/sh
+echo "CURL-CALLED $*" >> "${CURL_CALL_LOG:-/dev/null}"
+echo '{"success":true,"result":{}}'
+exit 0
+EOF
+chmod +x "$fakebin2b/curl"
+out2b="$(PATH="$fakebin2b:$PATH" CURL_CALL_LOG="$curllog2b" SWATTER_CONF="$c2b" \
+    bash "${ROOT}/bin/swatter" rollback-ladder --since $(( CNOW - 5*86400 )) 2>&1)"
+rc2b=$?
+check dualplane-still-partial "$( [[ $rc2b -ne 0 ]] && echo yes || echo no )" "yes"
+check dualplane-curl-was-called "$( [[ -s "$curllog2b" ]] && echo yes || echo no )" "yes"
+# The proof: even though 10.3.0.1's DIRECT unblock failed, its Cloudflare ref
+# is gone too (curl reported success) — swatter_cf_unblock genuinely ran for
+# it instead of being skipped by a `direct && cf` short-circuit.
+check dualplane-bad-ip-cf-ref-cleared \
+    "$(grep -c '^10\.3\.0\.1' "$refs2b" 2>/dev/null || true)" "0"
+check dualplane-good-ip-cf-ref-cleared \
+    "$(grep -c '^10\.3\.0\.2' "$refs2b" 2>/dev/null || true)" "0"
+check dualplane-partial-names-direct \
+    "$(printf '%s' "$out2b" | grep -c 'PARTIAL 10\.3\.0\.1: direct')" "1"
+rm -rf "$d2b" "$c2b" "$fakebin2b"
 
 # --- 2c. Swarm notice appears ONLY when SWARM_ENABLE=true.
 d3="$(mktemp -d "${TMPDIR:-/tmp}/swatter-rb3.XXXXXX")"; c3="$(mktemp "${TMPDIR:-/tmp}/swatter-rb3-conf.XXXXXX")"
