@@ -3,9 +3,15 @@
 **Date:** 2026-07-24
 **Status:** design, revised after adversarial review
 **Origin:** operator proposal, "recidivism-based temp→perm escalation" (cds1, Swatter 2.10.0)
-**Review:** `2026-07-24-recidivism-escalation-design-review-grok.md` — two Grok
-passes (correctness / safety) plus Claude-side sweeps. Both verdicts
-EXECUTE-WITH-FIXES; all Blockers folded in below.
+**Reviews (two rounds, four Grok passes, all EXECUTE-WITH-FIXES):**
+- Round 1: `2026-07-24-recidivism-escalation-design-review-grok.md`
+- Round 2: `2026-07-24-recidivism-escalation-design-review-grok-rev2.md`
+
+Round 2 confirmed every round-1 Blocker was folded in correctly and cleared PR 1
+outright, but found the two controls this design leaned on — the report-mode
+canary and the rollback runbook — were not controls at all. Both are replaced
+with real mechanisms below, and a new Blocker (empty `REPEAT_N` ⇒ every first
+offense is a permanent ban) was found and folded into §4.1.
 
 ---
 
@@ -145,9 +151,36 @@ prior enforced temps at unblock time. `146.70.194.222` shows 1 temp before its
 unblock and 3 after, and appears in the 30-day escalation candidate list.
 
 **Fix:** `swatter_store_recent_temp_count` counts only temps newer than the IP's
-most recent `unblock` record — a `ts > (SELECT COALESCE(MAX(ts), 0) FROM actions
-WHERE ip = ? AND action = 'unblock')` clause, mirrored in the flatfile awk
-branch. Correct at any window length.
+most recent `unblock` record. Correct at any window length.
+
+The new predicate is **AND-ed onto** the existing query — it does not replace the
+window or the `dry_run=0` report-mode filter. Full intended statement:
+
+```sql
+SELECT COUNT(*) FROM actions
+ WHERE ip='…' AND action='temp' AND dry_run=0
+   AND ts > ${since}
+   AND ts > (SELECT COALESCE(MAX(ts),0) FROM actions
+             WHERE ip='…' AND action='unblock');
+```
+
+**Verified not a fail-open.** The chief risk was that some *automatic* path
+writes an `unblock` row, which would reset the counter on every expiry and
+disable escalation entirely. It does not — `swatter_store_unblock` has exactly
+one production caller, `cmd_unblock` (`bin/swatter:165`). `swatter_cf_sweep_expired`
+(`lib/block_cf.sh:611-617`) deletes edge refs only; CSF/ipset expiry writes no
+ledger row; `cmd_allow`, `cmd_import_bans`, and swarm purge write none. Row
+contract: `action='unblock'`, `channel='none'`, `ttl=0`, `score=0`, `dry_run=0`
+(`lib/store_sqlite.sh:222`).
+
+Note `swatter allow` alone does **not** stamp an `unblock` row, so it does not
+reset the ladder. `swatter unblock` (or `unblock --perm-allow`) is the correct
+operator path for a false positive; this goes in the README.
+
+**The flatfile branch is not a one-line mirror.** `lib/store_sqlite.sh:111-117`
+is a single-pass temp-only scan; a correct port needs a per-IP unblock watermark
+carried through the scan and resolved in `END`, since file order cannot be
+assumed to equal `MAX(ts)` when tests stub `swatter_now`.
 
 **Tests:** unblock clears the counter (2 temps → unblock → next offense is
 `temp`, not `perm`); an unblock older than the temps does not clear them; the
@@ -159,33 +192,69 @@ flatfile branch matches sqlite.
 
 Sequenced so every irreversible step is preceded by its undo and its alarm.
 
-### 4.1 Validate the escalation knobs (M2)
+### 4.1 Validate the escalation knobs — **highest-priority item in this document**
 
-`lib/store_sqlite.sh:106` interpolates `REPEAT_WINDOW_DAYS` into
-`$(( now - REPEAT_WINDOW_DAYS*86400 ))`. Tested directly:
+Both knobs are interpolated into bash arithmetic with no validation, and the two
+failure modes are opposite. `lib/store_sqlite.sh:106` does
+`since=$(( now - REPEAT_WINDOW_DAYS*86400 ))`; `lib/score.sh:500` does
+`(( prior + 1 >= REPEAT_N ))`. Tested by execution:
 
-| Value | Result |
-|---|---|
-| `""` | `since = now` → window **0 days** → count always 0 → **escalation silently disabled** |
-| `"abc"` | same silent 0 |
-| `"30d"` | hard error: *value too great for base* |
+| Knob | Value | Result |
+|---|---|---|
+| `REPEAT_WINDOW_DAYS` | `""` / `"abc"` | window **0 days** → count always 0 → escalation silently disabled (**fail-safe**) |
+| `REPEAT_WINDOW_DAYS` | `"30d"` | hard error: *value too great for base* |
+| **`REPEAT_N`** | **`""` / `"abc"`** | **`(( 1 >= 0 ))` → true → every first offense is a PERMANENT BAN** |
 
-A config typo turns the feature off with no warning. Validate `REPEAT_N` and
-`REPEAT_WINDOW_DAYS` at config load as positive integers with an upper bound
-(90 days), falling back to the shipped default with a `log_warn` on violation.
+The `REPEAT_N` case is catastrophic: one typo in `swatter.conf` converts Swatter
+into a mass-perm-banning machine on a multi-tenant host that publishes to a
+fleet. It is unrelated to the window change and should land in PR 2a regardless
+of what is decided about 30 days.
+
+Validate both at the **end of `swatter_load_config`** — after the conf is
+sourced, so operator config cannot bypass it, and before any lib reads the
+globals. This covers the sqlite and flatfile paths equally since both read the
+same variables. Rules: positive integers; `REPEAT_WINDOW_DAYS` ≤ 90;
+`REPEAT_N` ≤ 20; on violation `log_warn` and fall back to the shipped default.
+
+The same silent-arithmetic hazard exists on `SCORE_TEMP`, `MAX_BLOCKS_PER_RUN`,
+`WINDOW_SECONDS`, and `MIN_REQS` (`PERSIST_N` and `TTL_LADDER` already have
+fallbacks). Out of scope here — recorded in `TODO.md`.
 
 ### 4.2 Perm-rate alerting (M1)
 
-`_report_grade` **explicitly** keeps blocks GREEN (`lib/report.sh:426-427`,
-`:457-458`) — "they're Swatter working, not a problem." SMS keys on grade
+`_report_grade` **explicitly** keeps blocks GREEN (`lib/report.sh:427-428`) —
+"they're Swatter working, not a problem." SMS keys on grade
 (`lib/alerts.sh`); the circuit-breaker notify keys on `MAX_BLOCKS_PER_RUN`, not
 perm count. A runaway wave would surface only as a larger number in a nightly
 email that still reads All Clear, up to ~24h late.
 
 Add a `swatter_notify` tripwire on permanent blocks placed per run and per
 rolling 24h, thresholded via new config (`PERM_RATE_ALERT_PER_RUN`,
-`PERM_RATE_ALERT_PER_DAY`), defaulting conservatively. This is the safety
-control; the digest count in §4.5 is observability, not a substitute.
+`PERM_RATE_ALERT_PER_DAY`). The digest count in §4.5 is observability, not a
+substitute.
+
+Specified concretely, because "add an alert" is not implementable as written:
+
+- **Wire point:** a run-scoped perm counter incremented in `_swatter_apply_plane`'s
+  success branch, evaluated at the end of `swatter_scan` alongside the existing
+  circuit-breaker notify (`lib/score.sh:529-531`). Perms placed this run are not
+  tracked today — `swatter_metrics_write` exposes only aggregate offender totals
+  (`lib/metrics.sh:17-38`).
+- **What counts:** ladder perms only (`audit_action == action == "perm"`), so a
+  dual-plane second leg — which writes up to two `perm` records per IP per run —
+  does not double-count.
+- **Rolling 24h source:** sqlite `actions`, not the rotated decision log.
+- **Rate-limit hazard.** `_notify_ratelimited` (`lib/notify.sh:14-24`) writes its
+  marker *before* channels send and suppresses for `ALERT_REPEAT_TTL` — default
+  **21600s = 6 hours** (`lib/common.sh:68`). A static key would fire once and go
+  silent for six hours while a backlog continues, and the marker is set even if
+  every channel fails. Use an hour-bucketed key (`perm_rate.<epoch_hour>`) so a
+  multi-hour incident cannot be hidden by a single early alert.
+- **Defaults:** `PERM_RATE_ALERT_PER_RUN=5`, `PERM_RATE_ALERT_PER_DAY=15`.
+  Steady-state net-new is ~1.6/day, so these trip well before a wave but above
+  normal noise.
+- **Not a substitute for the offline review.** Notify is best-effort network
+  delivery and may fail during the very incident it is meant to catch.
 
 ### 4.3 Rollback runbook (B2)
 
@@ -199,9 +268,36 @@ control; the digest count in §4.5 is observability, not a substitute.
 a later return re-applies perm through the legacy backfill in
 `_swatter_perm_gate` (`lib/score.sh:285-292`) without needing 3 temps again.
 
-Document a bulk-rollback procedure in the README: select ladder perms since a
-timestamp from `decisions.jsonl` by `evidence.recidivism`, then loop
-`swatter unblock`. **Config revert ≠ ban revert** must be stated explicitly.
+A README procedure is **not sufficient** — four verified reasons:
+
+1. **`decisions.jsonl` is rotated weekly with `compress`**
+   (`install/swatter.logrotate`), so a timestamp query over the live file
+   silently misses everything past a rotation boundary. The durable source is the
+   sqlite `actions` table.
+2. **`swatter unblock` is not bulk-safe.** It takes `swatter_with_state_lock`
+   with a **30-second** wait (`lib/common.sh:584`, `flock -w 30`) and dies on
+   timeout. A 67-iteration loop contends with the `*/5` cron and aborts mid-list.
+   A backend failure still clears the ledger before exiting non-zero
+   (`bin/swatter:160-165`), so a "failed" script can leave state half-applied.
+3. **No per-IP swarm retract.** The hub exposes only host-wide `purgeHost`
+   (`hub/src/index.js:125`) and `SWARM_TTL=604800` — **7 days**
+   (`hub/wrangler.toml:17`). Unblocking locally stops re-publication, but the hub
+   already holds the contribution and peers may have taken DIRECT temps from the
+   feed (`lib/swarm.sh:161-216`).
+4. It is not executable by a tired operator at 2am.
+
+**Required mechanism:** `swatter rollback-ladder --since <iso|epoch>` that
+selects ladder perms from **sqlite** (not the rotated log), takes the state lock
+**once**, unblocks in-process, continues past per-IP backend failures with a
+summary rc, and prints the swarm gap explicitly.
+
+**Swarm decision (needed before the flip):** set `SWARM_PUBLISH=false` on cds1
+for the first N days after the 30-day flip, until the candidate set is trusted.
+This is the simplest way to keep a false ladder-perm on-box. The alternatives are
+a per-IP hub delete API, or written acceptance that a false perm poisons the
+fleet for up to 7 days with a documented peer-side cleanup.
+
+**Config revert ≠ ban revert** must be stated explicitly in the README.
 
 ### 4.4 The escalation reason (Task 2's readable-digest requirement)
 
@@ -294,7 +390,7 @@ positives** from 2026-06-10 (a site owner on Fatbeam, a Comcast residential
 owner, a T-Mobile mobile user). Real customers do get caught by scoring.
 Uncovered: NAT/CGNAT egress, mobile carrier gateways, VPN exits, Cloudflare WARP
 client egress, non-forward-confirmed crawlers (the PTR list is
-Google/Bing/Apple/DuckDuckGo/Yahoo/Yandex only, `lib/allowlist.sh:208`), customer
+Google/Bing/Apple/DuckDuckGo/Yahoo/Yandex only, `lib/allowlist.sh:209`), customer
 office IPs, payment webhooks.
 
 **Compounding:** a CRITICAL bad-path hit **bypasses `MIN_REQS` and floors the
@@ -311,8 +407,19 @@ Cloudflare ranges, so the header is honored only from a CF socket (verified).
 publishes confirmed perm bans to the hub — a false ladder-perm leaves this host
 and reaches every consumer of the feed.
 
-Mitigation is the canary in §6 plus §4.2 alerting; populating `monitoring.cidr`
-with real ranges is recommended before the flip.
+**This is not accepted as prose — it gets one hard gate.** With the report-mode
+canary deleted and rollback reduced to a subcommand still to be written,
+"documented and accepted" would be the only thing between a single-probe chain
+and a permanent ban.
+
+**Gate:** when *every* in-window temp for an IP is a CRITICAL-single — evidence
+carrying `badpath_cat=CRITICAL` with no multi-request or multi-signal body —
+require `REPEAT_N + 1` before perm, via a dedicated `REPEAT_N_CRITICAL_SINGLE=4`.
+Multi-session scanners still escalate at 3; one-hit probe chains need a fourth.
+This directly raises the cost of the img-tag/CSRF third-party drive-by.
+
+Additionally, populating `monitoring.cidr` and known payment/webhook/office
+ranges is a **precondition** of the flip, not a recommendation.
 
 ---
 
@@ -345,24 +452,61 @@ temps at T−15d and T−1d, third offense now → **perm at 30d, temp at 7d**.
 - no-jq path preserves `ev` and still emits the reason suffix
 - non-integer value refused
 
-**Config:** `config_defaults_test.sh` pins the shipped `REPEAT_WINDOW_DAYS`;
-validation rejects empty / non-numeric / out-of-range with a warn and falls back.
+**Config:** `config_defaults_test.sh` pins the shipped `REPEAT_WINDOW_DAYS` and
+`REPEAT_N` (it currently pins `PERSIST_N` but neither escalation knob).
+Validation rejects empty / non-numeric / out-of-range with a warn and falls back
+— **including the `REPEAT_N=""` case, which must not perm on first offense.**
+
+**Safety controls (PR 2b):**
+- `escalate-preview` output pinned against a seeded ledger, and asserted to
+  advance no cursor and change no mode
+- `rollback-ladder` selects from sqlite across a rotated/compressed log window,
+  takes the lock once, and continues past a per-IP backend failure
+- perm-rate alert: threshold trip, ladder-only counting (a dual-plane leg does
+  not double-count), and non-suppression across consecutive runs in a burst
+- CRITICAL-single gate: 3 CRITICAL singles → temp; 4 → perm; 3 mixed-evidence
+  temps → perm
+- digest renders `.evidence.recidivism`
+
+**Explicit assertion** that the full count query retains window **and**
+`dry_run=0` **and** the unblock watermark — the three can be dropped
+independently by a careless edit.
 
 ---
 
 ## 6. Rollout
 
-1. **PR 1** — unblock forgets. Ship and deploy.
-2. **PR 2** — validation, alerting, rollback runbook, reason/evidence, digest,
-   tests. Ship with the repo default still at 7.
-3. **Canary:** set `REPEAT_WINDOW_DAYS=30` on cds1 in **report mode**, one cycle.
-   Confirm the would-be escalations match the replayed 67.
-4. **Human review** of the 67 net-new candidates — ASN, PTR, customer mapping,
-   DIRECT vs CF plane split — before any enforced flip.
-5. **Enforce flip** on cds1 only, with §4.2 alerting live.
-6. Watch the first nightly digest and the perm-rate tripwire.
+1. **PR 1** — unblock forgets (§3). Ship and deploy.
+2. **PR 2a** — knob validation (§4.1), `_swatter_ev_stamp` + reason/evidence
+   (§4.4), digest (§4.5), tests. Repo default stays 7. Nothing here is
+   irreversible; ship freely.
+3. **PR 2b** — the pre-flip controls: `swatter escalate-preview`,
+   `swatter rollback-ladder` (§4.3), the perm-rate alert wired per §4.2, and the
+   §4.7 CRITICAL-single gate.
+4. **Offline preview:** `swatter escalate-preview --window 30` on cds1. Reads
+   `actions` directly — no ingest, no cursor advance, no mode change.
+5. **Human review** of the candidate list — ASN, PTR, customer mapping, DIRECT vs
+   CF plane split.
+6. **Swarm decision** (§4.3) applied.
+7. **Enforce flip** on cds1 only (`/etc/swatter/swatter.conf`), alerting live.
+8. Watch the perm-rate tripwire and the first nightly digest.
 
-Rollback at any point: the §4.3 runbook, not a config revert.
+**There is no report-mode canary.** An earlier draft proposed flipping cds1 to
+report mode for one cycle to "confirm the would-be escalations match the 67."
+That cannot work and is actively harmful:
+
+- Ingest is byte-cursor based (`lib/ingest.sh:5-11`, `:102-104`); one `*/5` cycle
+  scores ~5 minutes of *new* log bytes, not 30 days of history.
+- Measured escalation rate on cds1 is **5.37 events/day** (spikes to 16), so one
+  cycle expects **~0.02 events**. A meaningful sample would need ~a week.
+- Report mode **still advances the cursors** (`lib/score.sh:421`), so attack
+  traffic during the canary is consumed and never re-scored after the flip.
+- New attackers go unblocked for its duration on a live host.
+
+Near-zero would-be perms would read as "clean" — false confidence in the
+dangerous direction. Step 4's offline preview is the real gate.
+
+Rollback at any point: `swatter rollback-ladder`, not a config revert.
 
 Expected steady-state volume: ~67 net-new perms over ~6 weeks of comparable
 traffic, roughly 1–2/day, against 1460 existing perms. No pressure on
@@ -375,9 +519,19 @@ recidivists is possible and is what §4.2's per-run threshold is for.
 
 The proposal required `104.168.115.241` to appear in the dry-run escalation list.
 **It cannot, and the requirement is waived by decision.** The IP has 2 enforced
-temps in its entire history, so no `N=3` rule reaches it. Under 3/30d its next
-return is its 3rd in-window temp and escalates automatically; given its ~15-day
-cadence and last activity 2026-07-03, that is due.
+temps in its entire history, so no `N=3` rule reaches it.
+
+Nor will its next return escalate it. Against the 2026-07-24T18:16:32Z snapshot:
+
+| Temp | Age | Inside a 30-day window? |
+|---|---|---|
+| 2026-06-18 19:45 | **35 days** | **No** |
+| 2026-07-03 10:10 | 21 days | Yes |
+
+So `prior = 1` today, and its next return is temp #2 — still not a perm. It
+would need two further returns while enough priors remain in-window (e.g. a
+return within ~9 days of now, then a third before the 07-03 temp ages out).
+Given its observed ~15-day cadence, that is plausible but not automatic.
 
 The proposal also asked to count "`temp` (and `dual-plane` temp) decisions."
 There is no such thing: `_swatter_maybe_dual_plane` returns early unless
