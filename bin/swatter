@@ -28,6 +28,7 @@
 #   swatter import-bans <file>     block each listed IP as perm (skips never-block/invalid)
 #   swatter swarm {enroll|status|disable|purge}  fleet reputation sharing (see SWARM_* config)
 #   swatter escalate-preview [--window N]  who WOULD escalate (read-only)
+#   swatter rollback-ladder --since <epoch|iso> [--dry-run]   undo ladder perms
 #   swatter version
 
 set -uo pipefail
@@ -490,13 +491,84 @@ cmd_escalate_preview() {
     swatter_escalate_preview "$win"
 }
 
+
+# swatter rollback-ladder --since <epoch|iso> [--dry-run] — bulk undo for perm
+# bans placed by the recidivism ladder (Task 3), since a permanent ban on the
+# direct plane never expires and a shell loop over `swatter unblock` is not a
+# viable recovery path (see the header comment on swatter_ladder_perms_since
+# and the commit message for why: decisions.jsonl rotates weekly with
+# compress, cmd_unblock dies on a 30s lock wait, and a backend failure still
+# clears the ledger before exiting non-zero).
+cmd_rollback_ladder() {
+    local since="" dry=0
+    while (( $# )); do
+        case "$1" in
+            # Must validate $# BEFORE shift 2 — see cmd_escalate_preview's
+            # --window handling for why: with --since as the last arg, $2 is
+            # unset and `shift 2` (N > $#) fails and leaves positionals
+            # UNCHANGED under bash's shift semantics. Since this repo runs
+            # `set -uo pipefail` without `-e`, that failure is swallowed, $1
+            # stays "--since", and the while loop spins forever.
+            --since)
+                [[ $# -ge 2 ]] || die "usage: swatter rollback-ladder --since <epoch|iso> [--dry-run]"
+                since="$2"; shift 2 ;;
+            --dry-run) dry=1; shift ;;
+            *) die "usage: swatter rollback-ladder --since <epoch|iso> [--dry-run]" ;;
+        esac
+    done
+    [[ -n "$since" ]] || die "usage: swatter rollback-ladder --since <epoch|iso> [--dry-run]"
+    if ! [[ "$since" =~ ^[0-9]+$ ]]; then
+        since="$(date -u -d "$since" +%s 2>/dev/null)" || die "rollback-ladder: unparseable --since"
+    fi
+    # ONE lock acquisition for the whole run, not per IP: a 67-IP loop taking
+    # cmd_unblock's 30s-wait lock per iteration would contend with the */5 scan
+    # cron and abort mid-list. swatter_with_state_lock only GATES entry (it
+    # does not itself run a command under the lock — unlike cmd_unblock and
+    # cmd_import_bans, which call it once and then do their work inline), so
+    # acquire it here, once, before doing any work, and hold it (the fd stays
+    # open for the rest of this process) for the entire selection+unblock loop.
+    swatter_with_state_lock 120 || die "a swatter scan is running (lock held) — try again in a moment"
+    local ips; ips="$(swatter_ladder_perms_since "$since")" || die "rollback-ladder: ledger query failed"
+    if [[ -z "$ips" ]]; then echo "no ladder perms since ${since}"; return 0; fi
+    local total=0 ok=0 bad=0
+    while read -r ip; do
+        [[ -n "$ip" ]] || continue
+        total=$(( total + 1 ))
+        if (( dry )); then echo "would unblock ${ip}"; ok=$(( ok + 1 )); continue; fi
+        # Continue past a per-IP backend failure — a partial undo that stops
+        # halfway is worse than one that finishes and reports which IPs need a
+        # retry. Ledger is cleared either way (matches cmd_unblock): a later
+        # retry of the same IP must not be blocked by stale perm state.
+        SWATTER_LAST_BACKEND_ERR=""
+        if swatter_block_direct_unblock "$ip" && swatter_cf_unblock "$ip"; then
+            swatter_store_unblock "$ip"; ok=$(( ok + 1 ))
+            echo "unblocked ${ip}"
+        else
+            swatter_store_unblock "$ip"; bad=$(( bad + 1 ))
+            echo "PARTIAL ${ip}: a backend failed${SWATTER_LAST_BACKEND_ERR:+ (${SWATTER_LAST_BACKEND_ERR})}; ledger cleared, firewall may still hold" >&2
+        fi
+    done <<< "$ips"
+    printf 'rollback-ladder: %d selected, %d unblocked, %d partial\n' "$total" "$ok" "$bad"
+    # The swarm gap is real and must not be silent: the hub has no per-IP
+    # retract, only a host-wide purge with a 7-day TTL.
+    if [[ "${SWARM_ENABLE:-false}" == "true" ]]; then
+        cat >&2 <<'EOS'
+NOTE: perm bans already published to the swarm hub are NOT retracted by this
+      command. The hub has only a host-wide purge and a 7-day TTL, so peers may
+      act on these IPs until the entries expire. Run `swatter swarm purge` only
+      if you intend to drop ALL of this host's contributions.
+EOS
+    fi
+    (( bad == 0 ))
+}
+
 cmd_setup_ipset() { swatter_ipset_setup; }
 
 cmd_metrics() {
     if [[ "${1:-}" == "--print" ]]; then swatter_metrics_emit; else swatter_metrics_write; fi
 }
 
-usage() { sed -n '2,30p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,31p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
 
 main() {
     local sub="${1:-}"; shift || true
@@ -519,6 +591,7 @@ main() {
         import-bans)   cmd_import_bans "$@" ;;
         swarm)         cmd_swarm "$@" ;;
         escalate-preview) cmd_escalate_preview "$@" ;;
+        rollback-ladder)  cmd_rollback_ladder "$@" ;;
         version|--version|-v) echo "swatter ${SWATTER_VERSION}" ;;
         ""|help|-h|--help) usage ;;
         *) echo "swatter: unknown command '${sub}' (try: swatter help)" >&2; exit 2 ;;

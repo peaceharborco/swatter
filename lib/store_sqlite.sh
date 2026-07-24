@@ -165,6 +165,26 @@ swatter_escalate_preview() {
             ORDER BY c DESC, a.ip;" | tr '|' '\t'
 }
 
+# IPs whose most recent enforced PERM since <ts> came from the recidivism ladder.
+# Selects from the sqlite ledger, NOT decisions.jsonl: the decision log rotates
+# weekly with compress (install/swatter.logrotate), so a timestamp scan of the
+# live file silently misses any incident spanning a rotation boundary.
+#   swatter_ladder_perms_since <epoch>
+swatter_ladder_perms_since() {
+    local since="${1:-0}"
+    [[ "$since" =~ ^[0-9]+$ ]] || return 1
+    [[ "${STORE}" == "sqlite" ]] || { log_warn "rollback-ladder requires STORE=sqlite"; return 1; }
+    # Read-only guarantee: sqlite3 creates the DB file merely by opening a
+    # connection to a path that doesn't exist yet, even for a SELECT that then
+    # fails on a missing table. Check for the file first so a query never plants
+    # a phantom DB (mirrors the guard swatter_escalate_preview added).
+    [[ -e "$(_swatter_db)" ]] || { log_warn "rollback-ladder: no ledger at $(_swatter_db) — run a scan first"; return 1; }
+    _sqlq "SELECT DISTINCT ip FROM actions
+            WHERE action='perm' AND dry_run=0 AND ts > ${since}
+              AND reason LIKE '%recidivism=%'
+            ORDER BY ip;"
+}
+
 # Is the IP already permanently blocked?
 swatter_store_is_perm() {
     local ip="$1"
