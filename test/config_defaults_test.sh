@@ -98,6 +98,42 @@ vcheck repeat-n-crit-zero   'REPEAT_N_CRITICAL_SINGLE=0'     REPEAT_N_CRITICAL_S
 vcheck repeat-n-crit-huge   'REPEAT_N_CRITICAL_SINGLE=999'   REPEAT_N_CRITICAL_SINGLE "4"
 vcheck repeat-n-crit-valid  'REPEAT_N_CRITICAL_SINGLE=5'     REPEAT_N_CRITICAL_SINGLE "5"
 vcheck repeat-n-crit-padded 'REPEAT_N_CRITICAL_SINGLE="020"' REPEAT_N_CRITICAL_SINGLE "20"
+
+# ...and bounds alone don't protect it: the knob only ever RAISES the bar, so a
+# value BELOW REPEAT_N inverts the gate it exists to be. REPEAT_N_CRITICAL_
+# SINGLE=1 (a plausible misreading as "+1 more") passes 1-20 validation and
+# perms an all-CRITICAL-single IP on its 2nd offense. Must clamp up to REPEAT_N.
+vcheck crit-clamp-below     'REPEAT_N_CRITICAL_SINGLE=1'     REPEAT_N_CRITICAL_SINGLE "3"
+vcheck crit-clamp-equal     'REPEAT_N_CRITICAL_SINGLE=3'     REPEAT_N_CRITICAL_SINGLE "3"
+# Clamp must run AFTER both knobs are validated/normalized, so it compares the
+# operator's REPEAT_N — not the built-in default — and the octal-normalized form.
+vcheck crit-clamp-vs-conf-n $'REPEAT_N=6\nREPEAT_N_CRITICAL_SINGLE=4' REPEAT_N_CRITICAL_SINGLE "6"
+vcheck crit-clamp-padded-n  $'REPEAT_N="010"\nREPEAT_N_CRITICAL_SINGLE=4' REPEAT_N_CRITICAL_SINGLE "10"
+# An invalid value falls back to 4, which is still >= a default REPEAT_N=3 —
+# but with REPEAT_N=6 the fallback itself must be clamped, not shipped as-is.
+vcheck crit-clamp-fallback  $'REPEAT_N=6\nREPEAT_N_CRITICAL_SINGLE="abc"' REPEAT_N_CRITICAL_SINGLE "6"
+
+# --- perm-rate tripwire knobs ----------------------------------------------
+# Unvalidated these are the same footgun class, on the one channel that beats
+# the 24h digest. Empty is the loud one: `(( 0 >= "" ))` is TRUE, so the
+# tripwire fires every run with zero perms placed and, because the alert key is
+# hour-bucketed, keeps firing hourly until the operator mutes the channel.
+# Non-numeric is the silent one: under `set -u` the arithmetic aborts the shell
+# INSIDE swatter_scan, so every */5 cron run dies before swatter_swarm_publish.
+check perm-alert-run-default2 "${PERM_RATE_ALERT_PER_RUN}" "5"
+check perm-alert-day-default2 "${PERM_RATE_ALERT_PER_DAY}" "15"
+vcheck perm-run-empty     'PERM_RATE_ALERT_PER_RUN=""'      PERM_RATE_ALERT_PER_RUN "5"
+vcheck perm-run-alpha     'PERM_RATE_ALERT_PER_RUN="abc"'   PERM_RATE_ALERT_PER_RUN "5"
+vcheck perm-run-zero      'PERM_RATE_ALERT_PER_RUN=0'       PERM_RATE_ALERT_PER_RUN "5"
+vcheck perm-run-huge      'PERM_RATE_ALERT_PER_RUN=100000'  PERM_RATE_ALERT_PER_RUN "5"
+vcheck perm-run-padded    'PERM_RATE_ALERT_PER_RUN="020"'   PERM_RATE_ALERT_PER_RUN "20"
+vcheck perm-run-valid     'PERM_RATE_ALERT_PER_RUN=3'       PERM_RATE_ALERT_PER_RUN "3"
+vcheck perm-day-empty     'PERM_RATE_ALERT_PER_DAY=""'      PERM_RATE_ALERT_PER_DAY "15"
+vcheck perm-day-alpha     'PERM_RATE_ALERT_PER_DAY="abc"'   PERM_RATE_ALERT_PER_DAY "15"
+vcheck perm-day-zero      'PERM_RATE_ALERT_PER_DAY=0'       PERM_RATE_ALERT_PER_DAY "15"
+vcheck perm-day-huge      'PERM_RATE_ALERT_PER_DAY=100000'  PERM_RATE_ALERT_PER_DAY "15"
+vcheck perm-day-padded    'PERM_RATE_ALERT_PER_DAY="030"'   PERM_RATE_ALERT_PER_DAY "30"
+vcheck perm-day-valid     'PERM_RATE_ALERT_PER_DAY=40'      PERM_RATE_ALERT_PER_DAY "40"
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

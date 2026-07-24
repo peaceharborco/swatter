@@ -368,6 +368,44 @@ swatter_load_config() {
         log_warn "REPEAT_N_CRITICAL_SINGLE='${_n}' invalid (want integer 1-20); using 4"
         REPEAT_N_CRITICAL_SINGLE=4
     fi
+    # Bounds alone are not enough: this knob only ever RAISES the bar (it is
+    # documented that way everywhere), but nothing stopped a value BELOW
+    # REPEAT_N from passing validation and inverting the gate. The plausible
+    # misreading is REPEAT_N_CRITICAL_SINGLE=1 as "+1 more", which perms an
+    # all-CRITICAL-single IP on its 2nd offense — or immediately if it already
+    # has priors — making the one path built to be LESS aggressive the most
+    # aggressive path in the system. Same shape as the REPEAT_N="" bug: a value
+    # that validates cleanly and maximizes banning. Clamp, loudly.
+    # Ordering: must run AFTER both knobs are canonical decimals above.
+    if (( REPEAT_N_CRITICAL_SINGLE < REPEAT_N )); then
+        log_warn "REPEAT_N_CRITICAL_SINGLE=${REPEAT_N_CRITICAL_SINGLE} below REPEAT_N=${REPEAT_N}; clamping to ${REPEAT_N} (this knob only raises the bar)"
+        REPEAT_N_CRITICAL_SINGLE="$REPEAT_N"
+    fi
+    # The perm-rate tripwire's own knobs, same footgun class — and the one
+    # channel that beats the 24h digest, so a bad value costs the fastest
+    # safety signal there is. They are consumed raw by lib/score.sh's
+    # `(( SWATTER_RUN_PERMS >= PERM_RATE_ALERT_PER_RUN || _pday >= ... ))`:
+    #   ""    -> `(( 0 >= "" ))` is TRUE, so the tripwire fires EVERY run with
+    #            zero perms placed; the key is hour-bucketed, so that is an
+    #            alert an hour, forever, until the operator mutes the channel.
+    #   "abc" -> under `set -u` the arithmetic aborts the shell INSIDE
+    #            swatter_scan, so cmd_scan never reaches swatter_swarm_publish
+    #            and every */5 cron run dies at the very end of its work.
+    #   "020" -> octal 16: trips at 17, not the 20 that was written down.
+    _n="${PERM_RATE_ALERT_PER_RUN:-}"
+    if [[ "$_n" =~ ^[0-9]+$ ]] && (( 10#$_n >= 1 && 10#$_n <= 1000 )); then
+        PERM_RATE_ALERT_PER_RUN=$(( 10#$_n ))
+    else
+        log_warn "PERM_RATE_ALERT_PER_RUN='${_n}' invalid (want integer 1-1000); using 5"
+        PERM_RATE_ALERT_PER_RUN=5
+    fi
+    _n="${PERM_RATE_ALERT_PER_DAY:-}"
+    if [[ "$_n" =~ ^[0-9]+$ ]] && (( 10#$_n >= 1 && 10#$_n <= 1000 )); then
+        PERM_RATE_ALERT_PER_DAY=$(( 10#$_n ))
+    else
+        log_warn "PERM_RATE_ALERT_PER_DAY='${_n}' invalid (want integer 1-1000); using 15"
+        PERM_RATE_ALERT_PER_DAY=15
+    fi
 }
 
 # ---------------------------------------------------------------------------
