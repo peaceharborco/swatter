@@ -270,6 +270,30 @@ check silence-gate-genuine "$(printf '%s' "$gate_cond" | grep -c 'err_genuine ==
 check silence-gate-fatal   "$(printf '%s' "$gate_cond" | grep -c 'err_fatal == 0')"  "1"
 STATE_DIR="$SW_STATE_SAVE"; SWARM_ENABLE=false; rm -rf "$SW_ST"
 
+# --- recidivism count in the digest ----------------------------------------
+# Matches evidence.recidivism (stamped on every ladder perm), NOT .reason —
+# same idiom as evidence.swarm (see the swplane-preblk case above, and the
+# comment at lib/report.sh ~586-588: .reason is prefixed on some paths and is
+# not a reliable key). Asserted against the RENDERED plain-text digest body
+# (swatter_report_build), not a hand-run jq expression, so a real regression
+# in the render wiring actually fails this test.
+LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/swatter-rptrecid.XXXXXX")"
+_recid_now="$(date +%s)"
+printf '{"ts":%s,"ip":"1.2.3.4","score":91,"action":"perm","channel":"csf","ttl":0,"reason":"score=91 recidivism=3/30d","reputation":0,"mode":"enforce","evidence":{"recidivism":3}}\n' "$_recid_now" > "$LOG_DIR/decisions.jsonl"
+printf '{"ts":%s,"ip":"1.2.3.5","score":80,"action":"temp","channel":"csf","ttl":3600,"reason":"score=80","reputation":0,"mode":"enforce","evidence":{}}\n' "$_recid_now" >> "$LOG_DIR/decisions.jsonl"
+ERROR_DIGEST_ENABLE="false"; ORIGIN_LOCK_DIGEST="auto"; FAKE_OL=0
+recid_body="$(swatter_report_build 24h)"
+check digest-recid-line "$(printf '%s' "$recid_body" | grep -c '1 of those permanent block(s) came from repeat offenses (recidivism ladder)')" "1"
+rm -rf "$LOG_DIR"
+
+# Quiet window: zero recidivism-driven perms renders NOTHING — a line in every
+# nightly digest for months trains the operator to ignore it.
+LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/swatter-rptrecid0.XXXXXX")"
+printf '{"ts":%s,"ip":"1.2.3.6","score":95,"action":"perm","channel":"csf","ttl":0,"reason":"score=95","reputation":0,"mode":"enforce","evidence":{}}\n' "$_recid_now" > "$LOG_DIR/decisions.jsonl"
+norecid_body="$(swatter_report_build 24h)"
+check digest-recid-quiet "$(printf '%s' "$norecid_body" | grep -c 'recidivism ladder')" "0"
+rm -rf "$LOG_DIR"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

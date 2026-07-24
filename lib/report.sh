@@ -50,7 +50,7 @@ swatter_report_build() {
     cutoff=$(( $(swatter_now) - $(_report_window_secs "$window") ))
     local log="${LOG_DIR}/decisions.jsonl"
 
-    RPT_ACTED=0 RPT_PERM=0 RPT_TEMP=0 RPT_CF=0 RPT_DIRECT=0 RPT_EXEMPT=0 RPT_WATCH=0 RPT_FAILED=0 RPT_FAIL_CAUSE="" RPT_GAVEUP=0
+    RPT_ACTED=0 RPT_PERM=0 RPT_TEMP=0 RPT_CF=0 RPT_DIRECT=0 RPT_EXEMPT=0 RPT_WATCH=0 RPT_FAILED=0 RPT_FAIL_CAUSE="" RPT_GAVEUP=0 RPT_RECID=0
     ERR_TOTAL=0 ERR_FATAL=0 ERR_GENUINE=0 ERR_NOISE=0
     # Unset, not zeroed: the errors plane sets these when it classifies the
     # window's fatals. Unset = unclassified, and the grade falls back to the
@@ -165,6 +165,10 @@ _report_emit_abuse() {
     RPT_DIRECT=$(printf '%s\n' "$recs" | jq -rc 'select((.channel=="csf" or .channel=="ipset") and (.action=="temp" or .action=="perm"))' | grep -c . || true)
     RPT_ACTED=$(( RPT_PERM + RPT_TEMP ))
 
+    # Ladder perms in-window. Match evidence.recidivism (stamped on every ladder
+    # perm by lib/score.sh), NOT .reason — same rule as evidence.swarm below.
+    RPT_RECID=$(printf '%s\n' "$recs" | jq -rc 'select(.evidence.recidivism != null)' | grep -c . || true)
+
     # Capture the top 1-2 offense labels (for the plain-language summary). Globals
     # persist because the builder runs emit-abuse via redirection, not a subshell.
     local _offlist
@@ -193,6 +197,7 @@ _report_emit_abuse() {
         echo "Actions Taken"
         echo "-------------"
         printf '  %-22s %s\n' "permanent blocks:" "${RPT_PERM}"
+        (( ${RPT_RECID:-0} > 0 )) && printf '  %s of those permanent block(s) came from repeat offenses (recidivism ladder).\n' "${RPT_RECID}"
         printf '  %-22s %s\n' "temporary blocks:" "${RPT_TEMP}"
         printf '  %-22s %s\n' "  direct (CSF/ipset):" "${RPT_DIRECT}"
         printf '  %-22s %s\n' "  via Cloudflare:"   "${RPT_CF}"
