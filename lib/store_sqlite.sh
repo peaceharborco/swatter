@@ -146,6 +146,12 @@ swatter_escalate_preview() {
     local n="${REPEAT_N}"
     [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 )) || n=3
     [[ "${STORE}" == "sqlite" ]] || { log_warn "escalate-preview requires STORE=sqlite"; return 1; }
+    # Read-only guarantee: sqlite3 creates the DB file merely by opening a
+    # connection to a path that doesn't exist yet, even for a SELECT that then
+    # fails on a missing table. Check for the file first so a never-scanned
+    # host gets a clean warning instead of this command being the one thing
+    # that plants a file on disk.
+    [[ -e "$(_swatter_db)" ]] || { log_warn "escalate-preview: no ledger at $(_swatter_db) — run a scan first"; return 1; }
     local since; since=$(( $(swatter_now) - win*86400 ))
     # Mirrors swatter_store_recent_temp_count exactly: enforced temps only,
     # inside the window, after any operator unblock.

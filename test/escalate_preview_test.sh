@@ -46,6 +46,17 @@ after="$(sqlite3 "$db" 'SELECT COUNT(*) FROM actions;')"
 check prev-readonly-rows "$after" "$before"
 check prev-no-cursor     "$([[ -e "${STATE_DIR}/cursors.tsv" ]] && echo yes || echo no)" "no"
 
+# Read-only, part 2: on a NEVER-SCANNED host (no swatter.db yet at all), the
+# preview must not be the thing that plants the DB file — sqlite3 creates the
+# file just by opening a connection, even for a SELECT that then fails on a
+# missing table. Run in a subshell so this doesn't disturb the outer STATE_DIR.
+FRESH_STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/swatter-prev-fresh.XXXXXX")"
+( STATE_DIR="$FRESH_STATE_DIR"; swatter_escalate_preview 30 >/dev/null 2>&1 )
+fresh_rc=$?
+check prev-nodb-rc      "$([[ $fresh_rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check prev-nodb-nofile  "$([[ -e "${FRESH_STATE_DIR}/swatter.db" ]] && echo yes || echo no)" "no"
+rm -rf "$FRESH_STATE_DIR"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

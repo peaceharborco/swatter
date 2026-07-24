@@ -66,6 +66,20 @@ bash "${ROOT}/bin/swatter" top -n 'abc; DROP' >/dev/null 2>"$state/toperr"; rc=$
 [[ $rc -ne 0 ]] && PASS=$((PASS+1)) || { echo "FAIL top-n-nonnumeric-rejected"; FAIL=$((FAIL+1)); }
 bash "${ROOT}/bin/swatter" top -n 5 >/dev/null 2>&1 && PASS=$((PASS+1)) || { echo "FAIL top-n-numeric-ok"; FAIL=$((FAIL+1)); }
 
+# `swatter escalate-preview --window` with NO value must not hang. With
+# `set -uo pipefail` (no -e), `shift 2` on the last positional silently fails
+# and leaves $1 == "--window", spinning the arg-parse loop forever unless the
+# arg count is validated before shift. Guarded with `timeout` so a regression
+# fails fast (rc=124) instead of hanging this whole suite.
+timeout 5 bash "${ROOT}/bin/swatter" escalate-preview --window >/dev/null 2>"$state/ewerr"; rc=$?
+[[ $rc -ne 0 && $rc -ne 124 ]] && PASS=$((PASS+1)) || { echo "FAIL escalate-preview-window-no-value-hangs (rc=$rc)"; FAIL=$((FAIL+1)); }
+
+# `swatter escalate-preview --window 0` must be rejected, not silently fall
+# back to the configured default (an operator's explicit 0 must not be
+# reinterpreted as "use REPEAT_WINDOW_DAYS" with no indication of the override).
+bash "${ROOT}/bin/swatter" escalate-preview --window 0 >/dev/null 2>"$state/ewzero"; rc=$?
+[[ $rc -ne 0 ]] && PASS=$((PASS+1)) || { echo "FAIL escalate-preview-window-zero-rejected"; FAIL=$((FAIL+1)); }
+
 # import-bans is a deliberate bulk op — it must NOT be truncated by the per-run
 # deny cap (default 10). With a fake csf on PATH + enforce, importing 12 IPs must
 # apply all 12. (Skip if a real csf is installed so we never shadow it.)

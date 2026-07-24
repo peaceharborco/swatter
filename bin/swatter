@@ -472,11 +472,18 @@ cmd_escalate_preview() {
     local win="${REPEAT_WINDOW_DAYS}"
     while (( $# )); do
         case "$1" in
-            --window) win="${2:-}"; shift 2 ;;
+            # Must validate $# BEFORE shift 2: with --window as the last arg,
+            # $2 is unset and `shift 2` (N > $#) fails and leaves positionals
+            # UNCHANGED under bash's shift semantics — and since this repo runs
+            # `set -uo pipefail` without `-e`, that failure is swallowed, $1 is
+            # still "--window" next iteration, and the while loop spins forever.
+            --window)
+                [[ $# -ge 2 ]] || die "usage: swatter escalate-preview [--window N]"
+                win="$2"; shift 2 ;;
             *) die "usage: swatter escalate-preview [--window N]" ;;
         esac
     done
-    [[ "$win" =~ ^[0-9]+$ ]] || die "escalate-preview: --window must be an integer"
+    [[ "$win" =~ ^[0-9]+$ ]] && (( win >= 1 )) || die "escalate-preview: --window must be a positive integer"
     # Read-only: no state lock needed, and deliberately not taken so this can be
     # run while the */5 scan is mid-flight.
     printf 'ip\ttemps\tlast_temp_utc\n'
