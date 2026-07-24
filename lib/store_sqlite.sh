@@ -133,6 +133,32 @@ swatter_store_recent_temp_count() {
     fi
 }
 
+# Offline escalation preview: which IPs would reach REPEAT_N temps inside a
+# candidate window, computed from the LEDGER ONLY. No ingest, no cursor
+# advance, no mode change — safe to run against a live production host, which
+# is the whole point (a report-mode "canary" cannot see history, because ingest
+# is byte-cursor based and only ever reads new log bytes).
+# Echoes: ip \t temps_in_window \t last_temp_iso
+#   swatter_escalate_preview [window_days]
+swatter_escalate_preview() {
+    local win="${1:-${REPEAT_WINDOW_DAYS}}"
+    [[ "$win" =~ ^[0-9]+$ ]] && (( win >= 1 )) || win="${REPEAT_WINDOW_DAYS}"
+    local n="${REPEAT_N}"
+    [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 )) || n=3
+    [[ "${STORE}" == "sqlite" ]] || { log_warn "escalate-preview requires STORE=sqlite"; return 1; }
+    local since; since=$(( $(swatter_now) - win*86400 ))
+    # Mirrors swatter_store_recent_temp_count exactly: enforced temps only,
+    # inside the window, after any operator unblock.
+    _sqlq "SELECT a.ip, COUNT(*) AS c, datetime(MAX(a.ts),'unixepoch')
+             FROM actions a
+            WHERE a.action='temp' AND a.dry_run=0 AND a.ts > ${since}
+              AND a.ts > (SELECT COALESCE(MAX(u.ts),0) FROM actions u
+                           WHERE u.ip = a.ip AND u.action='unblock')
+            GROUP BY a.ip
+           HAVING c >= ${n}
+            ORDER BY c DESC, a.ip;" | tr '|' '\t'
+}
+
 # Is the IP already permanently blocked?
 swatter_store_is_perm() {
     local ip="$1"

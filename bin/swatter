@@ -27,6 +27,7 @@
 #   swatter export-bans [file]     write perm-ban list to file (or stdout)
 #   swatter import-bans <file>     block each listed IP as perm (skips never-block/invalid)
 #   swatter swarm {enroll|status|disable|purge}  fleet reputation sharing (see SWARM_* config)
+#   swatter escalate-preview [--window N]  who WOULD escalate (read-only)
 #   swatter version
 
 set -uo pipefail
@@ -467,13 +468,28 @@ cmd_import_bans() {
     log_info "import-bans: ${n} ban(s) applied (mode=${SWATTER_MODE}, backend=${channel})"
 }
 
+cmd_escalate_preview() {
+    local win="${REPEAT_WINDOW_DAYS}"
+    while (( $# )); do
+        case "$1" in
+            --window) win="${2:-}"; shift 2 ;;
+            *) die "usage: swatter escalate-preview [--window N]" ;;
+        esac
+    done
+    [[ "$win" =~ ^[0-9]+$ ]] || die "escalate-preview: --window must be an integer"
+    # Read-only: no state lock needed, and deliberately not taken so this can be
+    # run while the */5 scan is mid-flight.
+    printf 'ip\ttemps\tlast_temp_utc\n'
+    swatter_escalate_preview "$win"
+}
+
 cmd_setup_ipset() { swatter_ipset_setup; }
 
 cmd_metrics() {
     if [[ "${1:-}" == "--print" ]]; then swatter_metrics_emit; else swatter_metrics_write; fi
 }
 
-usage() { sed -n '2,29p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,30p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
 
 main() {
     local sub="${1:-}"; shift || true
@@ -495,6 +511,7 @@ main() {
         export-bans)   cmd_export_bans "$@" ;;
         import-bans)   cmd_import_bans "$@" ;;
         swarm)         cmd_swarm "$@" ;;
+        escalate-preview) cmd_escalate_preview "$@" ;;
         version|--version|-v) echo "swatter ${SWATTER_VERSION}" ;;
         ""|help|-h|--help) usage ;;
         *) echo "swatter: unknown command '${sub}' (try: swatter help)" >&2; exit 2 ;;
