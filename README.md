@@ -443,6 +443,64 @@ catastrophic targets (a `/0` or an unspecified address like `0.0.0.0`) — safe
 to pipe from an untrusted source. Use `export-bans` in a cron and `import-bans`
 on the receiving hosts to keep ban lists in sync across a fleet.
 
+## Recidivism ladder
+
+An IP that keeps earning fresh temp blocks — instead of going quiet or getting
+corrected — graduates to a permanent ban. `REPEAT_N` (default 3) enforced temps
+for the same IP inside a trailing `REPEAT_WINDOW_DAYS` window (default 7)
+triggers the perm; a **report-mode** temp never counts, so watching a false
+positive in dry-run for a week can't itself drive a ban the moment you flip to
+`enforce`.
+
+A single CRITICAL bad-path hit (say, one `/.env` probe) is already a temp at
+any request volume, so a bare `REPEAT_N` would perm-ban an IP after just 3 such
+probes — cheap for an attacker to trigger against a third party's address. When
+**every** in-window temp for an IP is one of these single CRITICAL probes,
+escalation instead requires `REPEAT_N_CRITICAL_SINGLE` (default 4) of them. A
+ladder perm carries the math that produced it: `recidivism=<n>/<days>d` in the
+decision reason and `evidence.recidivism` in the stored evidence, alongside
+`rule=<decisive_rule>` showing which detector actually fired. The nightly
+digest reports how many of a window's perms came from the ladder, and a
+tripwire (`PERM_RATE_ALERT_PER_RUN`, default 5; `PERM_RATE_ALERT_PER_DAY`,
+default 15) fires an alert on the same run that crosses it, pointing at the
+preview/rollback commands below.
+
+**Operator gotchas:**
+
+- **`swatter unblock`, not `swatter allow`, clears a false positive.** Only
+  `unblock` resets the recidivism ladder (it writes a watermark; temps at or
+  before it stop counting). `allow` adds the IP to the never-block set so it
+  can't be blocked *again*, but it does nothing to the temp history already on
+  the ledger — the count an eventual future offense would add to.
+- **Config revert ≠ ban revert.** Lowering `REPEAT_WINDOW_DAYS` (or raising
+  `REPEAT_N`) changes only how *future* offenses are judged; it does not undo
+  permanent bans the ladder already placed under the old setting. To actually
+  reverse them, use `swatter rollback-ladder --since <ts>` (below).
+- **A ladder perm already published to the swarm hub can't be retracted
+  per-IP.** The hub has only a host-wide `swatter swarm purge` and a 7-day TTL,
+  so a bad ladder perm you roll back locally may still be acted on by peers
+  until it expires there.
+- **On a Cloudflare-fronted host running `CF_ACTION=managed_challenge`, repeat
+  `temp/cloudflare` decisions for the same IP within a day are expected, not a
+  bug.** A challenged IP keeps reaching the origin (it hasn't been dropped),
+  so it can keep tripping the scorer — and that's exactly what drives it to a
+  perm within two or three re-temps. Don't chase it as a false-positive pattern.
+
+```bash
+# Read-only: who WOULD escalate at a given window, from the ledger alone. No
+# ingest, no cursor advance, no lock — safe to run against a live host mid-scan.
+# sqlite store only.
+swatter escalate-preview --window 30 > candidates.tsv
+
+# Bulk-undo permanent bans the ladder placed since a given time (epoch or an
+# ISO timestamp `date -d` can parse). One lock acquisition for the whole run;
+# continues past a per-IP backend failure and exits non-zero if any were
+# partial (unblocked in the ledger, but a firewall rule may still be live —
+# check the PARTIAL lines it prints).
+swatter rollback-ladder --since "2026-07-20 00:00:00" --dry-run   # preview first
+swatter rollback-ladder --since "2026-07-20 00:00:00"             # then apply
+```
+
 ## Beyond reputation: ASN, traps, persistence, metrics
 
 - **Hosting-ASN signal** *(`ASN_SIGNAL_ENABLE`)* — when an offender is already
@@ -543,8 +601,11 @@ All the knobs live in `/etc/swatter/swatter.conf`:
 - **Report-only by default.** Out of the box Swatter scores and logs decisions but
   touches nothing. Watch it for a week, then flip `SWATTER_MODE="enforce"`.
 - **Temp before perm.** First offense is a temporary block (TTL ladder
-  1h → 6h → 24h → 72h). Permanent bans are *earned* by repeat offenses, never from
-  a single window — so one anomalous burst can't blackhole a shared/CGNAT IP.
+  1h → 6h → 24h → 72h). Permanent bans are *earned* by repeat offenses — `REPEAT_N`
+  (default 3) temp blocks within `REPEAT_WINDOW_DAYS` (default 7) — never from
+  a single window, so one anomalous burst can't blackhole a shared/CGNAT IP. See
+  [Recidivism ladder](#recidivism-ladder) below for the escalation details,
+  preview/rollback tooling, and the operator gotchas that go with it.
 - **Circuit breakers.** Hard caps on blocks per run, with a separate, lower cap on
   the catastrophic CSF channel. A log-parsing bug can't nuke thousands of IPs.
 - **Never-block allowlist**, checked last: Cloudflare ranges, your `csf.allow`,
@@ -724,6 +785,8 @@ error responses), so even the default tuning won't ban an owner for logging in.
 | `swatter metrics [--print]` | write (or print) the Prometheus textfile |
 | `swatter export-bans [file]` | write the perm-ban list to a file (or stdout) |
 | `swatter import-bans <file>` | block each listed IP as perm (skips allowlisted / invalid) |
+| `swatter escalate-preview [--window N]` | who would escalate to a perm, read-only from the ledger (sqlite only) |
+| `swatter rollback-ladder --since <epoch\|iso> [--dry-run]` | bulk-undo permanent bans the recidivism ladder placed |
 
 ---
 

@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Recidivism ladder: preview and rollback.** New `swatter escalate-preview
+  [--window N]` (read-only, ledger-only, sqlite store) answers "who would
+  escalate to a perm at N days" without touching cursors, locks, or state —
+  safe to run against a live host mid-scan. New `swatter rollback-ladder
+  --since <epoch|iso> [--dry-run]` bulk-undoes permanent bans the ladder
+  placed: one state-lock acquisition for the whole run, continues past a
+  per-IP backend failure, and exits non-zero if any IP was left partially
+  unblocked.
+- **Perm-rate tripwire.** New `PERM_RATE_ALERT_PER_RUN` (default 5) and
+  `PERM_RATE_ALERT_PER_DAY` (default 15) fire an alert on the same run that
+  crosses them — the nightly digest alone would otherwise report a runaway
+  escalation wave up to 24h late, and grade it GREEN the whole time.
+- **Nightly digest reports recidivism-driven perms** — plain-text and HTML
+  now both show how many of a window's permanent bans came from the
+  recidivism ladder.
+- **Raised escalation bar for single CRITICAL probes.** New
+  `REPEAT_N_CRITICAL_SINGLE` (default 4): when *every* in-window temp for an
+  IP is a single CRITICAL bad-path hit (which scores a temp at any request
+  volume), escalation requires this many instead of the normal `REPEAT_N` —
+  a bare `REPEAT_N` would otherwise perm-ban an IP after 3 cheap single
+  probes, easy for an attacker to trigger against a third party's address.
+- Ladder perms now self-document: `recidivism=<n>/<days>d` in the decision
+  reason and `evidence.recidivism` in the stored evidence, plus
+  `rule=<decisive_rule>` showing which detector actually fired.
+
+### Fixed
+- **`swatter unblock` now resets the recidivism ladder; `swatter allow` no
+  longer silently doesn't.** Temps at or before an IP's most recent `unblock`
+  are now excluded from the repeat count, in both the sqlite and flatfile
+  stores — an operator correcting a false positive no longer has that
+  correction undone by the IP's next unrelated offense. `allow` still only
+  prevents future blocks; it does not touch temp history.
+- `REPEAT_N`, `REPEAT_WINDOW_DAYS`, and `REPEAT_N_CRITICAL_SINGLE` are now
+  validated as positive integers at config load — an invalid value falls back
+  to its default with a logged warning instead of quietly misbehaving (an
+  empty `REPEAT_N`, for one, previously made every temp perm-eligible).
+
 ## [2.10.0] - 2026-07-18
 
 ### Changed
