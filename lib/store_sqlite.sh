@@ -185,6 +185,21 @@ swatter_ladder_perms_since() {
             ORDER BY ip;"
 }
 
+# Enforced perm decisions since <ts> — the durable rolling source for the
+# perm-rate tripwire (decisions.jsonl rotates; the ledger does not).
+#   swatter_store_perm_count_since <epoch>
+swatter_store_perm_count_since() {
+    local since="${1:-0}"
+    [[ "$since" =~ ^[0-9]+$ ]] || { echo 0; return 0; }
+    [[ "${STORE}" == "sqlite" ]] || { echo 0; return 0; }
+    # Read-only guarantee: sqlite3 creates the DB file merely by opening a
+    # connection to a path that doesn't exist yet, even for a SELECT that then
+    # fails on a missing table. Check for the file first so a query never plants
+    # a phantom DB (mirrors the guard swatter_escalate_preview added).
+    [[ -e "$(_swatter_db)" ]] || { echo 0; return 0; }
+    _sqlq "SELECT COUNT(*) FROM actions WHERE action='perm' AND dry_run=0 AND ts>${since};"
+}
+
 # Is the IP already permanently blocked?
 swatter_store_is_perm() {
     local ip="$1"

@@ -115,6 +115,14 @@ _swatter_ev_stamp() {
 # Echoes nothing; audits + records. audit_action (optional) overrides the action
 # label shown in the success audit (default = action) so an upgrade can surface
 # as 'plane-upgrade' while still recording action=perm/temp.
+
+# Alert key for the perm-rate tripwire, bucketed by HOUR. _notify_ratelimited
+# marks its key before channels send and suppresses for ALERT_REPEAT_TTL (6h by
+# default), so a static key would fire once and then stay silent through exactly
+# the multi-hour burst this exists to catch — and the marker is written even when
+# every channel fails.
+_swatter_perm_rate_key() { printf 'perm_rate.%s' "$(( ${1:-$(swatter_now)} / 3600 ))"; }
+
 _swatter_apply_plane() {
     local ip="$1" plane="$2" action="$3" ttl="$4" reason="$5" top_vhost="$6" healthy="$7" \
           folded="$8" ev="$9" rep="${10}" audit_action="${11:-$3}"
@@ -163,6 +171,15 @@ _swatter_apply_plane() {
     (( rc == 0 )) && did=1
     if (( did )); then
         _SW_TOTAL_BLOCKS=$(( _SW_TOTAL_BLOCKS + 1 )); SWATTER_RUN_ACTED=$(( SWATTER_RUN_ACTED + 1 ))
+        # Ladder perms only, enforce-mode only: a dual-plane / plane-upgrade
+        # second leg carries a distinct audit_action and would otherwise
+        # double-count one IP, and report mode's backend calls short-circuit to
+        # a dry-run "success" (rc=0) that places no real ban — see
+        # block_csf.sh/block_cf.sh's `[[ "${SWATTER_MODE}" != "enforce" ]]`
+        # dry-run branches. Neither may drive a tripwire meant to fire only on
+        # bans actually placed.
+        [[ "$action" == "perm" && "$audit_action" == "$action" && "${SWATTER_MODE}" == "enforce" ]] \
+            && SWATTER_RUN_PERMS=$(( ${SWATTER_RUN_PERMS:-0} + 1 ))
         swatter_store_sighting_clear "$ip"
         swatter_store_record "$ip" "$action" "$channel" "$ttl" "$folded" "$reason" \
             "$([[ "${SWATTER_MODE}" == "enforce" ]] && echo 0 || echo 1)"
@@ -449,6 +466,7 @@ swatter_scan() {
 
     local ip score reqs ev novhost rep replabel suppress folded
     _SW_TOTAL_BLOCKS=0; SWATTER_RUN_WATCHED=0; SWATTER_RUN_ACTED=0; SWATTER_RUN_BREAKER=0
+    SWATTER_RUN_PERMS=0
     # Re-drive durably-queued failed blocks FIRST — before this scan's fresh
     # offenders — so a transient backend failure is retried even when the offender
     # never reappears in the log. Retries count against MAX_BLOCKS_PER_RUN (they go
@@ -564,5 +582,15 @@ swatter_scan() {
     if (( _SW_TOTAL_BLOCKS >= MAX_BLOCKS_PER_RUN )); then
         swatter_notify "swatter circuit breaker tripped on $(hostname -s 2>/dev/null)" \
             "Reached MAX_BLOCKS_PER_RUN=${MAX_BLOCKS_PER_RUN}. Review ${LOG_DIR}/decisions.jsonl." "circuit_breaker"
+    fi
+
+    # Perm-rate tripwire — same run that placed them, not the next digest.
+    local _pday
+    _pday="$(swatter_store_perm_count_since $(( $(swatter_now) - 86400 )) )"
+    [[ "$_pday" =~ ^[0-9]+$ ]] || _pday=0
+    if (( SWATTER_RUN_PERMS >= PERM_RATE_ALERT_PER_RUN || _pday >= PERM_RATE_ALERT_PER_DAY )); then
+        swatter_notify "swatter perm-rate tripwire on $(hostname -s 2>/dev/null)" \
+            "Placed ${SWATTER_RUN_PERMS} permanent block(s) this run; ${_pday} in the last 24h (thresholds ${PERM_RATE_ALERT_PER_RUN}/run, ${PERM_RATE_ALERT_PER_DAY}/day). Review: swatter escalate-preview; undo: swatter rollback-ladder --since <ts>." \
+            "$(_swatter_perm_rate_key)"
     fi
 }

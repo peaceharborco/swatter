@@ -67,6 +67,14 @@ DIRECT_WEB_PORTS="80 443"
 : "${ALERT_WEBHOOK_FORMAT:=auto}"
 : "${ALERT_REPEAT_TTL:=21600}"
 
+# Perm-rate tripwire. The nightly digest is NOT a safety control: _report_grade
+# deliberately keeps blocks GREEN, so a runaway escalation wave would surface
+# only as a larger number in a mail that still reads All Clear, up to 24h late.
+# Steady-state net-new ladder perms on a busy shared host run ~1-2/day, so these
+# trip well before a wave but above normal noise.
+: "${PERM_RATE_ALERT_PER_RUN:=5}"
+: "${PERM_RATE_ALERT_PER_DAY:=15}"
+
 # Outbound AbuseIPDB reporting (opt-in).
 : "${ABUSEIPDB_REPORT:=false}"
 : "${ABUSEIPDB_REPORT_TTL:=900}"
