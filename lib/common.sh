@@ -319,14 +319,25 @@ swatter_load_config() {
     # EVERY first offense becomes a permanent ban. Validate here — the end of the
     # conf load — so an operator typo cannot bypass it, and both the sqlite and
     # flatfile counting paths are covered (they read the same globals).
+    # A leading-zero numeral (e.g. "020") passes the ^[0-9]+$ regex but bash's
+    # `(( ))` parses it as OCTAL, not decimal — "020" is 16, "030" is 24, and
+    # "089"/"099" outright throw "value too great for base" (invalid octal
+    # digit), which would abort the bounds check with no log_warn and let the
+    # raw string through. Force base-10 with `10#` for the bounds check AND
+    # reassign the canonical decimal value, so no downstream plain `(( ))`
+    # (lib/score.sh, lib/store_sqlite.sh) ever re-parses a leading-zero string.
     local _n
     _n="${REPEAT_N:-}"
-    if ! [[ "$_n" =~ ^[0-9]+$ ]] || (( _n < 1 || _n > 20 )); then
+    if [[ "$_n" =~ ^[0-9]+$ ]] && (( 10#$_n >= 1 && 10#$_n <= 20 )); then
+        REPEAT_N=$(( 10#$_n ))
+    else
         log_warn "REPEAT_N='${_n}' invalid (want integer 1-20); using 3"
         REPEAT_N=3
     fi
     _n="${REPEAT_WINDOW_DAYS:-}"
-    if ! [[ "$_n" =~ ^[0-9]+$ ]] || (( _n < 1 || _n > 90 )); then
+    if [[ "$_n" =~ ^[0-9]+$ ]] && (( 10#$_n >= 1 && 10#$_n <= 90 )); then
+        REPEAT_WINDOW_DAYS=$(( 10#$_n ))
+    else
         log_warn "REPEAT_WINDOW_DAYS='${_n}' invalid (want integer 1-90); using 7"
         REPEAT_WINDOW_DAYS=7
     fi

@@ -80,6 +80,12 @@ vcheck window-empty       'REPEAT_WINDOW_DAYS=""'      REPEAT_WINDOW_DAYS  "7"
 vcheck window-suffix      'REPEAT_WINDOW_DAYS="30d"'   REPEAT_WINDOW_DAYS  "7"
 vcheck window-over-cap    'REPEAT_WINDOW_DAYS=365'     REPEAT_WINDOW_DAYS  "7"
 vcheck window-valid       'REPEAT_WINDOW_DAYS=30'      REPEAT_WINDOW_DAYS  "30"
+# Leading-zero numerals must be normalized to decimal, not left as octal-ish
+# strings: bash `(( ))` parses "020"/"030" as octal (16/24), so the stored
+# value must be the canonical decimal form the fix reassigns, proving the
+# `10#` normalization ran rather than just accepting the raw string.
+vcheck repeat-n-padded    'REPEAT_N="020"'             REPEAT_N            "20"
+vcheck window-padded      'REPEAT_WINDOW_DAYS="030"'   REPEAT_WINDOW_DAYS  "30"
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
