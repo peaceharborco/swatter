@@ -354,6 +354,20 @@ swatter_load_config() {
         log_warn "REPEAT_WINDOW_DAYS='${_n}' invalid (want integer 1-90); using 7"
         REPEAT_WINDOW_DAYS=7
     fi
+    # Same footgun class as REPEAT_N above, freshly introduced by this knob: it
+    # flows unguarded into lib/score.sh's `(( prior + 1 >= thresh ))`. Empty is
+    # already covered by _swatter_recid_threshold's own `${...:-4}` fallback,
+    # but a non-numeric typo (e.g. "abc") makes bash arithmetic treat it as an
+    # unset variable -> 0, so `(( 1 >= 0 ))` is true almost immediately and an
+    # IP perms on its 2nd CRITICAL-single offense — worse than pre-gate
+    # behavior and a direct inversion of this knob's purpose. Validate here too.
+    _n="${REPEAT_N_CRITICAL_SINGLE:-}"
+    if [[ "$_n" =~ ^[0-9]+$ ]] && (( 10#$_n >= 1 && 10#$_n <= 20 )); then
+        REPEAT_N_CRITICAL_SINGLE=$(( 10#$_n ))
+    else
+        log_warn "REPEAT_N_CRITICAL_SINGLE='${_n}' invalid (want integer 1-20); using 4"
+        REPEAT_N_CRITICAL_SINGLE=4
+    fi
 }
 
 # ---------------------------------------------------------------------------

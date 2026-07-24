@@ -158,6 +158,30 @@ thresh="$(_swatter_recid_threshold "$allcrit")"
 check crit-mixed-not-allcrit "$allcrit" "0"
 check crit-mixed-perms-at-3  "$(( prior + 1 >= thresh ? 1 : 0 ))" "1"
 
+# --- operator-unblock watermark (mirrors the watermark tests at the top of
+# this file, applied to the NEW function) -----------------------------------
+# 2 stale pre-correction temps (later unblocked by the operator: one of them
+# multi-signal), then 2 genuine post-unblock CRITICAL singles. The gate must
+# judge on POST-unblock history only, exactly like swatter_store_recent_temp_
+# count already does for `prior` — otherwise the stale multi-signal temp keeps
+# dragging allcrit to 0 forever, the threshold never raises back to
+# REPEAT_N_CRITICAL_SINGLE, and the IP perm-bans on its 3rd post-correction
+# CRITICAL-single offense: the exact premature-perm scenario this task exists
+# to prevent, reached through the operator-correction path the watermark
+# exists to protect.
+seed_reason 10.0.9.4 20 "score=91 rule=critical_badpath"
+seed_reason 10.0.9.4 19 "score=85 rule=scanner_profile"
+sqlite3 "$db" "INSERT INTO actions(ip,ts,action,channel,ttl,score,reason,dry_run)
+  VALUES('10.0.9.4',$(( NOW - 15*DAY )),'unblock','none',0,0,'manual unblock',0);"
+seed_reason 10.0.9.4 10 "score=91 rule=critical_badpath"
+seed_reason 10.0.9.4  5 "score=91 rule=critical_badpath"
+allcrit="$(swatter_store_temps_all_critical_single 10.0.9.4 "$SINCE_CRIT")"
+prior="$(swatter_store_recent_temp_count 10.0.9.4)"
+thresh="$(_swatter_recid_threshold "$allcrit")"
+check watermark-crit-prior   "$prior" "2"
+check watermark-crit-allcrit "$allcrit" "1"
+check watermark-crit-no-perm "$(( prior + 1 >= thresh ? 1 : 0 ))" "0"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

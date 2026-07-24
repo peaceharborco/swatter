@@ -185,13 +185,24 @@ swatter_ladder_perms_since() {
             ORDER BY ip;"
 }
 
-# 1 when EVERY enforced in-window temp for this IP was a single-request CRITICAL
-# probe (reason carries badpath CRITICAL and the request count is 1), else 0.
-# Used to raise the escalation bar — see _swatter_recid_threshold. Reads the
-# LEDGER, not the firewall comment (lib/block_csf.sh truncates that to 120
-# chars), so a longer reason is never mistaken for a mixed-evidence offense.
-# Zero temps in window is NOT "all critical" — it just means there is nothing
-# yet to raise the bar over.
+# 1 when EVERY enforced in-window temp for this IP has decisive_rule
+# "critical_badpath" (a CRITICAL bad-path hit, which score.awk:241 floors at
+# any request volume — this checks the RULE that fired, not a request count),
+# else 0. Used to raise the escalation bar — see _swatter_recid_threshold.
+# Reads the LEDGER, not the firewall comment (lib/block_csf.sh truncates that
+# to 120 chars), so a longer reason is never mistaken for a mixed-evidence
+# offense. Zero temps in window is NOT "all critical" — it just means there is
+# nothing yet to raise the bar over.
+#
+# Honors the same operator-unblock watermark as swatter_store_recent_temp_count
+# (its paired counter — see that function's comment): temps at or before the
+# IP's most recent `unblock` are excluded from BOTH the total and the critical
+# count. Without this, an IP with 2 stale pre-correction temps + 2 genuine
+# post-unblock CRITICAL singles would compute tot=4/crit=2 -> allcrit=0 -> the
+# gate drops back to REPEAT_N and perm-bans the IP on its 3rd post-correction
+# offense — exactly the premature-perm scenario this task exists to prevent,
+# reached through the operator-correction path swatter_store_recent_temp_count
+# exists to protect.
 #   swatter_store_temps_all_critical_single <ip> <since_epoch>
 swatter_store_temps_all_critical_single() {
     local ip="$1" since="$2"
@@ -202,9 +213,10 @@ swatter_store_temps_all_critical_single() {
     # a query never plants a phantom DB (mirrors swatter_store_perm_count_since).
     [[ -e "$(_swatter_db)" ]] || { echo 0; return 0; }
     local sip; sip="$(_sql_escape "$ip")"
+    local ub_clause="ts > (SELECT COALESCE(MAX(ts),0) FROM actions WHERE ip='${sip}' AND action='unblock')"
     local tot crit
-    tot="$(_sqlq "SELECT COUNT(*) FROM actions WHERE ip='${sip}' AND action='temp' AND dry_run=0 AND ts>${since};")"
-    crit="$(_sqlq "SELECT COUNT(*) FROM actions WHERE ip='${sip}' AND action='temp' AND dry_run=0 AND ts>${since} AND reason LIKE '%critical_badpath%';")"
+    tot="$(_sqlq "SELECT COUNT(*) FROM actions WHERE ip='${sip}' AND action='temp' AND dry_run=0 AND ts>${since} AND ${ub_clause};")"
+    crit="$(_sqlq "SELECT COUNT(*) FROM actions WHERE ip='${sip}' AND action='temp' AND dry_run=0 AND ts>${since} AND ${ub_clause} AND reason LIKE '%critical_badpath%';")"
     [[ "$tot" =~ ^[0-9]+$ && "$crit" =~ ^[0-9]+$ ]] || { echo 0; return 0; }
     (( tot > 0 && tot == crit )) && echo 1 || echo 0
 }

@@ -55,6 +55,7 @@ check ol-log-default          "${ORIGIN_LOCK_LOG}" ""
 # --- escalation knob defaults + validation ---------------------------------
 check repeat-n-default   "${REPEAT_N}" "3"
 check repeat-window-def  "${REPEAT_WINDOW_DAYS}" "7"
+check repeat-n-crit-default "${REPEAT_N_CRITICAL_SINGLE}" "4"
 
 # Validation runs at the END of swatter_load_config, after the conf is sourced,
 # so an operator typo cannot bypass it. An empty REPEAT_N is the dangerous one:
@@ -86,6 +87,17 @@ vcheck window-valid       'REPEAT_WINDOW_DAYS=30'      REPEAT_WINDOW_DAYS  "30"
 # `10#` normalization ran rather than just accepting the raw string.
 vcheck repeat-n-padded    'REPEAT_N="020"'             REPEAT_N            "20"
 vcheck window-padded      'REPEAT_WINDOW_DAYS="030"'   REPEAT_WINDOW_DAYS  "30"
+
+# REPEAT_N_CRITICAL_SINGLE: same footgun class — it flows unguarded into
+# lib/score.sh's `(( prior + 1 >= thresh ))`. A non-numeric typo is the
+# dangerous one: unvalidated, bash arithmetic treats it as 0, so an IP perms
+# on its 2nd CRITICAL-single offense (worse than pre-gate behavior).
+vcheck repeat-n-crit-empty  'REPEAT_N_CRITICAL_SINGLE=""'    REPEAT_N_CRITICAL_SINGLE "4"
+vcheck repeat-n-crit-alpha  'REPEAT_N_CRITICAL_SINGLE="abc"' REPEAT_N_CRITICAL_SINGLE "4"
+vcheck repeat-n-crit-zero   'REPEAT_N_CRITICAL_SINGLE=0'     REPEAT_N_CRITICAL_SINGLE "4"
+vcheck repeat-n-crit-huge   'REPEAT_N_CRITICAL_SINGLE=999'   REPEAT_N_CRITICAL_SINGLE "4"
+vcheck repeat-n-crit-valid  'REPEAT_N_CRITICAL_SINGLE=5'     REPEAT_N_CRITICAL_SINGLE "5"
+vcheck repeat-n-crit-padded 'REPEAT_N_CRITICAL_SINGLE="020"' REPEAT_N_CRITICAL_SINGLE "20"
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
