@@ -78,6 +78,32 @@ _swatter_audit() {
         >> "$f" 2>/dev/null || log_error "audit write FAILED (${f}): decision '${3}' for ${1} NOT recorded"
 }
 
+# Merge one integer field into a scorer-built evidence JSON blob.
+#
+# Safety contract — this runs on the SUCCESS path, where a bad return is worse
+# than on the failure path _swatter_apply_plane's backend_err merge models:
+# _swatter_audit interpolates evidence RAW into hand-built JSONL, and the house
+# convention is `set -uo pipefail` WITHOUT -e, so a failure here does not abort
+# the run — it would emit `"evidence":` with no value, corrupting the record and
+# breaking jq in report.sh / `swatter why`. Therefore: never echo empty, never
+# die, and return the ORIGINAL evidence on any failure.
+#   _swatter_ev_stamp <ev_json> <key> <int_value>  -> echoes JSON
+_swatter_ev_stamp() {
+    local ev="${1:-}" key="${2:-}" val="${3:-}"
+    # Empty evidence would make `printf '' | jq` fail and the fallback echo
+    # nothing; normalize to an empty object so the record stays well-formed.
+    [[ -n "$ev" ]] || ev='{}'
+    # Guard the value BEFORE --argjson: a non-integer would make jq fail (or, for
+    # a bare word, parse as something unintended).
+    [[ "$val" =~ ^[0-9]+$ ]] || { printf '%s' "$ev"; return 0; }
+    [[ -n "$key" ]] || { printf '%s' "$ev"; return 0; }
+    [[ "${SWATTER_HAVE_JQ:-0}" -eq 1 ]] || { printf '%s' "$ev"; return 0; }
+    # --argjson (not --arg) so the field lands as a JSON number. The fallback is
+    # INSIDE the substitution so any jq failure still yields the original.
+    printf '%s' "$ev" | jq -c --arg k "$key" --argjson n "$val" '. + {($k): $n}' 2>/dev/null \
+        || printf '%s' "$ev"
+}
+
 # Apply a decided block on an EXPLICIT plane. Runs all the shared gates (valid/
 # safe target, never_block, MAX_BLOCKS_PER_RUN breaker), the DIRECT vs VIA_CF
 # backend call, and the shared success/skip/fail audit tail. Every block path
@@ -497,7 +523,16 @@ swatter_scan() {
             local prior; prior="$(swatter_store_recent_temp_count "$ip")"
             [[ "$prior" =~ ^[0-9]+$ ]] || prior=0
             local action ttl=0
-            if (( prior + 1 >= REPEAT_N )); then action="perm"
+            if (( prior + 1 >= REPEAT_N )); then
+                action="perm"
+                # Make the escalation self-explanatory: without this a ladder
+                # perm's reason reads only `score=91 intel=...`, so neither the
+                # digest nor `swatter why` can say WHY it went permanent.
+                # decisive_rule is deliberately untouched — it is the behavioral
+                # offense-type vocabulary the digest groups on (report.sh
+                # _RPT_RULE_LABELS); recidivism is a different axis.
+                reason="${reason} recidivism=$(( prior + 1 ))/${REPEAT_WINDOW_DAYS}d"
+                ev="$(_swatter_ev_stamp "$ev" recidivism "$(( prior + 1 ))")"
             else
                 action="temp"; ttl="$(_swatter_pick_ttl "$prior")"
                 if printf '%s' "$ev" | grep -q '"badpath_cat":"CRITICAL"'; then

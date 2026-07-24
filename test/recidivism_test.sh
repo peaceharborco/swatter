@@ -75,6 +75,38 @@ check watermark-absent     "$(swatter_store_recent_temp_count 10.0.0.2)" "1"
   [[ "$got" == "1" ]] && exit 0 || { echo "FAIL flatfile-watermark: want='1' got='${got}'"; exit 1; }
 ) && PASS=$((PASS+1)) || FAIL=$((FAIL+1))
 
+# --- _swatter_ev_stamp -----------------------------------------------------
+# shellcheck source=../lib/score.sh
+source "${ROOT}/lib/score.sh"
+SWATTER_HAVE_JQ=0
+command -v jq >/dev/null 2>&1 && SWATTER_HAVE_JQ=1
+
+if (( SWATTER_HAVE_JQ )); then
+  # Merges as a JSON NUMBER (not a string) into real scorer-shaped evidence.
+  ev='{"sub":{"rate":10},"reqs":5,"decisive_rule":"scanner_profile"}'
+  got="$(_swatter_ev_stamp "$ev" recidivism 3)"
+  check stamp-number      "$(printf '%s' "$got" | jq -r '.recidivism')" "3"
+  check stamp-is-number   "$(printf '%s' "$got" | jq -r '.recidivism|type')" "number"
+  check stamp-keeps-rule  "$(printf '%s' "$got" | jq -r '.decisive_rule')" "scanner_profile"
+  check stamp-valid-json  "$(printf '%s' "$got" | jq -e . >/dev/null 2>&1 && echo ok)" "ok"
+  # Invalid input JSON must pass through untouched, never empty.
+  check stamp-bad-json    "$(_swatter_ev_stamp 'not json' recidivism 3)" "not json"
+  # Non-integer value refused; evidence returned unchanged.
+  check stamp-bad-value   "$(_swatter_ev_stamp "$ev" recidivism "3.0")" "$ev"
+  check stamp-empty-value "$(_swatter_ev_stamp "$ev" recidivism "")" "$ev"
+fi
+# Empty evidence must not produce empty output (that would corrupt the JSONL).
+# With jq available, "" normalizes to {} and the merge still succeeds, so the
+# correct (non-empty, non-failure) result is the merged object; without jq
+# there's no merge attempt, so the normalized placeholder {} is returned as-is.
+if (( SWATTER_HAVE_JQ )); then
+  check stamp-empty-ev  "$(_swatter_ev_stamp "" recidivism 3)" '{"recidivism":3}'
+else
+  check stamp-empty-ev  "$(_swatter_ev_stamp "" recidivism 3)" "{}"
+fi
+# No-jq path returns the original untouched.
+check stamp-nojq      "$(SWATTER_HAVE_JQ=0 _swatter_ev_stamp '{"a":1}' recidivism 3)" '{"a":1}'
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
