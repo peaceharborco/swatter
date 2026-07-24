@@ -186,6 +186,87 @@ if (( HAVE_SQLITE )); then
     NODB_DIR="$(newdir)"
     ( STATE_DIR="$NODB_DIR"; swatter_store_perm_count_since "$since" >/dev/null 2>&1 )
     check permcount-no-phantom-db "$( [[ -e "${NODB_DIR}/swatter.db" ]] && echo present || echo absent )" "absent"
+
+    # -----------------------------------------------------------------------
+    # Part 5: the escalation ladder END TO END, through swatter_scan.
+    #
+    # Everything else that covers the ladder (test/recidivism_test.sh) computes
+    # `$(( prior + 1 >= thresh ))` IN THE TEST — it re-implements the production
+    # conditional instead of driving it, so lib/score.sh's own decision line is
+    # never executed by the suite. Part 3 above does drive swatter_scan, but with
+    # honeypot evidence, which takes the instant-perm path and never reaches the
+    # ladder branch at all. Result: mutating the ladder's central decision to
+    # `(( prior >= thresh ))`, or deleting the `rule=` stamp that the whole
+    # CRITICAL-single gate matches on, left the ENTIRE suite green.
+    #
+    # These cases feed NON-honeypot scored lines through the real scan and
+    # assert the recorded decision.
+    # -----------------------------------------------------------------------
+    HAVE_JQ=0; command -v jq >/dev/null 2>&1 && HAVE_JQ=1
+    SWATTER_HAVE_JQ="$HAVE_JQ"
+
+    scored_line() {   # scored_line <ip> <decisive_rule> [extra_ev_fields]
+        printf '%s\t91\t12\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"%s","honeypot":0,"top_vhost":"example.test"%s}' \
+            "$1" "$2" "${3:-}"
+    }
+    seed_temp() {     # seed_temp <ip> <days_ago> <reason>
+        sqlite3 "${STATE_DIR}/swatter.db" \
+            "INSERT INTO actions(ip,ts,action,channel,ttl,score,reason,dry_run)
+             VALUES('$1',$(( $(swatter_now) - $2 * 86400 )),'temp','csf',3600,91,'$3',0);"
+    }
+    dec_for() {       # dec_for <ip> <action> -> count of matching decision records
+        grep -F "\"ip\":\"$1\"" "${LOG_DIR}/decisions.jsonl" 2>/dev/null \
+            | grep -Fc "\"action\":\"$2\"" || true
+    }
+
+    # Case A: REPEAT_N-1 = 2 prior enforced temps, then one fresh non-honeypot
+    # offense over SCORE_TEMP -> PERM, because the decider counts the PENDING
+    # offense. This is the case `(( prior >= thresh ))` gets wrong.
+    setup_scan_case
+    seed_temp 198.51.100.7 2 'score=91 rule=scanner_profile'
+    seed_temp 198.51.100.7 1 'score=91 rule=scanner_profile'
+    feed_multi "$(scored_line 198.51.100.7 scanner_profile)"
+    swatter_scan >/dev/null 2>&1
+    check ladder-2prior-perms   "$(dec_for 198.51.100.7 perm)" "1"
+    check ladder-2prior-no-temp "$(dec_for 198.51.100.7 temp)" "0"
+    # The perm explains itself: prior(2) + this offense = 3, over REPEAT_WINDOW_DAYS=7.
+    check ladder-2prior-reason \
+        "$(grep -Fc 'recidivism=3/7d' "${LOG_DIR}/decisions.jsonl" || true)" "1"
+    if (( HAVE_JQ )); then
+        check ladder-2prior-evidence \
+            "$(grep -Fc '"recidivism":3' "${LOG_DIR}/decisions.jsonl" || true)" "1"
+    fi
+
+    # Case B (sibling): 1 prior temp -> still a TEMP, not a perm. Guards the
+    # other direction, so "always perm" can't pass Case A.
+    setup_scan_case
+    seed_temp 198.51.100.8 1 'score=91 rule=scanner_profile'
+    feed_multi "$(scored_line 198.51.100.8 scanner_profile)"
+    swatter_scan >/dev/null 2>&1
+    check ladder-1prior-temps    "$(dec_for 198.51.100.8 temp)" "1"
+    check ladder-1prior-no-perm  "$(dec_for 198.51.100.8 perm)" "0"
+    check ladder-1prior-no-recid \
+        "$(grep -Fc 'recidivism=' "${LOG_DIR}/decisions.jsonl" || true)" "0"
+
+    # Case C: the CRITICAL-single gate, driven end to end. The temps are written
+    # BY THE SCAN (not seeded by hand), so the gate only holds if score.sh
+    # actually stamps `rule=<decisive_rule>` into the reason it records — that
+    # stamp is the sole producer of the "critical_badpath" substring
+    # swatter_store_temps_all_critical_single matches on. Delete it and allcrit
+    # is permanently 0, the threshold silently drops back to REPEAT_N, and the
+    # 3rd offense below perms instead of getting its 3rd temp.
+    setup_scan_case
+    crit_ev=',"badpath_cat":"CRITICAL"'
+    feed_multi "$(scored_line 198.51.100.9 critical_badpath "$crit_ev")"
+    swatter_scan >/dev/null 2>&1   # offense 1 -> temp
+    swatter_scan >/dev/null 2>&1   # offense 2 -> temp
+    swatter_scan >/dev/null 2>&1   # offense 3 -> temp (bar raised to 4), NOT perm
+    check critgate-3rd-still-temp "$(dec_for 198.51.100.9 temp)" "3"
+    check critgate-3rd-no-perm    "$(dec_for 198.51.100.9 perm)" "0"
+    swatter_scan >/dev/null 2>&1   # offense 4 -> perm at REPEAT_N_CRITICAL_SINGLE
+    check critgate-4th-perms      "$(dec_for 198.51.100.9 perm)" "1"
+    check critgate-4th-reason \
+        "$(grep -Fc 'recidivism=4/7d crit-single' "${LOG_DIR}/decisions.jsonl" || true)" "1"
 else
     echo "SKIP counter-gating/threshold/store-query sections (no sqlite3)"
 fi
