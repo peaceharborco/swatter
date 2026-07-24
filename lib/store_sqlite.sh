@@ -100,21 +100,36 @@ _store_ip_ok() {
 # escalation). Only enforced blocks (dry_run=0) count — a report-mode detection
 # means "we watched and did nothing," so it must not drive a real permanent ban
 # the moment enforce is switched on.
+#
+# Temps at or before the IP's most recent `unblock` are EXCLUDED. An operator
+# who unblocks a false positive is correcting our decision; leaving those temps
+# in the count meant the IP's next offense computed prior+1 >= REPEAT_N and went
+# straight to perm, silently undoing the correction. Only cmd_unblock writes an
+# `unblock` row (CF sweep/CSF expiry write none), so natural expiry never resets
+# the ladder.
 swatter_store_recent_temp_count() {
     local ip="$1" since
     _store_ip_ok "$ip" || { echo 0; return 0; }
     since=$(( $(swatter_now) - REPEAT_WINDOW_DAYS*86400 ))
     local sip; sip="$(_sql_escape "$ip")"
     if [[ "${STORE}" == "sqlite" ]]; then
-        _sqlq "SELECT COUNT(*) FROM actions WHERE ip='${sip}' AND action='temp' AND dry_run=0 AND ts>${since};"
+        _sqlq "SELECT COUNT(*) FROM actions
+                WHERE ip='${sip}' AND action='temp' AND dry_run=0 AND ts>${since}
+                  AND ts > (SELECT COALESCE(MAX(ts),0) FROM actions
+                             WHERE ip='${sip}' AND action='unblock');"
     else
-        awk -F'"' -v ip="$ip" -v since="$since" '
-            /"action":"temp"/ && /"dry_run":0/ {
-                a=$0; if (a ~ ("\"ip\":\""ip"\"")) {
-                    match(a,/"ts":[0-9]+/); ts=substr(a,RSTART+5,RLENGTH-5)+0
-                    if (ts>since) c++
-                }
-            } END{print c+0}' "$(_swatter_jsonl)"
+        awk -v ip="$ip" -v since="$since" '
+            # Exact IP match. index() not regex — an IP contains dots, which a
+            # regex would treat as wildcards and over-match neighbouring IPs.
+            index($0, "\"ip\":\"" ip "\"") == 0 { next }
+            {
+                ts = 0
+                if (match($0, /"ts":[0-9]+/)) ts = substr($0, RSTART+5, RLENGTH-5) + 0
+            }
+            /"action":"unblock"/ { if (ts > ub) ub = ts; next }
+            /"action":"temp"/ && /"dry_run":0/ { if (ts > since) { n++; t[n] = ts } }
+            END { c = 0; for (i = 1; i <= n; i++) if (t[i] > ub) c++; print c + 0 }
+        ' "$(_swatter_jsonl)"
     fi
 }
 
