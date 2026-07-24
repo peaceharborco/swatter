@@ -291,11 +291,12 @@ selects ladder perms from **sqlite** (not the rotated log), takes the state lock
 **once**, unblocks in-process, continues past per-IP backend failures with a
 summary rc, and prints the swarm gap explicitly.
 
-**Swarm decision (needed before the flip):** set `SWARM_PUBLISH=false` on cds1
-for the first N days after the 30-day flip, until the candidate set is trusted.
-This is the simplest way to keep a false ladder-perm on-box. The alternatives are
-a per-IP hub delete API, or written acceptance that a false perm poisons the
-fleet for up to 7 days with a documented peer-side cleanup.
+**Swarm decision — DECIDED (operator, 2026-07-24):** set `SWARM_PUBLISH=false` on
+cds1 for the **first 14 days** after the 30-day flip, so a false ladder-perm
+stays on-box rather than propagating with a 7-day hub TTL and no per-IP retract.
+Re-enable once the candidate set is trusted. (Alternatives considered and
+rejected: a per-IP hub delete API — more surface than the trial warrants; or
+accepting up-to-7-day fleet poisoning — not acceptable for a multi-tenant host.)
 
 **Config revert ≠ ban revert** must be stated explicitly in the README.
 
