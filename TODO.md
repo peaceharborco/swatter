@@ -42,6 +42,16 @@ The code shipped on `main` (see `docs/superpowers/specs/2026-07-24-recidivism-es
 cds1-only conf change, and it has not been made. These steps are ordered; do not
 reorder them.
 
+- [ ] **Re-baseline any triage notes taken from `swatter top` before 2026-07-27.**
+      Its `OFFN`/`TEMP`/`PERM` columns used to include report-mode activity, and
+      cds1 ran report mode before enforce (2026-06-12), so pre-fix numbers on
+      that box are inflated by detections that were never enforced. Same class of
+      hazard as the pre-2026-07-24 `escalate-preview` lists: the old output looks
+      perfectly plausible. `top` is not the formal gate here — `escalate-preview`
+      is — but the README and digest both train operators to triage from it.
+      Also note `TEMP` is a LIFETIME enforced count and is deliberately NOT the
+      ladder's number (which is windowed and resets at `unblock`); read
+      `escalate-preview` for "how close is this IP to a perm."
 - [ ] **Populate `monitoring.cidr` on cds1 — this is a precondition, not a nicety.**
       It is currently empty of real ranges, and `allow.cidr` holds 4 entries of
       which 3 are documented customer false positives (2026-06-10: a Fatbeam site

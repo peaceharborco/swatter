@@ -35,6 +35,11 @@ CREATE TABLE IF NOT EXISTS actions(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT, ts INTEGER,
   action TEXT, channel TEXT, ttl INTEGER, score INTEGER, reason TEXT, dry_run INTEGER);
 CREATE INDEX IF NOT EXISTS ix_actions_ip_ts ON actions(ip, ts);
+-- Covering index for the enforced-block aggregate behind `swatter top`. The
+-- actions table is append-only (nothing prunes it), so that GROUP BY would
+-- otherwise scan the whole table while holding a shared lock against the */5
+-- scan's writes, under _sql's 3s busy timeout.
+CREATE INDEX IF NOT EXISTS ix_actions_enforced ON actions(dry_run, action, ip);
 CREATE TABLE IF NOT EXISTS sightings(
   ip TEXT, bucket INTEGER, hits INTEGER DEFAULT 0,
   worst_score INTEGER DEFAULT 0, last_ts INTEGER,
@@ -345,11 +350,62 @@ swatter_store_record() {
 }
 
 # Listing helpers for the CLI.
+#
+# OFFN/TEMP are computed from the ACTIONS ledger, not from the offenders rollup,
+# because the rollup's counters carry no dry_run dimension and cannot be trusted:
+#
+#   - total_offenses is incremented on every swatter_store_record call, so a
+#     report-mode detection inflates it, and so does an operator `unblock` —
+#     correcting a false positive made the IP look like a worse offender.
+#   - temp_count stopped counting dry-run temps in 15aad86, but that fix was not
+#     retroactive. A counter written before it stays inflated forever, since the
+#     rollup is a running total that is never recomputed. Any host that ran in
+#     report mode before enforce carries that residue in its DB today.
+#
+# The effect was that `top` disagreed with the recidivism ladder, which counts
+# `actions WHERE dry_run=0` (swatter_store_recent_temp_count) — so an IP could
+# read as a repeat offender in triage while the ladder correctly saw none of it.
+# Selecting from actions fixes the historical residue too, with no migration.
+#
+# PERM is the rollup flag ANDed with enforced evidence in the ledger. The flag
+# alone has the same non-retroactive residue as temp_count — before 15aad86 a
+# DRY-RUN perm set perm=1 — so a report-mode host can carry a permanent-ban flag
+# for an IP that was never banned. It is not recomputed from the ledger alone
+# either, because the flag carries the operator reset (`unblock` sets it to 0)
+# that a raw ledger count would resurrect. This is the same rollup-AND-ledger
+# idiom swatter_store_perm_ips_since uses, for the same reason.
+# Caveat: swatter_store_record writes the action and the offender rows in two
+# separate statements, so a partial write (action lost, rollup kept) renders
+# PERM=0 for a real ban. That failure is rare and logs loudly, whereas the
+# report-mode residue it replaces is silent and certain on any host that ran
+# report mode before enforce.
+#
+# worst_score is deliberately NOT filtered: a detection property, not an
+# enforcement one. A report-mode hit really did score that high, and suppressing
+# it would hide the reason an IP is on the list at all. So an IP seen only in
+# report mode lists with its score and LAST, and OFFN/TEMP/PERM of 0.
 swatter_store_top_offenders() {
     local n="${1:-20}"
     if [[ "${STORE}" == "sqlite" ]]; then
-        _sqlq "SELECT ip,worst_score,total_offenses,temp_count,perm,channel,last_label
-               FROM offenders ORDER BY worst_score DESC, total_offenses DESC LIMIT ${n};" \
+        # An offense is an enforced BLOCK: dry_run=0 and action in (temp,perm).
+        # LEFT JOIN, not an inner one, so a report-mode-only offender still lists.
+        _sqlq "SELECT o.ip, o.worst_score,
+                      COALESCE(c.offn,0), COALESCE(c.temps,0),
+                      CASE WHEN o.perm=1 AND EXISTS(SELECT 1 FROM actions p
+                                                     WHERE p.ip=o.ip
+                                                       AND p.action='perm'
+                                                       AND p.dry_run=0)
+                           THEN 1 ELSE 0 END,
+                      o.channel, o.last_label
+                 FROM offenders o
+                 LEFT JOIN (SELECT ip,
+                                   COUNT(*) AS offn,
+                                   SUM(CASE WHEN action='temp' THEN 1 ELSE 0 END) AS temps
+                              FROM actions
+                             WHERE dry_run=0 AND action IN ('temp','perm')
+                             GROUP BY ip) c ON c.ip = o.ip
+                ORDER BY o.worst_score DESC, COALESCE(c.offn,0) DESC
+                LIMIT ${n};" \
         | sed 's/|/\t/g'
     else
         tail -n 2000 "$(_swatter_jsonl)" 2>/dev/null | tail -n "$n"
@@ -611,11 +667,24 @@ swatter_store_perm_ips_since() {
 }
 
 # Echo "temp_offenders <TAB> perm_offenders" (for metrics).
+#
+# Enforced actions only, computed from the ledger — same definition and same
+# reasoning as swatter_store_top_offenders. The rollup's temp_count/perm carry
+# no dry_run dimension for rows written before 15aad86, so counting them
+# reported report-mode detections as live bans in the metrics indefinitely.
+# perm keeps the rollup flag as a conjunct so an operator `unblock` (which sets
+# it to 0) still clears the IP from the perm count.
 swatter_store_counts() {
     if [[ "${STORE}" != "sqlite" ]]; then printf '0\t0\n'; return 0; fi
     local t p
-    t="$(_sqlq "SELECT COUNT(*) FROM offenders WHERE temp_count>0 AND perm=0;")"
-    p="$(_sqlq "SELECT COUNT(*) FROM offenders WHERE perm=1;")"
+    t="$(_sqlq "SELECT COUNT(*) FROM offenders o
+                 WHERE EXISTS(SELECT 1 FROM actions t WHERE t.ip=o.ip
+                               AND t.action='temp' AND t.dry_run=0)
+                   AND NOT (o.perm=1 AND EXISTS(SELECT 1 FROM actions p WHERE p.ip=o.ip
+                                                 AND p.action='perm' AND p.dry_run=0));")"
+    p="$(_sqlq "SELECT COUNT(*) FROM offenders o
+                 WHERE o.perm=1 AND EXISTS(SELECT 1 FROM actions p WHERE p.ip=o.ip
+                                            AND p.action='perm' AND p.dry_run=0);")"
     [[ "$t" =~ ^[0-9]+$ ]] || t=0; [[ "$p" =~ ^[0-9]+$ ]] || p=0
     printf '%s\t%s\n' "$t" "$p"
 }

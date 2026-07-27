@@ -40,6 +40,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stores — an operator correcting a false positive no longer has that
   correction undone by the IP's next unrelated offense. `allow` still only
   prevents future blocks; it does not touch temp history.
+- **`swatter top` no longer counts report-mode activity as enforcement.** Its
+  `OFFN`/`TEMP` columns came from the `offenders` rollup, whose counters carry
+  no `dry_run` dimension: `total_offenses` was incremented by every record —
+  including dry-run detections and operator `unblock`s, so correcting a false
+  positive made an IP look like a worse offender. `temp_count` stopped counting
+  dry-run temps in an earlier release, but that fix was not retroactive, and the
+  rollup is a running total that is never recomputed — so any host that ran in
+  report mode before enforce still carries inflated counters in its DB today.
+  An IP could therefore read as a repeat offender during triage on the strength
+  of activity that was never enforced. Both columns are now computed from the
+  actions ledger, enforced blocks only, which also corrects the existing residue
+  with no migration or backfill.
+  **`OFFN`/`TEMP` are LIFETIME enforced counts and are deliberately not the
+  ladder's number.** The recidivism ladder counts temps inside
+  `REPEAT_WINDOW_DAYS` and resets at an operator `unblock`; `top` counts all
+  enforced actions ever. The two agree on the `dry_run` dimension and on nothing
+  else — for "how close is this IP to escalating," read `swatter escalate-preview`,
+  which is the ladder's own arithmetic.
+  `PERM` also now requires enforced evidence in the ledger: the rollup's `perm`
+  flag has the same non-retroactive residue (a dry-run perm set it before the
+  same release), so it is ANDed with an enforced `perm` action, the idiom already
+  used by `swatter_store_perm_ips_since`. It still carries the operator reset,
+  since `unblock` sets the rollup flag to 0. `SCORE` is unchanged and still
+  reflects report-mode detections, since a score is a detection fact, not an
+  enforcement one.
+  Note for report mode: because `OFFN` now counts enforced actions only, it no
+  longer distinguishes an IP seen once from one seen forty times during a report
+  week — both read `0`. Use `swatter why <ip>` for that history.
+- **Metrics counted report-mode detections as live bans.** `swatter_store_counts`
+  — behind `swatter_offenders{state="temp"}` and `{state="perm"}` — read the same
+  un-dimensioned rollup counters, so a host that ran report mode before enforce
+  reported inflated offender gauges indefinitely. Both are now computed from the
+  actions ledger, enforced only, matching `swatter top`.
 - `REPEAT_N`, `REPEAT_WINDOW_DAYS`, and `REPEAT_N_CRITICAL_SINGLE` are now
   validated as positive integers at config load — an invalid value falls back
   to its default with a logged warning instead of quietly misbehaving (an

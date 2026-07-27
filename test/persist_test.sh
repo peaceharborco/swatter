@@ -71,6 +71,27 @@ counts="$(swatter_store_counts)"
 check temp-count "$(printf '%s' "$counts" | cut -f1)" "1"
 check perm-count "$(printf '%s' "$counts" | cut -f2)" "1"
 
+# Counts must be ENFORCED-only, and must not trust the rollup counters — which
+# carry no dry_run dimension and were inflated by dry-run records before
+# 15aad86. Same root cause as the `swatter top` fix; these feed the metrics.
+swatter_store_record 5.5.5.7 temp csf 3600 80 "dry" 1
+swatter_store_record 5.5.5.8 perm csf 0    95 "dry" 1
+counts="$(swatter_store_counts)"
+check dry-not-temp-count "$(printf '%s' "$counts" | cut -f1)" "1"
+check dry-not-perm-count "$(printf '%s' "$counts" | cut -f2)" "1"
+
+# Pre-fix rollup residue: counters say temp/perm, the ledger says never enforced.
+sqlite3 "$db" "INSERT INTO offenders(ip,first_seen,last_seen,worst_score,total_offenses,temp_count,perm,last_label,channel)
+               VALUES('5.5.5.9',$now,$now,88,9,9,1,'stale rollup','csf');"
+counts="$(swatter_store_counts)"
+check residue-not-perm-count "$(printf '%s' "$counts" | cut -f2)" "1"
+# ...and the same residue with perm=0, which the old query counted as a temp
+# offender purely on the strength of an inflated temp_count.
+sqlite3 "$db" "INSERT INTO offenders(ip,first_seen,last_seen,worst_score,total_offenses,temp_count,perm,last_label,channel)
+               VALUES('5.5.5.10',$now,$now,84,7,7,0,'stale rollup','csf');"
+counts="$(swatter_store_counts)"
+check residue-not-temp-count "$(printf '%s' "$counts" | cut -f1)" "1"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

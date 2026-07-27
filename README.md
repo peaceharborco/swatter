@@ -23,6 +23,16 @@ IP                 SCORE  OFFN  TEMP PERM CHANNEL     LAST
 193.32.162.40         85     2     2    0 cloudflare  request_flood
 ```
 
+`SCORE` is the worst score ever seen for that IP — a detection fact, recorded in
+report mode too. `OFFN`/`TEMP` count **enforced** actions only, so in report mode
+they read `0` while `SCORE` and `LAST` still show what was detected.
+
+`TEMP` is a **lifetime** count and is *not* the recidivism ladder's number: the
+ladder counts temps inside `REPEAT_WINDOW_DAYS` and resets them at an operator
+`unblock`, so an IP can show `TEMP 3` here while the ladder sees 0. To ask "how
+close is this IP to a permanent ban," use `swatter escalate-preview` — that runs
+the ladder's own arithmetic.
+
 ---
 
 ## Why it's different: it won't take your site down
@@ -698,8 +708,13 @@ swatter top                # review the worst offenders
 
 **Before you enforce: teach it who you are.** Run in report mode for a week and
 review what it *would* have blocked (`swatter top`, `swatter why <ip>`, the
-nightly digest). Any IP on that list that's actually you, your staff, or a
-client belongs in the never-block set **before** the first enforce run:
+nightly digest). In report mode `top` ranks by `SCORE` with `OFFN`/`TEMP` at `0`
+— nothing was enforced yet — so read the score and `LAST` column. Note that two
+IPs with the same score look identical there whether one was seen once and the
+other forty times; `swatter why <ip>` shows the full would-have-blocked history
+and is what separates a customer's one-off from a chronic scanner. Any IP on that list
+that's actually you, your staff, or a client belongs in the never-block set
+**before** the first enforce run:
 
 ```bash
 swatter allow 203.0.113.7 "office"
