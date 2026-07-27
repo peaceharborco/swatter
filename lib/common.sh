@@ -70,8 +70,12 @@ DIRECT_WEB_PORTS="80 443"
 # Perm-rate tripwire. The nightly digest is NOT a safety control: _report_grade
 # deliberately keeps blocks GREEN, so a runaway escalation wave would surface
 # only as a larger number in a mail that still reads All Clear, up to 24h late.
-# Steady-state net-new ladder perms on a busy shared host run ~1-2/day, so these
-# trip well before a wave but above normal noise.
+# These defaults are a PLACEHOLDER, not a calibration — perm volume is a
+# property of the traffic a host receives, and a threshold below a host's normal
+# spike produces an hourly alarm nobody trusts. Measure your host's rate from
+# the ledger (which does not rotate) and set these above its observed ceiling.
+# They are an ALERT floor, never an abort threshold: raising them to silence
+# noise raises the floor a real wave has to clear. See docs/RUNBOOK.md.
 : "${PERM_RATE_ALERT_PER_RUN:=5}"
 : "${PERM_RATE_ALERT_PER_DAY:=15}"
 
@@ -304,6 +308,19 @@ ERROR_FATAL_SCANNER_REPEATS=3
 # The bad-path table ships with the repo by default; installs relocate it.
 BADPATHS_CONF="${BADPATHS_CONF:-${SWATTER_ROOT_DIR}/config/badpaths.conf}"
 
+# _swatter_validate_int <varname> <default> <min> <max> — normalise to base 10
+# and bounds-check, warning and falling back on anything invalid.
+_swatter_validate_int() {
+    local name="$1" def="$2" lo="$3" hi="$4" cur
+    cur="$(eval printf '%s' "\"\${${name}:-}\"")"
+    if [[ "$cur" =~ ^[0-9]+$ ]] && (( 10#$cur >= lo && 10#$cur <= hi )); then
+        eval "${name}=\$(( 10#\$cur ))"
+    else
+        log_warn "${name}='${cur}' invalid (want integer ${lo}-${hi}); using ${def}"
+        eval "${name}=${def}"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Load operator config (if present). Sourced, so it is plain shell.
 # ---------------------------------------------------------------------------
@@ -336,11 +353,13 @@ swatter_load_config() {
     # Escalation knobs are interpolated straight into bash arithmetic
     # (lib/score.sh's `prior + 1 >= REPEAT_N`, lib/store_sqlite.sh's window
     # subtraction), where a malformed value fails SILENTLY and in opposite
-    # directions: an empty REPEAT_WINDOW_DAYS yields a 0-day window (escalation
-    # never fires — fail-safe), but an empty REPEAT_N makes (( 1 >= 0 )) true, so
-    # EVERY first offense becomes a permanent ban. Validate here — the end of the
-    # conf load — so an operator typo cannot bypass it, and both the sqlite and
-    # flatfile counting paths are covered (they read the same globals).
+    # directions: an empty REPEAT_N makes (( 1 >= 0 )) true, so EVERY first
+    # offense becomes a permanent ban. An empty REPEAT_WINDOW_DAYS is NOT
+    # fail-safe either — validation below rewrites it to the 7-day default,
+    # which ARMS the ladder rather than disabling it. Validate here — the end
+    # of the conf load — so an operator typo cannot bypass it, and both the
+    # sqlite and flatfile counting paths are covered (they read the same
+    # globals).
     # A leading-zero numeral (e.g. "020") passes the ^[0-9]+$ regex but bash's
     # `(( ))` parses it as OCTAL, not decimal — "020" is 16, "030" is 24, and
     # "089"/"099" outright throw "value too great for base" (invalid octal
@@ -415,6 +434,16 @@ swatter_load_config() {
         log_warn "PERM_RATE_ALERT_PER_DAY='${_n}' invalid (want integer 1-1000); using 15"
         PERM_RATE_ALERT_PER_DAY=15
     fi
+    # Same silent-arithmetic hazard as the escalation knobs: these interpolate
+    # into `(( ))`, where empty degrades silently, non-numeric can exit the
+    # shell under `set -u`, and a leading zero is parsed as OCTAL ("020" is 16).
+    # Fallback defaults must match the shipped built-ins above (and
+    # config/swatter.example.conf) exactly, or an invalid operator value would
+    # silently swap in a different default than the one Swatter ships with.
+    _swatter_validate_int SCORE_TEMP         70    1 100
+    _swatter_validate_int MAX_BLOCKS_PER_RUN 25    1 10000
+    _swatter_validate_int WINDOW_SECONDS     600   1 86400
+    _swatter_validate_int MIN_REQS           15    1 100000
 }
 
 # ---------------------------------------------------------------------------
