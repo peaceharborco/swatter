@@ -482,6 +482,18 @@ tripwire (`PERM_RATE_ALERT_PER_RUN`, default 5; `PERM_RATE_ALERT_PER_DAY`,
 default 15) fires an alert on the same run that crosses it, pointing at the
 preview/rollback commands below.
 
+`REPEAT_ENABLE` (default `true`) is the ladder's abort lever: set it to
+`false` and the next scan (config is read once per process, so a scan already
+running finishes under the old setting) stops converting temps into new
+permanent bans. **It does not stop everything that permanently bans an IP.**
+Honeypot instant-perms, the hard-intel dual-plane leg, and a plane-upgrade
+perm (an IP already perm on one plane that reappears on the other) are
+independent of the ladder and keep firing while the switch is off — none of
+them carry `recidivism=` in the reason, so `swatter why <ip>` tells a ladder
+perm apart from these. See [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for the full
+3am incident procedure: disarm, confirm, and — if bans already went out —
+drain and roll back.
+
 **Operator gotchas:**
 
 - **`swatter unblock`, not `swatter allow`, clears a false positive.** Only
