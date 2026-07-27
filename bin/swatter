@@ -312,6 +312,13 @@ cmd_test_config() {
     echo "  badpaths:       ${BADPATHS_CONF} $( [[ -f ${BADPATHS_CONF} ]] && echo '(found)' || echo '(MISSING)')"
     echo "  CF ranges:      ${CLOUDFLARE_IPS_FILE} $( swatter_allowlist_healthy && echo '(healthy)' || echo '(missing/stale — run: swatter refresh-feeds)')"
     echo "  mode:           ${SWATTER_MODE}"
+    # Effective control state — printed AFTER the same expansion the gates use,
+    # so this answers "is the ladder armed right now", not "what does the conf
+    # file say". Every deploy gate verifies against these lines.
+    echo "  ladder:         $( [[ "${REPEAT_ENABLE}" == "true" ]] && echo 'ARMED' || echo 'DISARMED' ) (REPEAT_ENABLE=${REPEAT_ENABLE})"
+    echo "  ladder knobs:   REPEAT_N=${REPEAT_N} window=${REPEAT_WINDOW_DAYS}d crit-single=${REPEAT_N_CRITICAL_SINGLE}"
+    echo "  perm tripwire:  ${PERM_RATE_ALERT_PER_RUN}/run ${PERM_RATE_ALERT_PER_DAY}/day (ALERT floor — not an abort threshold)"
+    echo "  publication:    swarm=${SWARM_PUBLISH:-true} abuseipdb=${ABUSEIPDB_REPORT}"
     local n=0 f
     for f in ${DOMLOGS_GLOB}; do [[ -f "$f" ]] && n=$(( n + 1 )); done
     local domlog_status=""
