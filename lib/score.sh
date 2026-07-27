@@ -371,6 +371,12 @@ _swatter_retry_pending() {
     [[ "${STORE:-sqlite}" == "sqlite" && "${SWATTER_MODE}" == "enforce" ]] || return 0
     local rows; rows="$(swatter_store_pending_list)" || return 0
     [[ -n "$rows" ]] || return 0
+    # swatter_store_pending_list runs in sqlite's `.mode ascii` (see
+    # _sql_ascii) and terminates each ROW with char(30)/RS instead of a
+    # newline. Convert back to newline so the existing line-oriented `while
+    # read` loop below needs no other change; fields within a row split on
+    # IFS=$'\037' (US) instead.
+    rows="${rows//$'\036'/$'\n'}"
     local now; now="$(swatter_now)"
     local hours="${PENDING_RETRY_MAX_AGE_HOURS:-24}"; [[ "$hours" =~ ^[0-9]+$ ]] || hours=24
     local max_age=$(( hours * 3600 ))
@@ -383,7 +389,13 @@ _swatter_retry_pending() {
     local ip plane action ttl folded rep first_failed attempts audit_action reason top_vhost ev
     # Iterate a SNAPSHOT: re-attempts mutate pending_blocks (bump attempts / clear),
     # but the loop consumes the list captured above, so one drain touches each row once.
-    while IFS=$'\t' read -r ip plane action ttl folded rep first_failed attempts audit_action reason top_vhost ev; do
+    # IFS=$'\037' (ASCII unit separator), matching swatter_store_pending_list's
+    # delimiter — NOT a tab: bash's `read` treats tab as IFS-whitespace no
+    # matter how IFS is set, so adjacent tabs (an empty field, e.g. a
+    # DIRECT-plane row with no top_vhost) collapse and shift every later
+    # column — including `ev`, which the disarm gate below depends on — left
+    # by one. US is not in that whitespace class, so empty fields survive.
+    while IFS=$'\037' read -r ip plane action ttl folded rep first_failed attempts audit_action reason top_vhost ev; do
         [[ -n "$ip" && -n "$plane" ]] || continue
         [[ "$first_failed" =~ ^[0-9]+$ ]] || first_failed="$now"
         [[ "$attempts"     =~ ^[0-9]+$ ]] || attempts=1
@@ -394,10 +406,40 @@ _swatter_retry_pending() {
         # retry-exhausted audit's channel field.
         local want_ch; want_ch=$([[ "$plane" == "DIRECT" ]] && echo "${DIRECT_BACKEND:-csf}" || echo "cloudflare")
         # Give up on an intent that will never land (self-limits the queue).
+        # Deliberately ahead of the disarm hold below: reaping is orthogonal to
+        # the ladder switch and must keep running while disarmed too, or the
+        # queue grows unbounded during a pause and dumps every stale row at
+        # once (dropped, not applied) the instant the drain re-checks it after
+        # re-arm.
         if (( attempts >= max_att )) || (( now - first_failed > max_age )); then
             log_warn "durable-retry: giving up on ${ip}/${plane} after ${attempts} attempt(s), $(( (now - first_failed) / 3600 ))h queued; dropping"
             _swatter_audit "$ip" "$folded" "retry-exhausted" "$want_ch" 0 "durable_retry_gaveup attempts=${attempts} ${reason}" '{"retry":1}' "$rep"
             swatter_store_pending_clear "$ip" "$plane"
+            continue
+        fi
+        # Ladder disarmed: refuse to replay a queued PERMANENT ban we cannot
+        # prove came from somewhere other than the ladder. The obvious filter —
+        # "skip rows whose reason contains recidivism=" — is wrong: that stamp
+        # is written only by this release, so every perm queued by the version
+        # currently deployed lacks it and would sail straight through the very
+        # gate meant to stop it. Allowlist the known non-ladder origin instead.
+        # Match on the EVIDENCE marker, not free text in `reason`: INTEL_PROVIDERS
+        # includes a provider literally named "projecthoneypot" (lib/common.sh),
+        # so a plain ladder perm scored via that intel feed renders as
+        # "intel=projecthoneypot:...(NN)" — a reason substring match on
+        # "honeypot" would wrongly allow that through. `ev` carries a structured
+        # "honeypot":1 flag set only for a genuine trap hit (line ~504), and it
+        # is preserved verbatim on the queued row (see swatter_store_pending_set),
+        # so it survives into the dual-plane leg of a real trap perm too.
+        # The row is LEFT QUEUED and its attempt counter is NOT bumped: pausing
+        # the ladder must not destroy intent for the life of the pause. But this
+        # check runs AFTER the give-up block above, on purpose — a held row is
+        # still subject to the normal age/attempt reap, so it does NOT survive
+        # a disarm longer than PENDING_RETRY_MAX_AGE_HOURS (default 24h).
+        # `swatter pending --drain-perms` clears them when the operator wants
+        # an explicit abort rather than a pause.
+        if [[ "$action" == "perm" && "${REPEAT_ENABLE}" != "true" && "$ev" != *'"honeypot":1'* ]]; then
+            log_warn "ladder disarmed: holding queued perm for ${ip}/${plane} (clear with: swatter pending --drain-perms)"
             continue
         fi
         # Overridden since queueing (operator allow, or the token/IP went invalid):

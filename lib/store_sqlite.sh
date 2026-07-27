@@ -85,6 +85,26 @@ _sql() {
 }
 _sqlq() { _sql "$1"; }
 
+# Like _sql/_sqlq, but forces `.mode ascii` — sqlite3's built-in output mode
+# that separates columns with char(31)/US and rows with char(30)/RS, emitted
+# as raw bytes. Needed (not `_sqlq`) for any query a caller will split back
+# into fields programmatically: modern sqlite3 CLIs (added as a terminal
+# escape-sequence-injection hardening measure) visually re-encode embedded
+# control bytes below 0x20 — e.g. a literal char(31) glued into a string via
+# `_sqlq` prints as the two literal characters "^_", not the actual 0x1F byte
+# — even when stdout is redirected/captured, not a tty. `.mode ascii` is
+# exempt (raw delimiter bytes are the entire point of the mode) and has been
+# in sqlite3 since long before that hardening existed, so it is safe on old
+# CLIs too — unlike `-escape off`, which is itself a recent flag. ONLY use
+# this for machine-consumed output; never for anything an operator's
+# terminal might render (that's what the escaping protects against).
+_sql_ascii() {
+    local err rc
+    { err="$(sqlite3 -cmd '.timeout 3000' -cmd '.mode ascii' "$(_swatter_db)" "$@" 2>&1 >&3 3>&-)"; rc=$?; } 3>&1
+    (( rc != 0 )) && log_warn "sqlite error (rc=${rc}): $(printf '%s' "$err" | tr '\n' ' ' | cut -c1-160)"
+    return "$rc"
+}
+
 # Proper escaping for a value that will be placed inside a single-quoted
 # SQLite string literal ( '  -->  '' ). Defense in depth; called with IPs
 # that have already been validated by the CLI or scoring path.
@@ -563,11 +583,15 @@ swatter_store_pending_set() {
     _store_ip_ok "$ip" || return 0
     [[ "${STORE}" == "sqlite" ]] || return 0
     local now; now="$(swatter_now)"
-    # Strip TAB/newline from the fields the drain splits on IFS=$'\t' so an embedded
-    # tab/newline can't shift columns. reason/top_vhost are control-char-clean
-    # upstream and ev is jesc'd by score.awk (no tab/newline); this is the backstop.
-    reason="${reason//[$'\t\r\n']/ }"; top_vhost="${top_vhost//[$'\t\r\n']/ }"
-    ev="${ev//[$'\t\r\n']/ }"; audit_action="${audit_action//[$'\t\r\n']/ }"
+    # Strip TAB/newline/US(0x1F)/RS(0x1E) — US is the field delimiter and RS is
+    # the row delimiter swatter_store_pending_list's `.mode ascii` emits (see
+    # there) — from the fields the drain splits on, so an embedded instance of
+    # any of them can't shift columns or mid-split a row. reason/top_vhost are
+    # control-char-clean upstream and ev is jesc'd by score.awk; this is the
+    # backstop. TAB/newline are stripped too even though US/RS are the live
+    # delimiters now, in case a caller still assumes tab-safety.
+    reason="${reason//[$'\t\r\n\036\037']/ }"; top_vhost="${top_vhost//[$'\t\r\n\036\037']/ }"
+    ev="${ev//[$'\t\r\n\036\037']/ }"; audit_action="${audit_action//[$'\t\r\n\036\037']/ }"
     [[ -n "$ev" ]] || ev="{}"
     local sip splane saction sreason svhost sev saudit
     sip="$(_sql_escape "$ip")"; splane="$(_sql_escape "$plane")"
@@ -591,12 +615,24 @@ swatter_store_pending_set() {
             last_attempt=${now}, attempts=attempts+1;"
 }
 
-# Echo every queued intent as a TSV row the drain consumes. ev is LAST (it is the
+# Echo every queued intent as a row the drain consumes. ev is LAST (it is the
 # widest free-text field); every field is tab/newline-clean by construction above.
-#   ip⇥plane⇥action⇥ttl⇥folded⇥rep⇥first_failed⇥attempts⇥audit_action⇥reason⇥top_vhost⇥ev
+# Fields are delimited with char(31) (ASCII unit separator), NOT a tab: bash's
+# `read` treats tab as an "IFS whitespace" character no matter what IFS is set
+# to, so adjacent tabs (an empty field — e.g. a DIRECT-plane row with no
+# top_vhost) silently COLLAPSE and shift every later column left by one. US is
+# not in that whitespace class, so empty fields are preserved. Uses _sql_ascii
+# (not _sqlq/_sql) so the embedded char(31) bytes reach the caller raw — see
+# _sql_ascii for why plain list-mode output can't be trusted here. `.mode
+# ascii` also emits char(30) (RS) after EACH ROW instead of a newline; the
+# reader (_swatter_retry_pending) converts that back to '\n' before its
+# existing line-oriented `while read` loop, then splits fields on
+# IFS=$'\037'.
+#   ip US plane US action US ttl US folded US rep US first_failed US attempts
+#   US audit_action US reason US top_vhost US ev  RS
 swatter_store_pending_list() {
     [[ "${STORE}" == "sqlite" ]] || return 0
-    _sqlq "SELECT ip||char(9)||plane||char(9)||action||char(9)||ttl||char(9)||folded||char(9)||rep||char(9)||first_failed||char(9)||attempts||char(9)||COALESCE(audit_action,action)||char(9)||COALESCE(reason,'')||char(9)||COALESCE(top_vhost,'')||char(9)||COALESCE(ev,'{}')
+    _sql_ascii "SELECT ip||char(31)||plane||char(31)||action||char(31)||ttl||char(31)||folded||char(31)||rep||char(31)||first_failed||char(31)||attempts||char(31)||COALESCE(audit_action,action)||char(31)||COALESCE(reason,'')||char(31)||COALESCE(top_vhost,'')||char(31)||COALESCE(ev,'{}')
            FROM pending_blocks ORDER BY first_failed;"
 }
 
