@@ -323,6 +323,23 @@ swatter_store_is_perm() {
     fi
 }
 
+# 1 when the ledger holds an ENFORCED perm action for this IP. Companion to
+# swatter_store_is_perm, whose rollup flag carries pre-15aad86 dry-run residue.
+swatter_store_has_enforced_perm() {
+    local ip="$1"
+    _store_ip_ok "$ip" || return 1
+    [[ "${STORE}" == "sqlite" ]] || return 1
+    [[ -e "$(_swatter_db)" ]] || return 1
+    local sip n; sip="$(_sql_escape "$ip")"
+    # Fail CLOSED like swatter_store_is_perm_on: a DB error (missing 'actions'
+    # table, corrupt file, lock timeout) yields empty stdout from _sqlq. A naive
+    # `!= "0"` treats that empty string as "has evidence" — silently reopening
+    # the exact rollup-only backfill this helper exists to block. Require a
+    # well-formed non-zero count instead.
+    n="$(_sqlq "SELECT COUNT(*) FROM actions WHERE ip='${sip}' AND action='perm' AND dry_run=0;")"
+    [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 ))
+}
+
 # Record an action and upsert offender stats.
 #   swatter_store_record <ip> <action> <channel> <ttl> <score> <reason> <dry_run>
 swatter_store_record() {

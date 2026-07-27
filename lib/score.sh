@@ -325,7 +325,15 @@ _swatter_perm_gate() {
         return 0
     fi
 
-    if swatter_store_is_perm "$ip"; then
+    # offenders.perm alone is not evidence. Before 15aad86 a DRY-RUN perm set
+    # that flag exactly as it inflated temp_count, and the rollup is never
+    # recomputed — so on any host that ran report mode before enforce (cds1 did)
+    # a report-mode ghost would be permanently banned on sight here, skipping
+    # the ladder, the CRITICAL-single bar, and recidivism accounting entirely.
+    # Require an enforced perm in the ledger, the same rollup-AND-ledger idiom
+    # swatter_store_perm_ips_since already uses. A legitimate import-bans entry
+    # still backfills, because it writes a real enforced action row.
+    if swatter_store_is_perm "$ip" && swatter_store_has_enforced_perm "$ip"; then
         # offenders.perm=1 but NO plane_blocks row on either plane — a legacy
         # import (bin/swatter import-bans) or a perm predating this feature.
         # Backfill: perm on the evidence plane now, plus the other plane for
