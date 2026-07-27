@@ -29,6 +29,7 @@
 #   swatter swarm {enroll|status|disable|purge}  fleet reputation sharing (see SWARM_* config)
 #   swatter escalate-preview [--window N]  who perms on their NEXT offense (read-only)
 #   swatter rollback-ladder --since <epoch|iso> [--dry-run]   undo ladder perms
+#   swatter pending [--drain-perms] [--dry-run]  inspect/drain the retry queue
 #   swatter version
 
 set -uo pipefail
@@ -624,7 +625,48 @@ cmd_metrics() {
     if [[ "${1:-}" == "--print" ]]; then swatter_metrics_emit; else swatter_metrics_write; fi
 }
 
-usage() { sed -n '2,32p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
+# swatter pending [--drain-perms] [--dry-run] — inspect or drain the durable
+# retry queue. Exists because the abort path needs it: disarming the ladder
+# HOLDS queued perms (lib/score.sh) but does not clear them, and without this
+# an operator's only option was hand-SQL against pending_blocks.
+cmd_pending() {
+    local drain=0 dry=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --drain-perms) drain=1; shift ;;
+            --dry-run)     dry=1;   shift ;;
+            *) die "usage: swatter pending [--drain-perms] [--dry-run]" ;;
+        esac
+    done
+    swatter_store_init
+    # RS (0x1E) terminates rows in .mode ascii; convert to newlines so the
+    # read loops below iterate per row.
+    local rows; rows="$(swatter_store_pending_list | tr '\036' '\n')"
+    if [[ -z "$rows" ]]; then echo "pending: queue is empty"; return 0; fi
+    printf '%-18s %-8s %-6s %5s  %s\n' "IP" "PLANE" "ACTION" "ATT" "REASON"
+    # swatter_store_pending_list emits US-delimited fields and RS-terminated
+    # rows (.mode ascii) — NOT tabs. bash treats tab as IFS-whitespace however
+    # IFS is set, so adjacent tabs collapse and shift every later column.
+    local ip plane action ttl folded rep ff attempts audit reason rest
+    while IFS=$'\037' read -r ip plane action ttl folded rep ff attempts audit reason rest; do
+        printf '%-18s %-8s %-6s %5s  %s\n' "$ip" "$plane" "$action" "$attempts" "$reason"
+    done <<< "$rows"
+    (( drain )) || return 0
+    local n=0
+    while IFS=$'\037' read -r ip plane action ttl folded rep ff attempts audit reason rest; do
+        [[ "$action" == "perm" ]] || continue
+        n=$(( n + 1 ))
+        (( dry )) && continue
+        swatter_store_pending_clear "$ip" "$plane"
+    done <<< "$rows"
+    if (( dry )); then
+        echo "pending: would clear ${n} queued perm intent(s) (--dry-run)"
+    else
+        echo "pending: cleared ${n} queued perm intent(s)"
+    fi
+}
+
+usage() { sed -n '2,33p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
 
 main() {
     local sub="${1:-}"; shift || true
@@ -648,6 +690,7 @@ main() {
         swarm)         cmd_swarm "$@" ;;
         escalate-preview) cmd_escalate_preview "$@" ;;
         rollback-ladder)  cmd_rollback_ladder "$@" ;;
+        pending)       cmd_pending "$@" ;;
         version|--version|-v) echo "swatter ${SWATTER_VERSION}" ;;
         ""|help|-h|--help) usage ;;
         *) echo "swatter: unknown command '${sub}' (try: swatter help)" >&2; exit 2 ;;
