@@ -652,18 +652,37 @@ cmd_pending() {
         printf '%-18s %-8s %-6s %5s  %s\n' "$ip" "$plane" "$action" "$attempts" "$reason"
     done <<< "$rows"
     (( drain )) || return 0
-    local n=0
+    # Mirrors cmd_rollback_ladder's ok/bad accounting for the same reason: a
+    # bulk destructive op must never report success for a row it didn't
+    # actually clear. swatter_store_pending_clear -> _sql logs a warning and
+    # returns nonzero on failure (a locked/busy DB — entirely plausible during
+    # a concurrent */5 retry scan, i.e. exactly when an operator runs this
+    # during an active incident) but does NOT die or propagate on its own, so
+    # the return code MUST be checked per row here or a partial drain would
+    # print as a complete one — an operator would believe the queue is empty
+    # while permanent bans are still queued to land, the exact failure this
+    # command exists to prevent.
+    local n=0 cleared=0 failed=0
     while IFS=$'\037' read -r ip plane action ttl folded rep ff attempts audit reason rest; do
         [[ "$action" == "perm" ]] || continue
         n=$(( n + 1 ))
         (( dry )) && continue
-        swatter_store_pending_clear "$ip" "$plane"
+        if swatter_store_pending_clear "$ip" "$plane"; then
+            cleared=$(( cleared + 1 ))
+        else
+            failed=$(( failed + 1 ))
+            echo "PARTIAL ${ip}/${plane}: clear failed; still queued" >&2
+        fi
     done <<< "$rows"
     if (( dry )); then
         echo "pending: would clear ${n} queued perm intent(s) (--dry-run)"
-    else
-        echo "pending: cleared ${n} queued perm intent(s)"
+        return 0
     fi
+    if (( failed > 0 )); then
+        echo "pending: cleared ${cleared} of ${n} queued perm intent(s) — ${failed} FAILED (database busy?); re-run"
+        return 1
+    fi
+    echo "pending: cleared ${cleared} queued perm intent(s)"
 }
 
 usage() { sed -n '2,33p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }

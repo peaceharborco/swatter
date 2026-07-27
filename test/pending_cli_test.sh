@@ -47,10 +47,44 @@ check lists-all-rows "$(sw | grep -cE '^10\.0\.0\.')" "3"
 check dry-run-reports "$(sw --drain-perms --dry-run | grep -c 'would clear 2')" "1"
 check dry-run-kept    "$(q "SELECT COUNT(*) FROM pending_blocks;")" "3"
 
-# --drain-perms clears perm intents only, leaving temps queued.
-check drain-reports      "$(sw --drain-perms | grep -c 'cleared 2')" "1"
+# --drain-perms clears perm intents only, leaving temps queued. Happy path:
+# full count reported, rc=0.
+drain_out="$(sw --drain-perms)"; drain_rc=$?
+check drain-reports      "$(printf '%s' "$drain_out" | grep -c 'cleared 2')" "1"
+check drain-exit-zero    "$drain_rc" "0"
 check drained-perms-gone "$(q "SELECT COUNT(*) FROM pending_blocks WHERE action='perm';")" "0"
 check drained-temp-kept  "$(q "SELECT COUNT(*) FROM pending_blocks WHERE action='temp';")" "1"
+
+# --- Partial-failure path: swatter_store_pending_clear failing mid-drain must
+# NOT be reported as a complete success (coordinator review finding). Shadow
+# `sqlite3` on PATH with a wrapper that fails ONLY the DELETE for one specific
+# IP (simulating a locked/busy DB — plausible during a concurrent */5 retry
+# scan, exactly when this command gets run) and passes every other call
+# through to the real binary untouched.
+REAL_SQLITE3="$(command -v sqlite3)"
+FAKEBIN="$(mktemp -d "${TMPDIR:-/tmp}/swatter-pend-fakebin.XXXXXX")"
+cat > "$FAKEBIN/sqlite3" <<EOF
+#!/usr/bin/env bash
+sql="\${@: -1}"
+case "\$sql" in
+  *"DELETE FROM pending_blocks"*"ip='10.0.0.9'"*)
+    echo "Error: database is locked" >&2
+    exit 5
+    ;;
+esac
+exec "$REAL_SQLITE3" "\$@"
+EOF
+chmod +x "$FAKEBIN/sqlite3"
+
+ins 10.0.0.8 perm 'score=95'
+ins 10.0.0.9 perm 'score=96'
+fail_out="$(PATH="$FAKEBIN:$PATH" sw --drain-perms)"; fail_rc=$?
+check partial-count-reported "$(printf '%s' "$fail_out" | grep -c 'cleared 1 of 2')" "1"
+check partial-failure-visible "$(printf '%s' "$fail_out" | grep -c 'FAILED')" "1"
+check partial-exit-nonzero "$([[ "$fail_rc" -ne 0 ]] && echo yes || echo no)" "yes"
+check partial-failed-row-kept    "$(q "SELECT COUNT(*) FROM pending_blocks WHERE ip='10.0.0.9';")" "1"
+check partial-succeeded-row-gone "$(q "SELECT COUNT(*) FROM pending_blocks WHERE ip='10.0.0.8';")" "0"
+rm -rf "$FAKEBIN"
 
 # Empty queue is reported, not an error.
 sqlite3 "$db" "DELETE FROM pending_blocks;"
