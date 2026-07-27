@@ -106,6 +106,15 @@ REPEAT_N=3
 # party's IP. When EVERY in-window temp was such a single, require this many.
 : "${REPEAT_N_CRITICAL_SINGLE:=4}"
 REPEAT_WINDOW_DAYS=7
+# Abort lever for the temp->perm recidivism ladder. Default ON: the ladder has
+# shipped since v1.0.0 and runs on every enforce host, so an upgrade that
+# silently disarmed it would remove a protection operators already rely on —
+# install.sh preserves an existing conf and never injects this key, so unset
+# MUST mean "behave as before". Read this variable directly; never write your
+# own `${REPEAT_ENABLE:-...}` default at a call site, or one stray `:-false`
+# disarms every upgrade. Anything not exactly "true" disarms, which is the safe
+# direction for a lever whose job is to STOP banning.
+: "${REPEAT_ENABLE:=true}"
 CRITICAL_TTL_FLOOR=86400
 
 MAX_BLOCKS_PER_RUN=25

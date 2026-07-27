@@ -554,7 +554,7 @@ swatter_scan() {
             allcrit="$(swatter_store_temps_all_critical_single "$ip" "$(( $(swatter_now) - REPEAT_WINDOW_DAYS*86400 ))")"
             thresh="$(_swatter_recid_threshold "$allcrit")"
             local action ttl=0
-            if (( prior + 1 >= thresh )); then
+            if [[ "${REPEAT_ENABLE}" == "true" ]] && (( prior + 1 >= thresh )); then
                 action="perm"
                 # Make the escalation self-explanatory: without this a ladder
                 # perm's reason reads only `score=91 intel=...`, so neither the
