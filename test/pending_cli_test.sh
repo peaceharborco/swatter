@@ -86,6 +86,67 @@ check partial-failed-row-kept    "$(q "SELECT COUNT(*) FROM pending_blocks WHERE
 check partial-succeeded-row-gone "$(q "SELECT COUNT(*) FROM pending_blocks WHERE ip='10.0.0.8';")" "0"
 rm -rf "$FAKEBIN"
 
+# --- Honeypot intents are held, not drained (fix-wave item 3). The disarm
+# gate (_swatter_retry_pending, lib/score.sh) deliberately keeps a genuine
+# trap-hit perm live while the ladder is disarmed — RUNBOOK.md section 2
+# promises this. An explicit `--drain-perms` must agree, not silently
+# discard what that gate just chose to keep armed. This keys on the `ev`
+# evidence marker, not free text in `reason`: 10.0.0.2 above (`reason`
+# merely CONTAINS the word "honeypot", no `ev` marker) is correctly drained
+# by the happy-path check already, proving a reason-substring match is not
+# what gates this.
+ins_ev() { sqlite3 "$db" "INSERT INTO pending_blocks(ip,plane,action,ttl,reason,ev,first_failed,last_attempt,attempts)
+                          VALUES('$1','DIRECT','$2',0,'$3','$4',${now},${now},1);"; }
+ins_ev 10.0.0.15 perm 'honeypot /wp-config.bak' '{"honeypot":1}'
+ins 10.0.0.16 perm 'score=90 recidivism=3/7d'
+# 10.0.0.9 is still queued from the partial-failure block above (real sqlite3
+# is back on PATH now, so this drain clears it for real) — three perm rows
+# queued, one of them the honeypot marker.
+hp_dry_out="$(sw --drain-perms --dry-run)"
+check honeypot-dry-run-count  "$(printf '%s' "$hp_dry_out" | grep -c 'would clear 2 queued perm')" "1"
+check honeypot-dry-run-held   "$(printf '%s' "$hp_dry_out" | grep -c '1 honeypot intent(s) held')" "1"
+check honeypot-dry-run-no-mutation "$(q "SELECT COUNT(*) FROM pending_blocks WHERE ip='10.0.0.15';")" "1"
+
+hp_out="$(sw --drain-perms)"; hp_rc=$?
+check honeypot-not-drained    "$(q "SELECT COUNT(*) FROM pending_blocks WHERE ip='10.0.0.15';")" "1"
+check honeypot-siblings-gone  "$(q "SELECT COUNT(*) FROM pending_blocks WHERE action='perm' AND ip != '10.0.0.15';")" "0"
+check honeypot-held-reported  "$(printf '%s' "$hp_out" | grep -c '1 honeypot intent(s) held')" "1"
+check honeypot-drain-exit-zero "$hp_rc" "0"
+
+# --- Read-failure path (fix-wave item 1): swatter_store_pending_list's OWN
+# query failing (e.g. "database is locked") must NOT read as an empty queue.
+# Before the fix, the read was piped straight into `tr`
+# (`swatter_store_pending_list | tr '\036' '\n'`), so `$?` reflected tr's
+# exit status — always 0 — and a genuine read failure produced empty stdout
+# with the real rc silently discarded: reported "queue is empty", exited 0,
+# cleared nothing. Verified live: a locked db during an abort's
+# --drain-perms left a recidivism-stamped perm silently un-drained while
+# this command reported nothing left to clear — the exact incident this
+# guards against. Shadow sqlite3 so the SELECT inside swatter_store_pending_list
+# itself fails.
+ins 10.0.0.20 perm 'score=91 recidivism=3/7d'
+REAL_SQLITE3="$(command -v sqlite3)"
+FAKEBIN2="$(mktemp -d "${TMPDIR:-/tmp}/swatter-pend-fakebin2.XXXXXX")"
+cat > "$FAKEBIN2/sqlite3" <<EOF
+#!/usr/bin/env bash
+sql="\${@: -1}"
+case "\$sql" in
+  *"FROM pending_blocks"*)
+    echo "Error: database is locked" >&2
+    exit 5
+    ;;
+esac
+exec "$REAL_SQLITE3" "\$@"
+EOF
+chmod +x "$FAKEBIN2/sqlite3"
+
+read_fail_out="$(PATH="$FAKEBIN2:$PATH" sw --drain-perms)"; read_fail_rc=$?
+check read-fail-not-reported-empty "$(printf '%s' "$read_fail_out" | grep -c 'queue is empty')" "0"
+check read-fail-distinct-message   "$(printf '%s' "$read_fail_out" | grep -ic 'FAILED to read the queue')" "1"
+check read-fail-exit-nonzero       "$([[ "$read_fail_rc" -ne 0 ]] && echo yes || echo no)" "yes"
+check read-fail-row-still-queued   "$(q "SELECT COUNT(*) FROM pending_blocks WHERE ip='10.0.0.20';")" "1"
+rm -rf "$FAKEBIN2"
+
 # Empty queue is reported, not an error.
 sqlite3 "$db" "DELETE FROM pending_blocks;"
 check empty-queue "$(sw | grep -c 'queue is empty')" "1"

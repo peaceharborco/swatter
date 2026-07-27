@@ -95,19 +95,28 @@ check missing-table-no-ban        "$(applied)"       "0"
 # already seeded (including 10.0.0.1-3 above) untouched.
 swatter_store_init >/dev/null 2>&1
 
-# Absent db file entirely (e.g. a rename/lock window). Exercises the
-# helper's OTHER guard (`[[ -e "$(_swatter_db)" ]] || return 1`) — a
-# different line than the missing-table case above. Tested directly against
-# the helper rather than through the full gate: swatter_store_is_perm (the
-# other half of the gate's conjunct) ALSO queries this same absent db and
-# happens to fail closed on its own, so driving this through the gate would
-# only prove is_perm's guard works, not has_enforced_perm's — the two would
-# be indistinguishable from the gate's return code alone.
+# Absent db file entirely (e.g. a rename/lock window). Tested directly
+# against the helper rather than through the full gate: swatter_store_is_perm
+# (the other half of the gate's conjunct) ALSO queries this same absent db
+# and happens to fail closed on its own, so driving this through the gate
+# would only prove is_perm's guard works, not has_enforced_perm's — the two
+# would be indistinguishable from the gate's return code alone.
+#
+# NOTE this does NOT isolate the helper's explicit `[[ -e "$(_swatter_db)" ]]
+# || return 1` guard from its query-failure path, despite the file being
+# renamed away: sqlite3 auto-creates an empty db on connect (verified: `sqlite3
+# nonexistent.db "SELECT ..."` creates the file, then fails with "no such
+# table: actions", rc=1), so even with the `-e` guard deleted, the query below
+# would hit the identical missing-table failure surface as
+# missing-table-falls-through above and still return 1. This assertion cannot
+# fail under that mutation — it is a second, redundant confirmation that the
+# helper fails closed when its target table is unreachable, by whichever path,
+# not a targeted test of the `-e` line specifically. Named accordingly.
 rollup 10.0.0.5 1
 mv "$db" "${db}.hidden"
 absent_db_rc="$(swatter_store_has_enforced_perm 10.0.0.5; echo $?)"
 mv "${db}.hidden" "$db"
-check absent-db-fails-closed "$absent_db_rc" "1"
+check absent-db-also-fails-closed-redundant-with-missing-table "$absent_db_rc" "1"
 
 echo "Total: ${PASS} passed, ${FAIL} failed"
 [[ "$FAIL" -eq 0 ]]

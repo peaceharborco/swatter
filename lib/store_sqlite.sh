@@ -97,7 +97,13 @@ _sqlq() { _sql "$1"; }
 # in sqlite3 since long before that hardening existed, so it is safe on old
 # CLIs too — unlike `-escape off`, which is itself a recent flag. ONLY use
 # this for machine-consumed output; never for anything an operator's
-# terminal might render (that's what the escaping protects against).
+# terminal might render (that's what the escaping protects against) UNLESS
+# the caller re-sanitizes the specific field it renders — see cmd_pending
+# (bin/swatter), which splits swatter_store_pending_list's `_sql_ascii`
+# output programmatically (the intended use) but also displays the `reason`
+# field to the operator's tty, and strips [[:cntrl:]] from that one field
+# immediately before printing it because this function's own escaping does
+# not apply to it.
 _sql_ascii() {
     local err rc
     { err="$(sqlite3 -cmd '.timeout 3000' -cmd '.mode ascii' "$(_swatter_db)" "$@" 2>&1 >&3 3>&-)"; rc=$?; } 3>&1
