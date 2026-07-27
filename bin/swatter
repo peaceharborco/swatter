@@ -669,6 +669,16 @@ cmd_pending() {
         echo "pending: FAILED to read the queue (rc=${rlrc}) — NOT confirmed empty. Database may be locked or corrupt; see the sqlite warning above. Nothing was inspected or cleared; retry." >&2
         return 1
     fi
+    # Command substitution strips trailing NEWLINES but not a trailing RS —
+    # and .mode ascii terminates every row, including the last, with RS. Left
+    # in place, that trailing RS survives the translation below as a trailing
+    # "\n" in $rows, and the <<< here-string appends its own newline on top,
+    # so each read loop iterates one extra time over an empty synthetic row
+    # after the real table (blank ip/action -> a phantom row in `pending`'s
+    # output; harmless to --drain-perms since action never matches "perm").
+    # Strip it before splitting. A genuinely empty queue has no trailing RS
+    # (raw is ""), so this is a no-op on that path.
+    raw="${raw%$'\036'}"
     # RS (0x1E) terminates rows in .mode ascii; convert to newlines so the
     # read loops below iterate per row.
     local rows; rows="${raw//$'\036'/$'\n'}"

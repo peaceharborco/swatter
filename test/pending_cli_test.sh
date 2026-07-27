@@ -41,7 +41,27 @@ ins 10.0.0.3 temp 'score=75'
 sw() { STORE=sqlite SWATTER_CONF="$SWATTER_CONF" \
        bash "${ROOT}/bin/swatter" pending "$@" 2>&1; }
 
+# swatter_store_pending_list's `.mode ascii` output terminates every row,
+# including the LAST one, with RS (0x1E). Command substitution strips
+# trailing newlines but not a trailing RS, so a fix that reads via
+# `raw="$(swatter_store_pending_list)"` (replacing the old un-rc-checked
+# `| tr '\036' '\n'` pipe) must also strip that trailing RS before splitting
+# rows on it — otherwise the split leaves the RS in place, it survives
+# translation to `\n`, and the <<< here-string appends its OWN trailing
+# newline on top: one extra phantom (blank) row printed after the real
+# table. None of the checks above catch that — they grep for
+# `^10\.0\.0\.`, which a blank row never matches. Assert printed-row count
+# equals actual queue depth directly; this is the assertion whose absence
+# let that regression ship.
+row_count_matches() {
+    local label="$1" want got
+    want="$(q "SELECT COUNT(*) FROM pending_blocks;")"
+    got="$(sw | tail -n +2 | wc -l | tr -d '[:space:]')"
+    check "$label" "$got" "$want"
+}
+
 check lists-all-rows "$(sw | grep -cE '^10\.0\.0\.')" "3"
+row_count_matches row-count-matches-3
 
 # --dry-run reports what it would clear and changes nothing.
 check dry-run-reports "$(sw --drain-perms --dry-run | grep -c 'would clear 2')" "1"
@@ -54,6 +74,7 @@ check drain-reports      "$(printf '%s' "$drain_out" | grep -c 'cleared 2')" "1"
 check drain-exit-zero    "$drain_rc" "0"
 check drained-perms-gone "$(q "SELECT COUNT(*) FROM pending_blocks WHERE action='perm';")" "0"
 check drained-temp-kept  "$(q "SELECT COUNT(*) FROM pending_blocks WHERE action='temp';")" "1"
+row_count_matches row-count-matches-1
 
 # --- Partial-failure path: swatter_store_pending_clear failing mid-drain must
 # NOT be reported as a complete success (coordinator review finding). Shadow
@@ -150,6 +171,7 @@ rm -rf "$FAKEBIN2"
 # Empty queue is reported, not an error.
 sqlite3 "$db" "DELETE FROM pending_blocks;"
 check empty-queue "$(sw | grep -c 'queue is empty')" "1"
+row_count_matches row-count-matches-0
 
 echo "Total: ${PASS} passed, ${FAIL} failed"
 [[ "$FAIL" -eq 0 ]]
