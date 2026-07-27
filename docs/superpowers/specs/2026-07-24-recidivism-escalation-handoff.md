@@ -15,6 +15,18 @@ All nine plan tasks are merged to `main`. **`REPEAT_WINDOW_DAYS` is still 7
 everywhere.** cds1's runtime behavior is unchanged — no config was touched, no
 bans were placed or removed, nothing was deployed.
 
+> **Read "nothing was deployed" as "none of *this* work is on the box yet" —
+> not as "the ladder is not running."** The temp→perm recidivism ladder itself
+> shipped in v1.0.0 and has been running on cds1, in enforce mode, since
+> 2026-06-12, placing permanent bans daily on the least safe version of the
+> ladder that exists. "Nothing was deployed" refers only to the *unreleased
+> improvements* this handoff describes. A later design
+> (`2026-07-27-v2.11.0-release-and-cds1-deploy-design.md`, superseded — see
+> `-design-v2.md`) read these exact words the other way and inverted its
+> entire risk model as a result: it treated *shipping* as the risky act,
+> when every day cds1 stays on the pre-fix ladder is a day it bans without the
+> fixes below.
+
 ## 2. The warning that matters most
 
 > **Any `swatter escalate-preview` output captured before 2026-07-24 is wrong.

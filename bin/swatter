@@ -29,6 +29,7 @@
 #   swatter swarm {enroll|status|disable|purge}  fleet reputation sharing (see SWARM_* config)
 #   swatter escalate-preview [--window N]  who perms on their NEXT offense (read-only)
 #   swatter rollback-ladder --since <epoch|iso> [--dry-run]   undo ladder perms
+#   swatter pending [--drain-perms] [--dry-run]  inspect/drain the retry queue
 #   swatter version
 
 set -uo pipefail
@@ -311,6 +312,13 @@ cmd_test_config() {
     echo "  badpaths:       ${BADPATHS_CONF} $( [[ -f ${BADPATHS_CONF} ]] && echo '(found)' || echo '(MISSING)')"
     echo "  CF ranges:      ${CLOUDFLARE_IPS_FILE} $( swatter_allowlist_healthy && echo '(healthy)' || echo '(missing/stale — run: swatter refresh-feeds)')"
     echo "  mode:           ${SWATTER_MODE}"
+    # Effective control state — printed AFTER the same expansion the gates use,
+    # so this answers "is the ladder armed right now", not "what does the conf
+    # file say". Every deploy gate verifies against these lines.
+    echo "  ladder:         $( [[ "${REPEAT_ENABLE}" == "true" ]] && echo 'ARMED' || echo 'DISARMED' ) (REPEAT_ENABLE=${REPEAT_ENABLE})"
+    echo "  ladder knobs:   REPEAT_N=${REPEAT_N} window=${REPEAT_WINDOW_DAYS}d crit-single=${REPEAT_N_CRITICAL_SINGLE}"
+    echo "  perm tripwire:  ${PERM_RATE_ALERT_PER_RUN}/run ${PERM_RATE_ALERT_PER_DAY}/day (ALERT floor — not an abort threshold)"
+    echo "  publication:    swarm=${SWARM_PUBLISH:-true} abuseipdb=${ABUSEIPDB_REPORT}"
     local n=0 f
     for f in ${DOMLOGS_GLOB}; do [[ -f "$f" ]] && n=$(( n + 1 )); done
     local domlog_status=""
@@ -495,12 +503,16 @@ cmd_escalate_preview() {
     # decider counts the PENDING offense too, so a listed IP's eventual ban
     # reads recidivism=<temps_prior>+1.
     cat >&2 <<EOS
-escalate-preview: window=${win}d REPEAT_N=${REPEAT_N}
+escalate-preview: window=${win}d REPEAT_N=${REPEAT_N} ladder=$( [[ "${REPEAT_ENABLE}" == "true" ]] && echo "ARMED" || echo "DISARMED (REPEAT_ENABLE=false)" )
   temps_prior  enforced temps ALREADY counted; the next offense adds one more,
                so the resulting ban reads recidivism=<temps_prior>+1
   status       at-bar   = temps_prior >= REPEAT_N (at/over the raw bar)
                one-away = temps_prior == REPEAT_N-1
-  Both statuses perm on their NEXT offense — that is what this list is for.
+  Both statuses perm on their NEXT offense ONLY IF THE LADDER IS ARMED
+  (REPEAT_ENABLE=true, see the ladder= line above) — that is what this list is
+  for. With the ladder disarmed, neither status converts to a perm on its own;
+  an IP can still perm independently via honeypot / hard-intel dual-plane /
+  plane-upgrade, none of which this list models.
   Not modeled here: REPEAT_N_CRITICAL_SINGLE raises the bar for offenders whose
   in-window temps were all single CRITICAL probes, so a few listed IPs will get
   one more temp instead. The list errs toward over-reporting, never under.
@@ -624,7 +636,120 @@ cmd_metrics() {
     if [[ "${1:-}" == "--print" ]]; then swatter_metrics_emit; else swatter_metrics_write; fi
 }
 
-usage() { sed -n '2,32p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
+# swatter pending [--drain-perms] [--dry-run] — inspect or drain the durable
+# retry queue. Exists because the abort path needs it: disarming the ladder
+# HOLDS queued perms (lib/score.sh) but does not clear them, and without this
+# an operator's only option was hand-SQL against pending_blocks.
+cmd_pending() {
+    local drain=0 dry=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --drain-perms) drain=1; shift ;;
+            --dry-run)     dry=1;   shift ;;
+            *) die "usage: swatter pending [--drain-perms] [--dry-run]" ;;
+        esac
+    done
+    swatter_store_init
+    # Capture the read's OWN return code BEFORE anything else touches it. The
+    # previous form piped straight into `tr` (`swatter_store_pending_list | tr
+    # '\036' '\n'`), so `$?` reflected tr's exit status — always 0 — never
+    # swatter_store_pending_list's. A genuine read failure (locked/corrupt db)
+    # therefore produced empty stdout with a discarded nonzero rc, which the
+    # next check couldn't tell apart from a truly empty queue: it printed
+    # "queue is empty", exited 0, and cleared nothing. Verified live: with
+    # sqlite3 returning "database is locked", `swatter pending --drain-perms`
+    # reported an empty queue while a recidivism= perm stayed queued — exactly
+    # the abort-step-2 silent no-op this command exists to prevent. A read
+    # failure must look nothing like an empty queue: distinct message,
+    # nonzero exit, so an abort script (or an operator re-running this by
+    # hand) cannot mistake "could not read" for "already clear".
+    local raw rlrc
+    raw="$(swatter_store_pending_list)"; rlrc=$?
+    if (( rlrc != 0 )); then
+        echo "pending: FAILED to read the queue (rc=${rlrc}) — NOT confirmed empty. Database may be locked or corrupt; see the sqlite warning above. Nothing was inspected or cleared; retry." >&2
+        return 1
+    fi
+    # Command substitution strips trailing NEWLINES but not a trailing RS —
+    # and .mode ascii terminates every row, including the last, with RS. Left
+    # in place, that trailing RS survives the translation below as a trailing
+    # "\n" in $rows, and the <<< here-string appends its own newline on top,
+    # so each read loop iterates one extra time over an empty synthetic row
+    # after the real table (blank ip/action -> a phantom row in `pending`'s
+    # output; harmless to --drain-perms since action never matches "perm").
+    # Strip it before splitting. A genuinely empty queue has no trailing RS
+    # (raw is ""), so this is a no-op on that path.
+    raw="${raw%$'\036'}"
+    # RS (0x1E) terminates rows in .mode ascii; convert to newlines so the
+    # read loops below iterate per row.
+    local rows; rows="${raw//$'\036'/$'\n'}"
+    if [[ -z "$rows" ]]; then echo "pending: queue is empty"; return 0; fi
+    printf '%-18s %-8s %-6s %5s  %s\n' "IP" "PLANE" "ACTION" "ATT" "REASON"
+    # swatter_store_pending_list emits US-delimited fields and RS-terminated
+    # rows (.mode ascii) — NOT tabs. bash treats tab as IFS-whitespace however
+    # IFS is set, so adjacent tabs collapse and shift every later column.
+    local ip plane action ttl folded rep ff attempts audit reason vhost ev
+    while IFS=$'\037' read -r ip plane action ttl folded rep ff attempts audit reason vhost ev; do
+        # swatter_store_pending_list runs via _sql_ascii, whose `.mode ascii`
+        # output bypasses the sqlite3 CLI's own terminal-escape-injection
+        # hardening (see _sql_ascii's comment in lib/store_sqlite.sh) — that
+        # hardening is exactly what stops a control byte in `reason` from
+        # doing something to this tty. reason's write-time cleaning
+        # (swatter_store_pending_set) only strips the delimiter bytes
+        # (TAB/CR/LF/US/RS), not ESC — and reason can carry a CF API error
+        # summary (_cf_err_summary in lib/block_cf.sh), a narrower-trust
+        # string than the rest of the mostly-internal reason vocabulary. This
+        # is the one field here rendered to a human terminal, so sanitize it
+        # here rather than assume it arrived clean.
+        printf '%-18s %-8s %-6s %5s  %s\n' "$ip" "$plane" "$action" "$attempts" "${reason//[[:cntrl:]]/}"
+    done <<< "$rows"
+    (( drain )) || return 0
+    # Mirrors cmd_rollback_ladder's ok/bad accounting for the same reason: a
+    # bulk destructive op must never report success for a row it didn't
+    # actually clear. swatter_store_pending_clear -> _sql logs a warning and
+    # returns nonzero on failure (a locked/busy DB — entirely plausible during
+    # a concurrent */5 retry scan, i.e. exactly when an operator runs this
+    # during an active incident) but does NOT die or propagate on its own, so
+    # the return code MUST be checked per row here or a partial drain would
+    # print as a complete one — an operator would believe the queue is empty
+    # while permanent bans are still queued to land, the exact failure this
+    # command exists to prevent.
+    local n=0 cleared=0 failed=0 held=0
+    while IFS=$'\037' read -r ip plane action ttl folded rep ff attempts audit reason vhost ev; do
+        [[ "$action" == "perm" ]] || continue
+        # Leave a genuine honeypot intent queued: the disarm gate
+        # (_swatter_retry_pending in lib/score.sh) deliberately keeps these
+        # live while the ladder is disarmed — a trap hit is a separate,
+        # always-on protection, not a ladder escalation — so an explicit
+        # drain must not discard what that gate just chose to keep armed.
+        # Match on the `ev` evidence marker, not free text in `reason`: the
+        # default INTEL_PROVIDERS list ships a provider literally named
+        # "projecthoneypot", so a plain ladder perm scored via that feed
+        # renders as "intel=projecthoneypot:..." and a reason substring match
+        # on "honeypot" would wrongly hold/drop that one instead.
+        if [[ "$ev" == *'"honeypot":1'* ]]; then held=$(( held + 1 )); continue; fi
+        n=$(( n + 1 ))
+        (( dry )) && continue
+        if swatter_store_pending_clear "$ip" "$plane"; then
+            cleared=$(( cleared + 1 ))
+        else
+            failed=$(( failed + 1 ))
+            echo "PARTIAL ${ip}/${plane}: clear failed; still queued" >&2
+        fi
+    done <<< "$rows"
+    local heldmsg=""
+    (( held > 0 )) && heldmsg=" (${held} honeypot intent(s) held, not drained — still fires while disarmed)"
+    if (( dry )); then
+        echo "pending: would clear ${n} queued perm intent(s) (--dry-run)${heldmsg}"
+        return 0
+    fi
+    if (( failed > 0 )); then
+        echo "pending: cleared ${cleared} of ${n} queued perm intent(s) — ${failed} FAILED (database busy?); re-run${heldmsg}"
+        return 1
+    fi
+    echo "pending: cleared ${cleared} queued perm intent(s)${heldmsg}"
+}
+
+usage() { sed -n '2,33p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
 
 main() {
     local sub="${1:-}"; shift || true
@@ -648,6 +773,7 @@ main() {
         swarm)         cmd_swarm "$@" ;;
         escalate-preview) cmd_escalate_preview "$@" ;;
         rollback-ladder)  cmd_rollback_ladder "$@" ;;
+        pending)       cmd_pending "$@" ;;
         version|--version|-v) echo "swatter ${SWATTER_VERSION}" ;;
         ""|help|-h|--help) usage ;;
         *) echo "swatter: unknown command '${sub}' (try: swatter help)" >&2; exit 2 ;;

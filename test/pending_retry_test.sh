@@ -149,7 +149,7 @@ check M-cap-bumped2        "$bumped" "2"
 # --- J. flatfile mode: pending helpers no-op cleanly (no error, no rows) ------
 ( STORE=flatfile
   swatter_store_pending_set 1.2.3.4 VIA_CF temp 3600 r x.com 80 80 '{}' temp
-  check J-flatfile-list-empty "$(swatter_store_pending_list | wc -l | tr -d ' ')" "0"
+  check J-flatfile-list-empty "$(swatter_store_pending_list | tr -d '\036\037\n ' | grep -c . || true)" "0"
 )
 
 echo "----------------------------------------"

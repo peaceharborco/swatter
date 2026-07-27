@@ -134,6 +134,60 @@ vcheck perm-day-zero      'PERM_RATE_ALERT_PER_DAY=0'       PERM_RATE_ALERT_PER_
 vcheck perm-day-huge      'PERM_RATE_ALERT_PER_DAY=100000'  PERM_RATE_ALERT_PER_DAY "15"
 vcheck perm-day-padded    'PERM_RATE_ALERT_PER_DAY="030"'   PERM_RATE_ALERT_PER_DAY "30"
 vcheck perm-day-valid     'PERM_RATE_ALERT_PER_DAY=40'      PERM_RATE_ALERT_PER_DAY "40"
+# --- silent-arithmetic knobs: SCORE_TEMP, MAX_BLOCKS_PER_RUN, WINDOW_SECONDS,
+# MIN_REQS ---------------------------------------------------------------
+# Same footgun class as the escalation/tripwire knobs above: these interpolate
+# into `(( ))` unguarded elsewhere in the tool. Empty degrades silently,
+# non-numeric can exit the shell mid-scan under `set -u`, and a zero-padded
+# value like "020" is parsed as OCTAL (16, not 20).
+
+# Direct unit test of the shared helper, isolated from any call site: proves
+# it actually assigns through to the CALLER's variable (not a local copy) and
+# that a leading-zero numeral normalizes to canonical decimal rather than
+# being left as an octal-parsed value or the raw string.
+TEST_KNOB="unset-me"; unset TEST_KNOB
+_swatter_validate_int TEST_KNOB 42 1 100
+check helper-sets-callers-var-unset "${TEST_KNOB}" "42"
+TEST_KNOB="020"
+_swatter_validate_int TEST_KNOB 42 1 100
+check helper-normalizes-padded-decimal "${TEST_KNOB}" "20"
+TEST_KNOB="abc"
+_swatter_validate_int TEST_KNOB 42 1 100
+check helper-rejects-non-numeric "${TEST_KNOB}" "42"
+
+# Built-in shipped defaults (config/swatter.example.conf is the source of
+# truth) — the validator's own fallback must reproduce these exactly, or an
+# operator's invalid value silently swaps in a DIFFERENT default than the one
+# Swatter ships with.
+check score-temp-default     "${SCORE_TEMP}" "70"
+check max-blocks-default     "${MAX_BLOCKS_PER_RUN}" "25"
+check window-seconds-default "${WINDOW_SECONDS}" "600"
+check min-reqs-default       "${MIN_REQS}" "15"
+
+vcheck score-temp-empty   'SCORE_TEMP=""'    SCORE_TEMP "70"
+vcheck score-temp-alpha   'SCORE_TEMP="abc"' SCORE_TEMP "70"
+vcheck score-temp-huge    'SCORE_TEMP=999'   SCORE_TEMP "70"
+vcheck score-temp-padded  'SCORE_TEMP="020"' SCORE_TEMP "20"
+vcheck score-temp-valid   'SCORE_TEMP=55'    SCORE_TEMP "55"
+
+vcheck max-blocks-empty   'MAX_BLOCKS_PER_RUN=""'        MAX_BLOCKS_PER_RUN "25"
+vcheck max-blocks-alpha   'MAX_BLOCKS_PER_RUN="abc"'     MAX_BLOCKS_PER_RUN "25"
+vcheck max-blocks-huge    'MAX_BLOCKS_PER_RUN=99999999'  MAX_BLOCKS_PER_RUN "25"
+vcheck max-blocks-padded  'MAX_BLOCKS_PER_RUN="020"'     MAX_BLOCKS_PER_RUN "20"
+vcheck max-blocks-valid   'MAX_BLOCKS_PER_RUN=40'        MAX_BLOCKS_PER_RUN "40"
+
+vcheck window-secs-empty  'WINDOW_SECONDS=""'      WINDOW_SECONDS "600"
+vcheck window-secs-alpha  'WINDOW_SECONDS="abc"'   WINDOW_SECONDS "600"
+vcheck window-secs-huge   'WINDOW_SECONDS=999999'  WINDOW_SECONDS "600"
+vcheck window-secs-padded 'WINDOW_SECONDS="0300"'  WINDOW_SECONDS "300"
+vcheck window-secs-valid  'WINDOW_SECONDS=120'     WINDOW_SECONDS "120"
+
+vcheck min-reqs-empty     'MIN_REQS=""'         MIN_REQS "15"
+vcheck min-reqs-alpha     'MIN_REQS="abc"'      MIN_REQS "15"
+vcheck min-reqs-huge      'MIN_REQS=99999999'   MIN_REQS "15"
+vcheck min-reqs-padded    'MIN_REQS="020"'      MIN_REQS "20"
+vcheck min-reqs-valid     'MIN_REQS=10'         MIN_REQS "10"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

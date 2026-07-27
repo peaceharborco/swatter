@@ -35,46 +35,75 @@ Redundancy note: Swatter's own nightly report and `/server-logs` already surface
 block / error / origin-lock counts, so #1 is mainly for putting the numbers on
 the NetData dashboard specifically.
 
-## Recidivism escalation: the cds1 window widening (open 2026-07-24)
+## Recidivism escalation: v2.11.0 deploy, then the cds1 window widening (open 2026-07-27)
 
-The code shipped on `main` (see `docs/superpowers/specs/2026-07-24-recidivism-escalation-design.md`
-§6 for the full rollout). **`REPEAT_WINDOW_DAYS` is still 7 everywhere** — 30 is a
-cds1-only conf change, and it has not been made. These steps are ordered; do not
-reorder them.
+**This is not "just widen to 30."** A release must ship and deploy first —
+cds1 is running v2.10.0, which lacks the `REPEAT_ENABLE` abort lever, the
+unblock watermark, the perm-gate residue fix, and the queued-perm gating that
+makes the abort lever actually stop in-flight perms. Widening the window on
+v2.10.0 would triple ban volume on the *least* safe version of the ladder that
+exists. See `docs/superpowers/specs/2026-07-27-v2.11.0-release-and-cds1-deploy-design-v2.md`
+for the full design; the work is staged across four gates, summarized here.
+**`REPEAT_WINDOW_DAYS` is still 7 everywhere** — 30 is a cds1-only conf change
+made at gate D, and it has not been made.
 
-- [ ] **Re-baseline any triage notes taken from `swatter top` before 2026-07-27.**
-      Its `OFFN`/`TEMP`/`PERM` columns used to include report-mode activity, and
-      cds1 ran report mode before enforce (2026-06-12), so pre-fix numbers on
-      that box are inflated by detections that were never enforced. Same class of
-      hazard as the pre-2026-07-24 `escalate-preview` lists: the old output looks
-      perfectly plausible. `top` is not the formal gate here — `escalate-preview`
+- [ ] **Gate A — build and release v2.11.0.** Local only. Grok review before
+      the tag, mandatory for the residue fix and the queued-perm gating. Ends
+      at a published `v2.11.0` (`make release V=2.11.0`).
+- [ ] **Gate B — capture the baseline, then deploy to cds1.** Record
+      `swatter version`, the enforced perm count, a sample of perm reasons,
+      and the live state of `SWARM_PUBLISH`/`ABUSEIPDB_REPORT` before touching
+      the box. Deploy under a maintenance hold (pause cron, install,
+      `test-config`, one manual scan, re-enable). **Freeze publication here,
+      not at the widen** — set `SWARM_PUBLISH=false` and
+      `ABUSEIPDB_REPORT=false` before re-enabling cron, since perms flow from
+      the deploy onward, not from the widen. Set a provisional
+      `PERM_RATE_ALERT_PER_DAY` with headroom over cds1's known spike of 16
+      (the shipped default of 15 would guarantee a false abort). The ladder
+      stays ON throughout — this is not a no-op deploy, it changes ban
+      arithmetic in the safer direction (watermark + residue fix).
+- [ ] **Gate C — soak ~7 days, no config changes.** This is what brings the
+      CRITICAL-single bar alive: it's inert until every in-window temp carries
+      the `rule=` stamp, which pre-deploy temps lack. The soak also produces
+      the tripwire's real numbers — record the per-day/per-run perm ceiling
+      from the ledger and set `PERM_RATE_ALERT_PER_DAY`/`_PER_RUN` from that,
+      not a guess.
+- [ ] **Gate D — preview at 30, review, then widen.** In order: populate
+      `monitoring.cidr` (still empty on cds1 — see below); run
+      `swatter escalate-preview --window 30` fresh (never review a saved
+      list); human-review every candidate (ASN, PTR, customer mapping, plane;
+      anything resembling NAT/CGNAT, mobile carrier, VPN exit, crawler, or
+      customer gets allowlisted first); confirm the gate B freeze is still
+      active (nothing to change here); set `REPEAT_WINDOW_DAYS=30`; watch the
+      first 48h to establish gate D's own rate baseline (abort is judged
+      against *that*, not the gate C band, because gate C measured a 7-day
+      window and gate D triples it — comparing against gate C's band
+      guarantees either a false abort or a silently blind one). After 14
+      clean days post-widen, review what accumulated during the freeze before
+      restoring `SWARM_PUBLISH`/`ABUSEIPDB_REPORT` — restoring publishes the
+      *entire* backlog at once (`swatter_swarm_publish` defers, it does not
+      suppress), so the review is the point, not a formality.
+
+Two items carried over as cds1-specific preconditions, still open:
+
+- [ ] **Re-baseline any triage notes taken from `swatter top` before
+      2026-07-27.** Its `OFFN`/`TEMP`/`PERM` columns used to include
+      report-mode activity, and cds1 ran report mode before enforce
+      (2026-06-12), so pre-fix numbers on that box are inflated by detections
+      that were never enforced. `top` is not the formal gate — `escalate-preview`
       is — but the README and digest both train operators to triage from it.
-      Also note `TEMP` is a LIFETIME enforced count and is deliberately NOT the
-      ladder's number (which is windowed and resets at `unblock`); read
-      `escalate-preview` for "how close is this IP to a perm."
-- [ ] **Populate `monitoring.cidr` on cds1 — this is a precondition, not a nicety.**
-      It is currently empty of real ranges, and `allow.cidr` holds 4 entries of
-      which 3 are documented customer false positives (2026-06-10: a Fatbeam site
-      owner, a Comcast residential owner, a T-Mobile mobile user). Add real
-      monitoring, payment/webhook, and customer office ranges first.
-- [ ] **Run `swatter escalate-preview --window 30 > /root/escalate-30d.tsv`.**
-      Read-only; safe while the `*/5` scan runs. Note the pre-fix version of this
-      command under-reported by one offense, so any list captured before
-      2026-07-24 is wrong and must be regenerated.
-- [ ] **Human-review the candidates** — ASN, PTR, customer mapping, DIRECT vs CF
-      plane. Anything resembling NAT/CGNAT, a mobile carrier, a VPN exit, a
-      crawler, or a customer goes into the allowlist *before* the flip. Expect
-      ~67 net-new (53 scoring ≥90) on the ledger as of 2026-07-24.
-- [ ] **Set `SWARM_PUBLISH=false` on cds1 for 14 days** (operator decision,
-      2026-07-24). The hub has host-wide purge only and a 7-day TTL, so a false
-      ladder-perm cannot be retracted per-IP once published.
-- [ ] **Set `REPEAT_WINDOW_DAYS=30` in `/etc/swatter/swatter.conf`.** cds1 only.
-- [ ] Watch the perm-rate tripwire for 48h (thresholds 5/run, 15/day against an
-      expected ~1-2/day net-new), then the first nightly digest.
-- [ ] After 14 clean days, restore `SWARM_PUBLISH=true`.
+      `TEMP` is a LIFETIME enforced count, not the ladder's windowed number;
+      read `escalate-preview` for "how close is this IP to a perm."
+- [ ] **`monitoring.cidr` is empty on cds1 — this is a gate D precondition,
+      not a nicety.** `allow.cidr` holds 4 entries of which 3 are documented
+      customer false positives (2026-06-10: a Fatbeam site owner, a Comcast
+      residential owner, a T-Mobile mobile user). Add real monitoring,
+      payment/webhook, and customer office ranges before the gate D preview.
 
 Rollback at any point is `swatter rollback-ladder --since <ts>` — **never** a
-config revert, which does not undo bans already placed.
+config revert, which does not undo bans already placed. `REPEAT_ENABLE=false`
+stops new ladder perms but does not stop honeypot or hard-intel perms (see
+README).
 
 ## Validate the remaining silent-arithmetic knobs (open 2026-07-24)
 
