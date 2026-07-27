@@ -72,5 +72,42 @@ rollup 10.0.0.3 0; enforced_perm 10.0.0.3
 check unblocked-falls-through "$(gate 10.0.0.3)" "1"
 check unblocked-no-ban        "$(applied)"       "0"
 
+# --- Fail-closed guard on the helper's OWN error path ---
+#
+# The three cases above all assume swatter_store_has_enforced_perm's query
+# SUCCEEDS and returns a real count. That's not the only way offenders.perm=1
+# can meet a ghost: the ledger query itself can fail outright (missing
+# 'actions' table, corrupt db, lock timeout) — and _sqlq returns empty stdout
+# on any such failure. A naive `[[ "$n" != "0" ]]` reads that empty string as
+# "yes, evidence found", silently reopening the exact ghost-ban bug this file
+# exists to close. These two cases assert what happens when the query can't
+# run at all, not just when it runs and returns zero.
+
+# Missing 'actions' table: offenders.perm=1 survives (its own table is
+# untouched by the DROP), but the ledger query the gate depends on cannot
+# run. Must fall through, not backfill.
+rollup 10.0.0.4 1
+sqlite3 "$db" "DROP TABLE actions;"
+check missing-table-falls-through "$(gate 10.0.0.4)" "1"
+check missing-table-no-ban        "$(applied)"       "0"
+# Restore the schema before anything else runs against this db.
+# CREATE TABLE IF NOT EXISTS is idempotent — leaves the offenders rows
+# already seeded (including 10.0.0.1-3 above) untouched.
+swatter_store_init >/dev/null 2>&1
+
+# Absent db file entirely (e.g. a rename/lock window). Exercises the
+# helper's OTHER guard (`[[ -e "$(_swatter_db)" ]] || return 1`) — a
+# different line than the missing-table case above. Tested directly against
+# the helper rather than through the full gate: swatter_store_is_perm (the
+# other half of the gate's conjunct) ALSO queries this same absent db and
+# happens to fail closed on its own, so driving this through the gate would
+# only prove is_perm's guard works, not has_enforced_perm's — the two would
+# be indistinguishable from the gate's return code alone.
+rollup 10.0.0.5 1
+mv "$db" "${db}.hidden"
+absent_db_rc="$(swatter_store_has_enforced_perm 10.0.0.5; echo $?)"
+mv "${db}.hidden" "$db"
+check absent-db-fails-closed "$absent_db_rc" "1"
+
 echo "Total: ${PASS} passed, ${FAIL} failed"
 [[ "$FAIL" -eq 0 ]]
