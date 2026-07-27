@@ -5,6 +5,11 @@
 #   ./install.sh local            install on THIS machine (run as root)
 #   ./install.sh remote <sshdest> push to a remote host over ssh+scp
 #
+# Flags (either mode, any position):
+#   --no-cron   skip writing /etc/cron.d/swatter{,-report} — leaves whatever
+#               cron state the operator already has (e.g. a maintenance hold)
+#               undisturbed. Re-enable manually once test-config is green.
+#
 # Layout installed:
 #   /usr/local/bin/swatter                 (CLI, 0755)
 #   /usr/local/lib/swatter/*.sh            (libs incl. providers/, score.awk)
@@ -14,7 +19,7 @@
 #   /etc/swatter/hosting-asns.txt          (0644; not overwritten on upgrade)
 #   /etc/swatter/hosting-asns.txt.example  (0644; latest curated list to diff)
 #   /etc/swatter/honeypot.paths.example    (0644; live honeypot.paths is never overwritten)
-#   /etc/cron.d/swatter                    (0644)
+#   /etc/cron.d/swatter                    (0644; skipped with --no-cron)
 #   /etc/logrotate.d/swatter               (0644)
 #   /var/lib/swatter, /var/log/swatter     (0750)
 #
@@ -204,6 +209,14 @@ _swatter_report_cron_from_conf() {
     _swatter_report_cron_file "${rcron:-0 4}" "$rtz"
 }
 
+# Pure predicate — no filesystem, no root — so tests can drive the real
+# decision logic behind --no-cron instead of grepping the source text.
+# Defaults to enabled: only "0" (set by --no-cron in main()) turns it off.
+# Fail-open on != "0" (not a strict == "1") so a stray/unexpected value in the
+# env (SWATTER_INSTALL_CRON=true, a typo, anything but exactly "0") still
+# installs cron rather than silently skipping it on a normal upgrade.
+_swatter_cron_should_install() { [[ "${SWATTER_INSTALL_CRON:-1}" != "0" ]]; }
+
 _install_local() {
     [[ "$(id -u)" -eq 0 ]] || { echo "install local must run as root" >&2; exit 1; }
 
@@ -231,10 +244,21 @@ _install_local() {
 
     install -d -m 0750 /var/lib/swatter /var/log/swatter
     # Shared cron: scan + feed refresh (system timezone). The report is NOT here —
-    # it lives in its own file so its CRON_TZ doesn't shift these jobs.
-    install -m 0644 "${SRC}/install/swatter.cron" /etc/cron.d/swatter
-    _swatter_report_cron_from_conf /etc/swatter/swatter.conf > /etc/cron.d/swatter-report
-    chmod 0644 /etc/cron.d/swatter-report
+    # it lives in its own file so its CRON_TZ doesn't shift these jobs. Cron is
+    # installed LAST-ish and can be suppressed with --no-cron: without this an
+    # upgrade silently re-arms the */5 scan in the middle of a maintenance hold,
+    # and does so BEFORE test-config runs below — undoing the operator's pause
+    # while brand-new code is still unverified. --no-cron leaves whatever cron
+    # state the operator set; enable it yourself once test-config is green.
+    if _swatter_cron_should_install; then
+        install -m 0644 "${SRC}/install/swatter.cron" /etc/cron.d/swatter
+        _swatter_report_cron_from_conf /etc/swatter/swatter.conf > /etc/cron.d/swatter-report
+        chmod 0644 /etc/cron.d/swatter-report
+    else
+        echo "skipping cron install (--no-cron): neither /etc/cron.d/swatter nor"
+        echo "  /etc/cron.d/swatter-report were written. Re-run 'install.sh local'"
+        echo "  (without --no-cron) once test-config is green to install both."
+    fi
     install -m 0644 "${SRC}"/install/swatter.logrotate /etc/logrotate.d/swatter
 
     echo "fetching Cloudflare ranges + intel feeds ..."
@@ -281,6 +305,19 @@ _install_local() {
     echo "======================================================================"
 }
 
+# Pure — no ssh, no filesystem — so tests can drive the real remote command
+# line directly. SWATTER_INSTALL_CRON is set/exported in THIS process by
+# main(), but that export dies at the ssh boundary: the remote shell never
+# inherits it. Without forwarding the flag onto the remote command line,
+# `--no-cron remote <dest>` would parse cleanly and still re-arm cron on the
+# target — silently defeating the flag on exactly the path it exists for
+# (pushing a hold-respecting deploy to a remote host).
+_remote_install_cmd() {
+    local cmd="bash /tmp/swatter-src/install/install.sh local"
+    [[ "${SWATTER_INSTALL_CRON:-1}" == "0" ]] && cmd+=" --no-cron"
+    echo "$cmd"
+}
+
 _install_remote() {
     local dest="$1"
     [[ -n "$dest" ]] || { echo "usage: install.sh remote <ssh-destination>" >&2; exit 1; }
@@ -303,15 +340,34 @@ _install_remote() {
         exit 1
     fi
     echo "running local install on ${dest} ..."
-    ssh "$dest" 'bash /tmp/swatter-src/install/install.sh local'
+    ssh "$dest" "$(_remote_install_cmd)"
     ssh "$dest" 'rm -rf /tmp/swatter-src'
 }
 
 main() {
+    local args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --no-cron) SWATTER_INSTALL_CRON=0; export SWATTER_INSTALL_CRON; shift ;;
+            *) args+=("$1"); shift ;;
+        esac
+    done
+    # Rebuild "$@" from the leftover positionals. NOT `set -- "${args[@]}"`
+    # unguarded: under set -u, bash < 4.4 (RHEL 7's 4.2, macOS's stock
+    # /bin/bash 3.2) raises "unbound variable" expanding an EMPTY array with
+    # "${arr[@]}" — verified live on both 3.2.57 and 5.3.15. A tempting fix is
+    # `"${args[@]:-}"`, but that's a sharp edge of its own: for an empty array
+    # the ":-" default substitutes ONE empty-string word, not zero words, so
+    # $#=1 and $1="" rather than truly unset — it happens to still reach
+    # usage below only because the case matches on "${1:-}" (which treats
+    # unset and "" alike), and would silently misbehave the moment anything
+    # here relied on $# instead. The size check below sidesteps both bugs:
+    # genuinely zero args when the array is empty, on every bash tested.
+    if (( ${#args[@]} )); then set -- "${args[@]}"; else set --; fi
     case "${1:-}" in
         local)  _install_local ;;
         remote) _install_remote "${2:-}" ;;
-        *) echo "usage: install.sh {local | remote <ssh-destination>}" >&2; exit 2 ;;
+        *) echo "usage: install.sh {local | remote <ssh-destination>} [--no-cron]" >&2; exit 2 ;;
     esac
 }
 (( SWATTER_INSTALL_SOURCE_ONLY )) || main "$@"
