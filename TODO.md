@@ -105,9 +105,41 @@ config revert, which does not undo bans already placed. `REPEAT_ENABLE=false`
 stops new ladder perms but does not stop honeypot or hard-intel perms (see
 README).
 
-## Validate the remaining silent-arithmetic knobs (open 2026-07-24)
+## v2.11.0 deferred minors — carried from the SDD review (open 2026-07-27)
 
-- [ ] The escalation knobs (`REPEAT_N`, `REPEAT_WINDOW_DAYS`,
+Recorded here because the per-task ledger they lived in is deleted once merged,
+and the final whole-branch review triaged each as safe to defer, not as
+resolved. None blocks the release; all were verified real.
+
+- [ ] **Coverage debt: `pending_disarm_test` seeds one row per case.** Multi-row
+      splitting is the behaviour the US/RS delimiter change most affects, and it
+      is only manually verified (twice — by a task reviewer and by the final
+      reviewer, both correct). Add a mixed multi-row case.
+- [ ] **Coverage debt: the hard-intel dual-plane leg is uncovered** in
+      `perm_gate_residue_test.sh` — the test drives the gate with `rep=0`, so
+      `hard=0` and `_swatter_maybe_dual_plane` never fires.
+- [ ] **`absent-db-also-fails-closed-redundant-with-missing-table` is a passenger
+      assertion.** sqlite3 auto-creates the DB file, so that path is caught by the
+      same check as the missing-table case. Already renamed to say so; delete or
+      replace it with a case that can actually fail.
+- [ ] **`swatter_store_record` is not transactional.** A partial write can leave
+      `offenders.perm=1` with no `actions` row. Fail-safe (falls through to the
+      ladder rather than banning), which is why it was deferred.
+
+**Accepted as designed, not defects — do not "fix" without re-reading why:**
+
+- While the ladder is disarmed, hard-intel dual-plane and plane-upgrade *retries*
+  are held too, which is broader than "off gates ladder conversion only". Erring
+  toward not banning is deliberate; reliably distinguishing them would need the
+  substring matching that already produced one bypass (`projecthoneypot` matching
+  a `*honeypot*` allowlist).
+- Held rows also skip coverage and never-block cleanup while disarmed.
+
+Both are documented in `docs/RUNBOOK.md` §2/§3.
+
+## Validate the remaining silent-arithmetic knobs (DONE in v2.11.0)
+
+- [x] SHIPPED 2026-07-27. The escalation knobs (`REPEAT_N`, `REPEAT_WINDOW_DAYS`,
       `REPEAT_N_CRITICAL_SINGLE`) and the tripwire knobs
       (`PERM_RATE_ALERT_PER_RUN`, `PERM_RATE_ALERT_PER_DAY`) are now validated at
       the end of `swatter_load_config`. The same hazard remains on `SCORE_TEMP`,

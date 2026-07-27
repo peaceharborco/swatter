@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.11.0] - 2026-07-27
+
+### Added
+- **`REPEAT_ENABLE` — an abort lever for the recidivism ladder.** The temp→
+  permanent escalation has shipped since v1.0.0 and runs on every enforce host,
+  so this defaults to `true`: an upgrade must not silently disable a protection
+  operators already rely on, and `install.sh` preserves an existing conf without
+  injecting the key. Anything not exactly `"true"` disarms, which is the safe
+  direction for a lever whose job is to stop banning. Disarming does **not** stop
+  honeypot or hard-intel perms, and does not lift bans already placed — see
+  `docs/RUNBOOK.md`.
+- **`swatter pending [--drain-perms] [--dry-run]`** — inspect or drain the
+  durable retry queue. Disarming the ladder *holds* queued permanent bans rather
+  than clearing them (pausing must not destroy intent); this is what clears them.
+  Reports partial failures honestly and exits non-zero rather than claiming a
+  drain that did not happen.
+- **`install.sh --no-cron`** — the installer rewrote `/etc/cron.d/swatter` with a
+  live `*/5` schedule *before* running `test-config`, so an operator who paused
+  cron to deploy safely had it re-armed for them, mid-install, against unverified
+  code. The flag is forwarded across the ssh boundary for `remote` installs.
+- **`docs/RUNBOOK.md`** — the operator abort card: what disarming does and does
+  not stop, how to drain the queue, what `rollback-ladder` cannot undo, and which
+  publications cannot be recalled.
+- **`swatter test-config` reports the effective control state** — ladder
+  armed/disarmed, the ladder knobs, the tripwire floor, and both publication
+  settings, expanded exactly as the gates that read them do.
+
+### Fixed
+- **Disarming the ladder no longer leaves queued permanent bans in flight.**
+  `_swatter_retry_pending` runs first in every scan and replayed a stored intent
+  with no ladder re-check, so a ladder perm whose firewall call failed could land
+  up to 24h after an operator disarmed. The obvious filter — skip rows whose
+  reason contains `recidivism=` — would have missed every row queued by the
+  *deployed* version, which predates that stamp; the gate allowlists a provably
+  non-ladder origin instead.
+- **The legacy perm backfill now requires enforced evidence.**
+  `_swatter_perm_gate` backfilled a real permanent ban from the `offenders.perm`
+  rollup flag alone. That flag carries non-retroactive residue — a dry-run perm
+  set it before the counters were dry-run-guarded — so on a host that ran report
+  mode before enforce, an IP only ever *observed* was permanently banned on
+  sight, bypassing the ladder, the CRITICAL-single bar, and recidivism
+  accounting. The check fails closed: a DB error yields no evidence, not
+  presumed evidence.
+- **`swatter_store_pending_list` no longer loses fields to tab collapsing.** bash
+  treats tab as IFS-whitespace however `IFS` is set, so a row with an empty
+  `top_vhost` shifted every later column — including the evidence field the new
+  disarm gate reads. Now US/RS delimited via `.mode ascii`, because a plain
+  `char(31)` does not survive the sqlite3 CLI's control-byte re-encoding.
+- **`SCORE_TEMP`, `MAX_BLOCKS_PER_RUN`, `WINDOW_SECONDS` and `MIN_REQS` are
+  validated.** They interpolate into bash arithmetic, where empty degrades
+  silently, non-numeric can exit the shell mid-scan under `set -u`, and a
+  zero-padded value parses as octal. Closes the last of a documented hazard class.
+
+### Changed
+- The perm-rate tripwire's defaults are documented as a **placeholder requiring
+  per-host calibration**, not a tuned value. They are an alert floor, never an
+  abort threshold: raising them to quiet a noisy alarm raises the bar a real wave
+  must clear, and the nightly digest is not a fallback (it grades blocks GREEN by
+  design). The stale "~1-2/day steady state" note is gone.
+
 ### Added
 - **Recidivism ladder: preview and rollback.** New `swatter escalate-preview
   [--window N]` (read-only, ledger-only, sqlite store) answers "who would
