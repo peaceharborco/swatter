@@ -480,7 +480,14 @@ decision reason and `evidence.recidivism` in the stored evidence, alongside
 digest reports how many of a window's perms came from the ladder, and a
 tripwire (`PERM_RATE_ALERT_PER_RUN`, default 5; `PERM_RATE_ALERT_PER_DAY`,
 default 15) fires an alert on the same run that crosses it, pointing at the
-preview/rollback commands below.
+preview/rollback commands below. **The shipped defaults are a placeholder,
+not a calibration** — perm volume is a property of the traffic a given host
+receives, so a threshold below this host's normal spike produces an alarm
+nobody trusts. Measure this host's real perm rate from the ledger (`actions`
+in `swatter.db`, which does not rotate — see
+[`docs/RUNBOOK.md`](docs/RUNBOOK.md) section 8 for the exact query) and set
+both knobs above the observed ceiling before relying on the tripwire during
+an incident.
 
 `REPEAT_ENABLE` (default `true`) is the ladder's abort lever: set it to
 `false` and the next scan (config is read once per process, so a scan already
@@ -488,11 +495,16 @@ running finishes under the old setting) stops converting temps into new
 permanent bans. **It does not stop everything that permanently bans an IP.**
 Honeypot instant-perms, the hard-intel dual-plane leg, and a plane-upgrade
 perm (an IP already perm on one plane that reappears on the other) are
-independent of the ladder and keep firing while the switch is off — none of
-them carry `recidivism=` in the reason, so `swatter why <ip>` tells a ladder
-perm apart from these. See [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for the full
-3am incident procedure: disarm, confirm, and — if bans already went out —
-drain and roll back.
+independent of the ladder and keep firing while the switch is off — a
+honeypot or plane-upgrade perm never carries `recidivism=` in the reason, so
+`swatter why <ip>` tells those apart from a ladder perm. **One exception:**
+the hard-intel dual-plane leg reuses its primary leg's reason verbatim
+(prefixed `dual-plane `), so when the primary leg was itself a ladder perm
+that also met `INTEL_HARDBLOCK_MIN`, the dual-plane leg inherits
+`recidivism=` too — read `dual-plane ... recidivism=...` as the second plane
+of a ladder perm, not as evidence the switch failed. See
+[`docs/RUNBOOK.md`](docs/RUNBOOK.md) for the full 3am incident procedure:
+disarm, confirm, and — if bans already went out — drain and roll back.
 
 **Operator gotchas:**
 
@@ -848,6 +860,7 @@ error responses), so even the default tuning won't ban an owner for logging in.
 | `swatter import-bans <file>` | block each listed IP as perm (skips allowlisted / invalid) |
 | `swatter escalate-preview [--window N]` | who would escalate to a perm, or is one offense away, read-only from the ledger (sqlite only) |
 | `swatter rollback-ladder --since <epoch\|iso> [--dry-run]` | bulk-undo permanent bans the recidivism ladder placed |
+| `swatter pending [--drain-perms] [--dry-run]` | inspect, or clear, the durable failed-block retry queue (sqlite only) |
 
 ---
 

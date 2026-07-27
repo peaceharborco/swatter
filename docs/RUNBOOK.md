@@ -32,6 +32,16 @@ but don't assume it's instant if you're mid-incident.
 This stops **new ladder escalations only**. It does not touch bans already
 placed. Go to section 2 before you conclude anything is broken.
 
+**`test-config` also prints a `crit-single=<N>` value in the `ladder knobs`
+line — on a `STORE=flatfile` host, ignore it.** `REPEAT_N_CRITICAL_SINGLE` is
+**INERT** without sqlite (`swatter_store_temps_all_critical_single` needs the
+reason-indexed ledger, which flatfile doesn't have); escalation falls back to
+the plain `REPEAT_N` bar for every offender, including ones whose temps were
+all single CRITICAL probes. `test-config` prints the configured value
+unconditionally regardless of store backend, so a flatfile host reads this as
+a protection it does not actually have — check `swatter test-config`'s
+`sqlite3:` line (or `STORE` in the running config) before relying on it.
+
 ---
 
 ## 2. You will still see permanent bans. That is not a bug.
@@ -49,7 +59,13 @@ With `REPEAT_ENABLE=false`, three sources still place permanent bans:
   tracking.
 
 **How to tell them apart:** a ladder perm's `reason` contains `recidivism=`.
-None of the three sources above ever write that stamp. Run:
+Honeypot and plane-upgrade never write that stamp. **Hard-intel dual-plane is
+the one exception:** it reuses its primary leg's `reason` verbatim, prefixed
+`dual-plane `, so if the primary leg was itself a ladder perm that also met
+`INTEL_HARDBLOCK_MIN`, the dual-plane leg's reason carries `recidivism=` too
+— that reads as "second plane of a ladder perm", not as an independent
+hard-intel action, and it's still driven by the ladder switch's decision on
+the primary leg. Run:
 
 ```
 swatter why <ip>
@@ -85,6 +101,13 @@ swatter pending --drain-perms
 ```
 
 This clears only queued rows with `action=perm`; queued temps are left alone.
+It also leaves a genuine **honeypot** perm intent queued (evidence carries
+`"honeypot":1`) — the same trap hits section 2 says still fire while
+disarmed. The drain agrees with that gate on purpose: honeypot is a separate,
+always-on protection, not a ladder escalation, so an explicit drain doesn't
+undo what the disarm gate just chose to keep armed. `swatter pending` reports
+how many honeypot intents it left in place (`N honeypot intent(s) held, not
+drained`) so this isn't silent.
 
 **Held rows are not preserved indefinitely.** They're still subject to the
 normal age/attempt reap (`PENDING_RETRY_MAX_ATTEMPTS`, default 12;
@@ -98,6 +121,20 @@ explicitly (above) or handle the IPs by hand.
 While disarmed, held rows also skip the coverage check and the never-block/
 invalid-target cleanup that normally run on every retry pass — they're
 parked, untouched, until they're either drained, re-armed into, or reaped.
+
+**Race: a scan can re-queue a perm right after the drain reports success.**
+Unlike `rollback-ladder`, `swatter pending` takes no state lock. A `*/5` scan
+that started just before you ran `--drain-perms` can still be mid-flight when
+the drain finishes and, on a genuine backend failure, queue a fresh pending
+perm for the same IP — landing after the drain already told you the queue
+was clear. Before you re-arm (`REPEAT_ENABLE="true"`), re-run:
+
+```
+swatter pending
+```
+
+and confirm it reports `queue is empty`. If it doesn't, drain again before
+re-arming.
 
 ---
 
@@ -247,10 +284,28 @@ digest too.
 
 If the tripwire is legitimately too sensitive for this host's normal traffic,
 that's a signal to characterize the host's real band, not to blindly raise
-the number:
+the number.
+
+**Measure from the ledger** (`actions` in `swatter.db`), not `swatter status`
+(prints lifetime totals only — no per-day/per-run rate) and not
+`decisions.jsonl` (rotates, so it cannot cover the window you need):
 
 ```
-This host's measured band (fill in from `swatter status` / decisions.jsonl history):
+sqlite3 /var/lib/swatter/swatter.db "SELECT date(ts,'unixepoch'), COUNT(*) FROM actions WHERE action='perm' AND dry_run=0 GROUP BY 1 ORDER BY 1;"
+```
+
+gives the per-day perm count for `PERM_RATE_ALERT_PER_DAY`. For the per-run
+figure, bucket by the `*/5` scan cadence instead:
+
+```
+sqlite3 /var/lib/swatter/swatter.db "SELECT datetime((ts/300)*300,'unixepoch'), COUNT(*) FROM actions WHERE action='perm' AND dry_run=0 GROUP BY 1 ORDER BY 1;"
+```
+
+(adjust `/var/lib/swatter/swatter.db` if `STATE_DIR` differs on this host).
+Take the p95 of each column of counts over the review window and fill in:
+
+```
+This host's measured band:
   perms/run (p95):   ____
   perms/day (p95):   ____
   last reviewed:      ____
