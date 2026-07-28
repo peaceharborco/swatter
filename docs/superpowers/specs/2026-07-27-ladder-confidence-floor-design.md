@@ -1,5 +1,33 @@
 # Design — a confidence floor for the recidivism ladder
 
+> ## ⚠️ WITHDRAWN — the proposal is wrong. Do not implement.
+>
+> Adversarial review on 2026-07-27 (see `…-design-review-grok.md`) returned
+> RETHINK from both passes, and a measurement taken during that review inverts
+> this document's recommendation.
+>
+> **Decomposing the 93 soft candidates by decisive rule: only 3 are in the
+> `request_flood` band.** 46 are `scanner_profile`, 35 are `high_badpath_repeat`.
+> This proposal would exempt 81 genuinely-suspicious IPs to protect 3. It
+> conflated soft *volume* (dominated by flood, because a visitor floods once)
+> with soft *candidates* (dominated by scanners, because those come back).
+>
+> `REPEAT_MIN_SCORE=81` also sits above nearly every decisive floor —
+> `high_badpath_repeat` is 80, `scanner_profile` 78, `error_burst`/`request_flood`
+> 75 — so it exempts the three commonest real attack patterns, becoming an
+> evasion primitive rather than a precision cut. And filtering the count would
+> silently freeze the TTL ladder, since `prior` drives both perm conversion and
+> TTL selection.
+>
+> **What survives:** the false-positive mechanism is real (a WordPress page
+> serving ≥60 assets in a burst deterministically floors at 75), the four
+> allowlisted IPs were correct, and `scanner_profile` false-positives too — that
+> 46-IP cohort is where a real gate D review should look. **Gate D is not blocked
+> on a code change.**
+>
+> Kept rather than deleted so the reasoning error stays on the record.
+
+
 **Written:** 2026-07-27, from evidence gathered during the v2.11.0 gate D
 preview on cds1. **Blocks gate D** (`REPEAT_WINDOW_DAYS` 7 → 30).
 
