@@ -105,6 +105,31 @@ config revert, which does not undo bans already placed. `REPEAT_ENABLE=false`
 stops new ladder perms but does not stop honeypot or hard-intel perms (see
 README).
 
+## BLOCKER for gate D: the ladder has no confidence floor (open 2026-07-27)
+
+**Do not widen `REPEAT_WINDOW_DAYS` to 30 until this is resolved.** The gate D
+preview surfaced 739 candidates, of which **93 never scored above 80**. Four
+sampled from that cohort were all verified legitimate — real people on customer
+WordPress sites, tripping `request_flood` at 72-124 requests because one
+plugin-heavy page load saturates the rate signal. At `REPEAT_N=3`, widening to 30
+days makes **three ordinary visits in a month a never-expiring ban**. The current
+7-day window hides this by accident: temps age out before a third lands.
+
+Design: `docs/superpowers/specs/2026-07-27-ladder-confidence-floor-design.md`
+(proposes `REPEAT_MIN_SCORE`, default 81 — a temp only counts toward escalation
+if it cleared that score; temp-blocking itself is unchanged).
+
+- [ ] Grok-review the design, fold blockers, then implement.
+- [ ] Re-run `escalate-preview --window 30` after and confirm the composition
+      changed as predicted before widening.
+- [ ] Follow-on, separate design: the flood signal counts assets rather than page
+      views (`lib/score.awk`), which is the root cause the floor only bounds.
+
+Allowlisted 2026-07-27 as verified false positives (`unblock` then `allow`, so
+the ladder count reset rather than merely being blocked from firing):
+50.37.64.109 (Ziply), 64.98.24.186 (Ting), 207.5.243.121 (g3min.org owner at
+wp-login), 2600:1702:2aa5:1180:551b:d285:198f:305d (AT&T).
+
 ## v2.11.0 deferred minors — carried from the SDD review (open 2026-07-27)
 
 Recorded here because the per-task ledger they lived in is deleted once merged,
