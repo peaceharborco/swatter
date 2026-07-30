@@ -186,17 +186,52 @@ _errors_validate_noise
 # to the built-in default; to disable the classifier entirely, set
 # ERROR_FATAL_SCANNER_REPEATS=1 (every matching fatal then counts as genuine).
 _ERR_FATAL_SCANNER_DEFAULT='PHP Fatal error: Uncaught Error: (Call to undefined function|Undefined constant)'
+# Veto on top of the classifier: a fatal whose message matches
+# ERROR_FATAL_SCANNER_EXCLUDE can never be scanner-induced, however few times it
+# repeats. The classifier's whole premise is a bot executing a PHP file over
+# HTTP, so a frame naming a local CLI entrypoint (wp-cli.phar, a phar:// path)
+# disproves it outright — that fatal came from tooling run on the box, and
+# filing it as bot noise both hides our own breakage and pads the scanner count.
+# Same failure modes as ERROR_FATAL_SCANNER, and handled the same way: an empty
+# pattern would match every line and veto every classification, so empty or
+# invalid falls back to the built-in default. To disable the veto, set it to
+# '^$' — a fatal signature is never empty, so it can never match.
+#
+# Deliberately NOT a bare 'phar://': the veto's claim is "this ran locally", and
+# only a known local entrypoint proves that. A bot CAN induce a phar:// frame
+# (phar deserialization probes), and that fatal is a security event we want in
+# the genuine count on its own merits, not vetoed in by a path prefix.
+_ERR_FATAL_SCANNER_EXCLUDE_DEFAULT='phar:///usr/local/bin/|/usr/local/bin/wp-cli|wp-cli\.phar'
+
+# Both patterns are validated with grep -E AND with awk, because awk is what
+# actually applies them (`sigof[i] ~ re`). The two dialects disagree: '$^' and
+# '(?i)x' are grep-legal and awk-illegal, and an awk regex syntax error aborts
+# the whole classification, emptying `marked` — the caller then counts every
+# fatal as genuine. That direction is RED-safe, but it silently voids the
+# scanner class, so catch it here at config time instead.
+# The awk probe passes the pattern through ENVIRON, exactly as the classifier
+# does — `-v` would escape-process operator backslashes and validate a different
+# string than the one applied.
+_errors_regex_ok() {
+    local rc=0
+    printf '' | grep -Eq "$1" 2>/dev/null || rc=$?
+    (( rc == 2 )) && return 1
+    SWATTER_RE_CHK="$1" awk 'BEGIN { r = ("x" ~ ENVIRON["SWATTER_RE_CHK"]) }' </dev/null 2>/dev/null
+}
 _errors_validate_fatal_scanner() {
     if [[ -z "${ERROR_FATAL_SCANNER//[[:space:]]/}" ]]; then
         log_warn "errors: ERROR_FATAL_SCANNER is empty; using built-in default (set ERROR_FATAL_SCANNER_REPEATS=1 to disable the classifier)"
         ERROR_FATAL_SCANNER="$_ERR_FATAL_SCANNER_DEFAULT"
-    else
-        local rc=0
-        printf '' | grep -Eq "${ERROR_FATAL_SCANNER}" 2>/dev/null || rc=$?
-        if (( rc == 2 )); then
-            log_warn "errors: ERROR_FATAL_SCANNER is not a valid regex; using built-in default"
-            ERROR_FATAL_SCANNER="$_ERR_FATAL_SCANNER_DEFAULT"
-        fi
+    elif ! _errors_regex_ok "$ERROR_FATAL_SCANNER"; then
+        log_warn "errors: ERROR_FATAL_SCANNER is not a valid regex in both grep -E and awk; using built-in default"
+        ERROR_FATAL_SCANNER="$_ERR_FATAL_SCANNER_DEFAULT"
+    fi
+    if [[ -z "${ERROR_FATAL_SCANNER_EXCLUDE//[[:space:]]/}" ]]; then
+        log_warn "errors: ERROR_FATAL_SCANNER_EXCLUDE is empty; using built-in default (set it to '^\$' to disable the veto)"
+        ERROR_FATAL_SCANNER_EXCLUDE="$_ERR_FATAL_SCANNER_EXCLUDE_DEFAULT"
+    elif ! _errors_regex_ok "$ERROR_FATAL_SCANNER_EXCLUDE"; then
+        log_warn "errors: ERROR_FATAL_SCANNER_EXCLUDE is not a valid regex in both grep -E and awk; using built-in default"
+        ERROR_FATAL_SCANNER_EXCLUDE="$_ERR_FATAL_SCANNER_EXCLUDE_DEFAULT"
     fi
     # 0 and 1 both disable the classifier (no signature count is < them), which
     # is the RED-safe direction — never clamp them upward.
@@ -248,13 +283,15 @@ swatter_errors_section() {
     local fatal_genuine="" fatal_scanner=""
     if (( ERR_FATAL > 0 )); then
         local marked
-        marked="$(printf '%s\n' "$fatal" | SWATTER_FS_RE="${ERROR_FATAL_SCANNER}" \
+        marked="$(printf '%s\n' "$fatal" \
+            | SWATTER_FS_RE="${ERROR_FATAL_SCANNER}" \
+              SWATTER_FS_EX="${ERROR_FATAL_SCANNER_EXCLUDE}" \
             awk -v reps="${ERROR_FATAL_SCANNER_REPEATS}" '
                 { sig=$0; sub(/^\[[0-9-]+ [0-9:]+\] /,"",sig)
                   line[NR]=$0; sigof[NR]=sig; cnt[sig]++ }
-                END { re=ENVIRON["SWATTER_FS_RE"]
+                END { re=ENVIRON["SWATTER_FS_RE"]; ex=ENVIRON["SWATTER_FS_EX"]
                       for (i=1;i<=NR;i++)
-                          print ((sigof[i] ~ re && cnt[sigof[i]] < reps) ? "S" : "G") "\t" line[i] }')"
+                          print ((sigof[i] ~ re && cnt[sigof[i]] < reps && sigof[i] !~ ex) ? "S" : "G") "\t" line[i] }')"
         if [[ -z "$marked" ]]; then
             log_warn "errors: fatal classification failed; counting all fatals as genuine"
             fatal_genuine="$fatal"

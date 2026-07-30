@@ -305,6 +305,13 @@ ERROR_NOISE="prefetch request body failed|error reading status line from remote 
 ERROR_FATAL_SCANNER='PHP Fatal error: Uncaught Error: (Call to undefined function|Undefined constant)'
 ERROR_FATAL_SCANNER_REPEATS=3
 
+# Veto: a fatal matching this can never be classified scanner-induced, however
+# few times it repeats. The classifier assumes a bot executing a PHP file over
+# HTTP, so a known local CLI entrypoint disproves it — that is our own tooling
+# breaking, and it belongs in the genuine count where we see it. Set to '^$' to
+# disable the veto. Patterns are validated against grep -E AND awk.
+ERROR_FATAL_SCANNER_EXCLUDE='phar:///usr/local/bin/|/usr/local/bin/wp-cli|wp-cli\.phar'
+
 # The bad-path table ships with the repo by default; installs relocate it.
 BADPATHS_CONF="${BADPATHS_CONF:-${SWATTER_ROOT_DIR}/config/badpaths.conf}"
 
