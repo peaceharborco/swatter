@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `ERROR_FATAL_SCANNER_EXCLUDE` — a veto on the scanner-fatal classifier. A fatal
+  matching it is never scanner-induced regardless of repeat count. Motivated by a
+  broken `wp eval` maintenance script whose fatals matched `ERROR_FATAL_SCANNER`,
+  sat under the repeat threshold, and were filed as bot noise across five
+  accounts — hiding our own breakage and padding the scanner count. The default
+  matches known local CLI entrypoints and deliberately *not* a bare `phar://`,
+  since a bot can induce a phar:// frame via deserialization probes and that
+  fatal belongs in the genuine count on its own merits.
+
+### Fixed
+- `ERROR_FATAL_SCANNER` and `ERROR_FATAL_SCANNER_EXCLUDE` are now validated
+  against awk as well as `grep -E`. awk is what applies them and the dialects
+  disagree (`$^` and `(?i)x` are grep-legal, awk syntax errors); an awk regex
+  error aborted the entire classification, emptying the result so every fatal
+  counted as genuine. RED-safe, but it silently voided the scanner class.
+
 ## [2.11.0] - 2026-07-27
 
 ### Added
