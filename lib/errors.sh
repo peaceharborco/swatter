@@ -189,8 +189,8 @@ _ERR_FATAL_SCANNER_DEFAULT='PHP Fatal error: Uncaught Error: (Call to undefined 
 # Veto on top of the classifier: a fatal whose message matches
 # ERROR_FATAL_SCANNER_EXCLUDE can never be scanner-induced, however few times it
 # repeats. The classifier's whole premise is a bot executing a PHP file over
-# HTTP, so a frame naming a local CLI entrypoint (wp-cli.phar, a phar:// path)
-# disproves it outright — that fatal came from tooling run on the box, and
+# HTTP, so a frame naming a known local CLI entrypoint (wp-cli.phar under
+# /usr/local/bin) disproves it outright — that fatal came from tooling on the box, and
 # filing it as bot noise both hides our own breakage and pads the scanner count.
 # Same failure modes as ERROR_FATAL_SCANNER, and handled the same way: an empty
 # pattern would match every line and veto every classification, so empty or
@@ -199,8 +199,19 @@ _ERR_FATAL_SCANNER_DEFAULT='PHP Fatal error: Uncaught Error: (Call to undefined 
 #
 # Deliberately NOT a bare 'phar://': the veto's claim is "this ran locally", and
 # only a known local entrypoint proves that. A bot CAN induce a phar:// frame
-# (phar deserialization probes), and that fatal is a security event we want in
-# the genuine count on its own merits, not vetoed in by a path prefix.
+# (phar deserialization probes), so such a fatal is left to the classifier's own
+# terms rather than pulled out of the scanner class by a path prefix — under the
+# default knobs a one-off lands in the SCANNER count, which is where an
+# unattributed remote fatal belongs. Pinned by `veto-bare-phar` in
+# test/errors_test.sh. (The veto only ever moves fatals toward genuine; it can
+# never hide one.)
+#
+# Fallback direction is deliberate: empty or invalid falls back to the built-in
+# default (an active veto), NOT to '^$'. At apply time an empty pattern is the
+# RED-heaviest outcome — an empty regex matches every line, so `!~ ex` is false
+# for all of them and every fatal counts genuine — while '^$' is the lightest.
+# The shipping default is the middle and the predictable one: a typo'd veto keeps
+# shipping behaviour instead of silently swinging the digest to either extreme.
 _ERR_FATAL_SCANNER_EXCLUDE_DEFAULT='phar:///usr/local/bin/|/usr/local/bin/wp-cli|wp-cli\.phar'
 
 # Both patterns are validated with grep -E AND with awk, because awk is what
@@ -276,10 +287,12 @@ swatter_errors_section() {
     # pids/clients), so identical crashes collapse and real breakage crosses
     # the repeat gate. If classification produces nothing despite fatals being
     # present, count every fatal as genuine — fail toward RED, never green.
-    # (That guard also covers the regex-dialect gap: the pattern is validated
-    # with grep -E but applied by awk, and a grep-legal/awk-illegal pattern
-    # just empties `marked`.) The regex rides in via ENVIRON, not -v, so awk
-    # never escape-processes operator-supplied backslashes.
+    # (Both patterns are now validated against awk as well as grep -E at config
+    # time, so an awk-illegal pattern no longer reaches this point; the guard
+    # stays as defense-in-depth for a runtime override that skipped validation,
+    # which would otherwise just empty `marked`.) The regex rides in via ENVIRON,
+    # not -v, so awk never escape-processes operator-supplied backslashes —
+    # `environ-not-dashv` in test/errors_test.sh pins that. Do not "simplify" it.
     local fatal_genuine="" fatal_scanner=""
     if (( ERR_FATAL > 0 )); then
         local marked

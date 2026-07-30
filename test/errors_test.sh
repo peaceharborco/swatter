@@ -153,6 +153,20 @@ PHARBOT='PHP Fatal error: Uncaught Error: Call to undefined function x() in phar
 _run
 check veto-bare-phar   "$ERR_FATAL_SCANNER" "1"
 
+# the apply path must pass the veto via ENVIRON, never awk's -v. The default
+# contains `wp-cli\.phar`: through ENVIRON the backslash survives and `\.` is a
+# literal dot, but -v escape-processes it to `wp-cli.phar`, where `.` matches ANY
+# character. This signature carries an 'X' where the dot belongs, so it is NOT
+# vetoed under ENVIRON (stays scanner) and WOULD be vetoed — wrongly pushed into
+# the genuine count — under -v. Fails loudly if anyone "simplifies" the plumbing.
+ERROR_FATAL_SCANNER_EXCLUDE="$_ERR_FATAL_SCANNER_EXCLUDE_DEFAULT"
+ERROR_FATAL_SCANNER_REPEATS=3
+ENVBOT='PHP Fatal error: Uncaught Error: Call to undefined function x() in /home/acct/public_html/wp-cliXphar:3'
+{ echo "[${TS}] [FATAL] [php/acct] ${ENVBOT}"; } > "$ERROR_DIGEST_LOG"
+_run
+check environ-not-dashv "$ERR_FATAL_SCANNER" "1"
+check environ-not-genuine "$ERR_FATAL_GENUINE" "0"
+
 # fail-safe: invalid or empty veto falls back to the built-in default, never to
 # "veto everything" (an empty regex matches every line and would void the class)
 ERROR_FATAL_SCANNER_EXCLUDE='(['

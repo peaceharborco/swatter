@@ -31,6 +31,10 @@ check fromname-brackets  "$(case "${REPORT_FROM_NAME}" in 'Swatter ['*']') echo 
 # SMS grade-alert defaults: OFF out of the box, sensible trigger grades + dedup.
 check fatal-scanner-set   "$([[ -n "${ERROR_FATAL_SCANNER}" ]] && echo yes || echo no)" "yes"
 check fatal-scanner-reps  "${ERROR_FATAL_SCANNER_REPEATS}" "3"
+# The veto ships ACTIVE with a path-anchored default. An empty default would
+# match every line and force every fatal genuine; '^$' is the disable recipe.
+check fatal-veto-set      "$([[ -n "${ERROR_FATAL_SCANNER_EXCLUDE}" ]] && echo yes || echo no)" "yes"
+check fatal-veto-default  "${ERROR_FATAL_SCANNER_EXCLUDE}" 'phar:///usr/local/bin/|/usr/local/bin/wp-cli|wp-cli\.phar'
 check alert-sms-off      "${ALERT_SMS_METHOD}" ""
 check alert-sms-grades   "${ALERT_SMS_GRADES}" "RED"
 check alert-sms-dedup    "${ALERT_SMS_DEDUP_HOURS}" "6"

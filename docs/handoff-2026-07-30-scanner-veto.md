@@ -31,9 +31,15 @@ executing a PHP file over HTTP; a known local CLI entrypoint disproves that.
 Default: `phar:///usr/local/bin/|/usr/local/bin/wp-cli|wp-cli\.phar`
 
 Deliberately **not** a bare `phar://` — a bot can induce a phar:// frame via
-deserialization probes, and that fatal is a security event that belongs in the
-genuine count on its own merits, not vetoed in by path prefix. There is a
-regression test for exactly this (`veto-bare-phar`).
+deserialization probes, so that fatal is left to the classifier's own terms
+rather than pulled out of the scanner class by a path prefix. Concretely: under
+default knobs a one-off bot phar:// fatal counts **scanner**, not genuine.
+There is a regression test for exactly this (`veto-bare-phar`).
+
+> An earlier draft of this section — and of the code comments, example conf, and
+> CHANGELOG — claimed such a fatal "belongs in the genuine count on its own
+> merits." That was wrong, and `veto-bare-phar` asserted the opposite all along.
+> Corrected in v2.12.0; see the Grok review's M1.
 
 **Dual-dialect regex validation** (the more interesting fix). Both
 `ERROR_FATAL_SCANNER` and the new veto are now validated against **awk as well as
@@ -66,33 +72,56 @@ Files: `lib/errors.sh`, `lib/common.sh`, `config/swatter.example.conf`,
 
 ## TODO
 
-### 1. Decide release vs. direct deploy — **blocking, this is the only real gate**
+### 1. Release vs. direct deploy — **DECIDED 2026-07-30: tag now, deploy at the gate C window**
 
 cds1 runs 2.11.0 without the veto. `grep -c ERROR_FATAL_SCANNER_EXCLUDE
 /usr/local/lib/swatter/errors.sh` returns 0 on the box.
 
-Two paths, pick one:
+**v2.12.0 is cut** (tag + GitHub/GitLab release). The deploy is deliberately held
+until the ~2026-08-03 gate C window, for three reasons:
 
-- **Cut 2.12.0** via `install/release.sh` — the project's own convention. Note it
-  tags and publishes, which is why it wasn't run unilaterally.
-- **Deploy untagged** via `install/install.sh remote peaceharbor` — faster, but
-  the box then runs code matching no tag.
+- Nothing here is urgent — the wp-eval bug that motivated it is already fixed.
+- cds1 is mid-soak on v2.11.0 until ~08-03. The veto touches only the digest's
+  fatal classifier, so it cannot disturb the `rule=`-stamped ladder data the soak
+  is accumulating — but the operator is going onto the box for the gate C
+  measurement and conf edits anyway. One maintenance window beats two.
+- Item 4's first-digest RED is easier to read correctly during a week the
+  operator is already reading digests closely.
+
+Take the perm-rate measurement FIRST, then deploy — the ledger path is untouched
+by this change, so the ordering is bookkeeping hygiene rather than correctness.
+
+**Untagged deploy was rejected**, and not only on convention: `bin/swatter`'s
+`SWATTER_VERSION` is not touched by `2499882`, so deploying `main` untagged would
+have left cds1 reporting `2.11.0` while running code that is not 2.11.0 —
+indistinguishable from a genuine 2.11.0 box except by grepping `errors.sh`. This
+handoff's own acceptance test ("`swatter version` reflects the intended version")
+was unsatisfiable on that path.
+
+*Deploy command when the window opens:* `install/install.sh remote peaceharbor`
+— note it rewrites `/etc/cron.d/swatter` and re-arms the `*/5` scan unless you
+pass `--no-cron`. It does **not** touch `/etc/swatter/swatter.conf` (`install.sh:238`),
+so `SWARM_PUBLISH=false`, `ABUSEIPDB_REPORT=false`, the provisional perm-rate
+tripwire, and `OPERATOR_IPS` all survive. The ~08-10 publication unfreeze is
+unaffected either way.
 
 *Acceptance:* `swatter version` on cds1 reflects the intended version AND
 `grep -c ERROR_FATAL_SCANNER_EXCLUDE /usr/local/lib/swatter/errors.sh` returns
 non-zero. Then `swatter test-config` green.
 
-### 2. Persist the Grok review output — **housekeeping, do before release**
+### 2. Persist the Grok review output — **DONE 2026-07-30**
 
-The developer-wide convention is to save review findings next to the artifact as
-`*-review-grok.md`. **That was not done for this change** — the review ran and
-returned SHIP, but only the tail of its output was read and the full transcript
-was not captured. Prior releases have one (see
-`docs/superpowers/specs/2026-07-27-v2.11.0-release-and-cds1-deploy-design-review-grok.md`).
+Re-run against `2499882` + `f2838c5` and saved as
+`docs/superpowers/specs/2026-07-30-scanner-fatal-veto-review-grok.md`, with a
+disposition table for every finding. Verdict **SHIP**, no Blockers, four Majors —
+all documentation/comment correctness, folded in before the v2.12.0 cut. Two
+findings were declined with reasons recorded (M2's false-RED surface and M3's
+self-contradictory fallback prescription).
 
-*Acceptance:* either re-run a review pass against `2499882` and save the output,
-or record explicitly that this change shipped on an unpersisted review. Don't
-leave it ambiguous.
+The mechanism was probed and held: the `ENVIRON`-not-`-v` claim is true and now
+has a regression test (`environ-not-dashv`), operator precedence in the combined
+awk condition is correct, and the disable recipe is consistently `'^$'`
+everywhere.
 
 ### 3. Consider whether `/etc/swatter/swatter.conf` on cds1 needs the new key
 

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.12.0] - 2026-07-30
+
 ### Added
 - `ERROR_FATAL_SCANNER_EXCLUDE` — a veto on the scanner-fatal classifier. A fatal
   matching it is never scanner-induced regardless of repeat count. Motivated by a
@@ -14,8 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sat under the repeat threshold, and were filed as bot noise across five
   accounts — hiding our own breakage and padding the scanner count. The default
   matches known local CLI entrypoints and deliberately *not* a bare `phar://`,
-  since a bot can induce a phar:// frame via deserialization probes and that
-  fatal belongs in the genuine count on its own merits.
+  since a bot can induce a phar:// frame via deserialization probes — such a
+  fatal is left to the classifier's own terms (a one-off counts *scanner*)
+  rather than pulled out of the scanner class by a path prefix. The veto only
+  ever moves fatals toward genuine; it can never hide one.
 
 ### Fixed
 - `ERROR_FATAL_SCANNER` and `ERROR_FATAL_SCANNER_EXCLUDE` are now validated
@@ -23,6 +27,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disagree (`$^` and `(?i)x` are grep-legal, awk syntax errors); an awk regex
   error aborted the entire classification, emptying the result so every fatal
   counted as genuine. RED-safe, but it silently voided the scanner class.
+
+### Changed
+- **Operator-facing docs for the veto corrected.** The example conf, code
+  comments and this changelog claimed a bot-induced bare `phar://` fatal "belongs
+  in the genuine count on its own merits". It does not — under default knobs a
+  one-off counts *scanner*, which the `veto-bare-phar` test asserted correctly all
+  along. An operator who deployed on the wrong reading would have expected a RED
+  and an SMS for that shape and not got one. The example conf now also records
+  the veto's known false-RED surface (the `wp-cli\.phar` alternative is an
+  unanchored substring) and why an invalid pattern falls back to the shipping
+  default rather than to `'^$'`. Found by adversarial review — see
+  `docs/superpowers/specs/2026-07-30-scanner-fatal-veto-review-grok.md`.
 
 ## [2.11.0] - 2026-07-27
 
@@ -1142,7 +1158,9 @@ plane-correct blocking (CSF for direct-to-origin, Cloudflare IP Access Rules for
 via-proxy), a hardcoded Cloudflare never-block set, and fail-closed behavior when
 the range list is stale.
 
-[Unreleased]: https://github.com/peaceharborco/swatter/compare/v2.10.0...HEAD
+[Unreleased]: https://github.com/peaceharborco/swatter/compare/v2.12.0...HEAD
+[2.12.0]: https://github.com/peaceharborco/swatter/compare/v2.11.0...v2.12.0
+[2.11.0]: https://github.com/peaceharborco/swatter/compare/v2.10.0...v2.11.0
 [2.10.0]: https://github.com/peaceharborco/swatter/compare/v2.9.5...v2.10.0
 [2.9.5]: https://github.com/peaceharborco/swatter/compare/v2.9.4...v2.9.5
 [2.9.4]: https://github.com/peaceharborco/swatter/compare/v2.9.3...v2.9.4
