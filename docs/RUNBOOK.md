@@ -286,29 +286,139 @@ If the tripwire is legitimately too sensitive for this host's normal traffic,
 that's a signal to characterize the host's real band, not to blindly raise
 the number.
 
+### The two arms do not count the same thing
+
+Measure each arm in **its own units** or the numbers you set will be wrong by
+about 3×. Verified on cds1 2026-08-01: 207 enforced perm rows over 4.7 days
+decompose into **67 primary, 70 `dual-plane`, 70 `plane-upgrade`**.
+
+- **`PERM_RATE_ALERT_PER_RUN`** counts `SWATTER_RUN_PERMS`, which `lib/score.sh`
+  guards with `audit_action == action` — the second plane leg for an IP is
+  deliberately excluded so one IP is not double-counted. **Primary legs only.**
+- **`PERM_RATE_ALERT_PER_DAY`** counts `swatter_store_perm_count_since`
+  (`lib/store_sqlite.sh`), a bare `COUNT(*) ... action='perm' AND dry_run=0`
+  over a **rolling 24h** — not a calendar day, and with **no** such filter.
+  **Every row, including both plane legs.**
+
+Three consequences when reading the per-day number:
+
+1. **The ~3× gap is all second legs, and they are two different mechanisms —
+   don't attribute it to one.** Of the 140 non-primary rows on cds1, **70 are
+   `dual-plane`** and **70 are `plane-upgrade`**.
+   - `dual-plane` is a **one-shot** hard-intel second leg: when an IP's
+     reputation clears `INTEL_HARDBLOCK_MIN`, the other plane is covered at the
+     same time as the first perm. It does not repeat and has nothing to do with
+     Cloudflare TTLs.
+   - `plane-upgrade` is the recurring one, and also the *only* one of the two
+     that re-counts a single IP over time.
+2. `plane-upgrade` re-counts **persistent** offenders, so the per-day figure
+   overstates how many *distinct* IPs were newly banned. A Cloudflare "perm" is a
+   TTL-emulated rule with a real expiry (ladder max, `_swatter_pick_ttl 99` →
+   ~3d by default); `swatter_cf_sweep_expired` deletes the edge rule and
+   `is_perm_on` — which reads `plane_blocks.expires_at`, not sweep success —
+   stops holding. If that IP is then **re-observed scoring over `SCORE_TEMP`**,
+   the perm gate writes a fresh `plane-upgrade` row (`lib/score.sh`,
+   `test/cf_perm_ledger_test.sh` pins this). One durable attacker therefore
+   contributes a new row roughly once per CF TTL for as long as it keeps
+   attacking — on cds1 `plane-upgrade` ran 9-28 rows/day.
+
+   It is **not** a function of the standing perm population: the gate sits
+   inside the scored-IP loop, so an IP that stops sending traffic contributes
+   nothing. Nor is `plane-upgrade` exclusively the CF-refresh case — the same
+   label covers a first-time cross-plane upgrade and a legacy-import backfill.
+
+   Widening `REPEAT_WINDOW_DAYS` does **not** directly manufacture
+   still-attacking-after-TTL IPs. What it directly raises is *primary* perms
+   (more IPs clear the ladder). The second-leg rows follow indirectly, and by an
+   amount this measurement cannot predict — which is the actual reason a widen
+   must re-baseline rather than reuse the prior band.
+3. It is not comparable to the per-run number. "15/run, 120/day" is not an 8:1
+   ratio of the same quantity.
+
+This asymmetry is recorded, not resolved — changing the counting unit would
+invalidate any band measured under the old one, so it is not a mid-soak edit.
+
+### Measuring
+
 **Measure from the ledger** (`actions` in `swatter.db`), not `swatter status`
 (prints lifetime totals only — no per-day/per-run rate) and not
-`decisions.jsonl` (rotates, so it cannot cover the window you need):
+`decisions.jsonl` (rotates, so it cannot cover the window you need).
+
+Per-day, in the arm's real units — **rolling 24h over all rows**. The calendar
+`date()` grouping in earlier revisions of this runbook understates the peak
+(cds1: 51 by calendar day vs 54 rolling):
 
 ```
-sqlite3 /var/lib/swatter/swatter.db "SELECT date(ts,'unixepoch'), COUNT(*) FROM actions WHERE action='perm' AND dry_run=0 GROUP BY 1 ORDER BY 1;"
+sqlite3 /var/lib/swatter/swatter.db "
+WITH r AS (SELECT a.ts, (SELECT COUNT(*) FROM actions b WHERE b.action='perm' AND b.dry_run=0 AND b.ts > a.ts-86400 AND b.ts <= a.ts) c
+           FROM actions a WHERE a.action='perm' AND a.dry_run=0 AND a.ts >= strftime('%s','<soak-start>'))
+SELECT MAX(c) FROM r;"
 ```
 
-gives the per-day perm count for `PERM_RATE_ALERT_PER_DAY`. For the per-run
-figure, bucket by the `*/5` scan cadence instead:
+Per-run, bucketed by the `*/5` scan cadence and **filtered to primary legs** to
+match `SWATTER_RUN_PERMS`:
 
 ```
-sqlite3 /var/lib/swatter/swatter.db "SELECT datetime((ts/300)*300,'unixepoch'), COUNT(*) FROM actions WHERE action='perm' AND dry_run=0 GROUP BY 1 ORDER BY 1;"
+sqlite3 /var/lib/swatter/swatter.db "
+SELECT c, COUNT(*) FROM (
+  SELECT ts/300 b, COUNT(*) c FROM actions
+  WHERE action='perm' AND dry_run=0
+    AND reason NOT LIKE 'dual-plane%' AND reason NOT LIKE 'plane-upgrade%'
+    AND ts >= strftime('%s','<soak-start>')
+  GROUP BY 1) GROUP BY 1 ORDER BY 1;"
 ```
 
-(adjust `/var/lib/swatter/swatter.db` if `STATE_DIR` differs on this host).
-Take the p95 of each column of counts over the review window and fill in:
+(adjust `/var/lib/swatter/swatter.db` if `STATE_DIR` differs on this host.)
+
+**Substitute `<soak-start>` with a real timestamp before running.** sqlite's
+`strftime('%s','<soak-start>')` returns **NULL, not an error**, so `ts >= NULL`
+matches nothing and both queries return a blank line rather than complaining —
+a pasted-verbatim query looks like "zero perms" instead of failing. A blank
+result means you forgot to substitute; it does not mean the host is quiet.
+
+The band statistics quoted below need percentiles, which neither query above
+returns — they give `MAX` and a bucket histogram. For the percentiles:
 
 ```
-This host's measured band:
-  perms/run (p95):   ____
-  perms/day (p95):   ____
-  last reviewed:      ____
+sqlite3 /var/lib/swatter/swatter.db "
+WITH r AS (SELECT a.ts, (SELECT COUNT(*) FROM actions b WHERE b.action='perm' AND b.dry_run=0 AND b.ts > a.ts-86400 AND b.ts <= a.ts) c
+           FROM actions a WHERE a.action='perm' AND a.dry_run=0 AND a.ts >= strftime('%s','<soak-start>')),
+o AS (SELECT c, ROW_NUMBER() OVER (ORDER BY c) rn, COUNT(*) OVER () n FROM r)
+SELECT 'p50='||MAX(CASE WHEN rn<=n*0.50 THEN c END)||' p95='||MAX(CASE WHEN rn<=n*0.95 THEN c END)||' max='||MAX(c) FROM o;"
+```
+
+(Swap the `r` CTE for the primary-leg-filtered per-run bucket query to get the
+per-run percentiles.)
+
+**Set the threshold above the band, not at it — and beware the ratchet.** p95
+characterizes the band; it is not a threshold — by construction 5% of samples
+sit at or above it, so setting p95 alarms constantly and trains you to ignore
+it. Clear the **current regime's** max with modest headroom.
+
+Do **not** make "clear the lifetime max" the standing rule. Lifetime max only
+ever grows, so re-deriving from it after every incident ratchets the tripwire
+permanently upward — which is the procedural form of the thing this section
+opens by forbidding. Two guards:
+
+- **A wave is not a new normal.** If the lifetime max was set by an event you
+  would have wanted alerting on (cds1's 83 came from the June report→enforce
+  ramp — a different operational epoch), exclude it and anchor on the regime you
+  are actually operating in.
+- **Never let a threshold rise to accommodate a peak you'd want to hear about.**
+  Going *down* needs only evidence; going *up* needs a reason the peak was
+  benign.
+
+Sanity-check against the shipped defaults (`lib/common.sh`: 5/run, 15/day). A
+per-host number **looser** than the shipped default should be justified out
+loud or it is probably wrong — the defaults are the tested baseline, not a
+starting bid.
+
+```
+This host's measured band:  cds1
+  perms/run (primary legs):  p95 1   max 2    (lifetime max 4)
+  perms/day (rolling 24h):   p95 51  max 54   (lifetime max 83, June enforce ramp)
+  measured over:             2026-07-27 23:44:45 UTC + 4.7d, v2.11.0/v2.12.0, ~1350 runs
+  last reviewed:             2026-08-01
 ```
 
 ---
