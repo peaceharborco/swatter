@@ -473,7 +473,11 @@ inert and escalation falls back to plain `REPEAT_N` (Swatter logs a warning
 when that happens). It is also inert for the first `REPEAT_WINDOW_DAYS` after
 upgrading on **any** store: temps recorded before the upgrade carry no `rule=`
 in their reason, so they never read as CRITICAL singles and the bar stays at
-`REPEAT_N` until the pre-upgrade history ages out of the window. A
+`REPEAT_N` until the pre-upgrade history ages out of the window. Note the
+direction — "inert" here means the **lower** bar applies, i.e. it fails toward
+*more* banning, not less, for exactly the offenders this gate exists to spare.
+Widening `REPEAT_WINDOW_DAYS` extends that blind period to the new window
+length. A
 ladder perm carries the math that produced it: `recidivism=<n>/<days>d` in the
 decision reason and `evidence.recidivism` in the stored evidence, alongside
 `rule=<decisive_rule>` showing which detector actually fired. The nightly

@@ -38,7 +38,7 @@ the NetData dashboard specifically.
 ## Recidivism escalation: v2.11.0 deploy, then the cds1 window widening (open 2026-07-27)
 
 **This is not "just widen to 30."** A release must ship and deploy first —
-cds1 is running v2.10.0, which lacks the `REPEAT_ENABLE` abort lever, the
+cds1 was running v2.10.0, which lacks the `REPEAT_ENABLE` abort lever, the
 unblock watermark, the perm-gate residue fix, and the queued-perm gating that
 makes the abort lever actually stop in-flight perms. Widening the window on
 v2.10.0 would triple ban volume on the *least* safe version of the ladder that
@@ -47,10 +47,19 @@ for the full design; the work is staged across four gates, summarized here.
 **`REPEAT_WINDOW_DAYS` is still 7 everywhere** — 30 is a cds1-only conf change
 made at gate D, and it has not been made.
 
-- [ ] **Gate A — build and release v2.11.0.** Local only. Grok review before
+**cds1 go-live is pinned to 2026-07-27 23:44:45 UTC** — not merely "07-27". The
+ledger dates it to the second: the last unstamped temp is `22:40:01` and the
+first `rule=`-stamped temp is `23:44:45`, and 23:45 is the only skipped `*/5`
+scan slot that day (the maintenance hold). Every soak window below is measured
+from that instant, not from midnight. cds1 has since taken v2.12.0 (2026-07-30),
+which changes `lib/errors.sh` (the scanner-fatal veto) and `lib/common.sh`
+(config validation) — **not** the scoring or ladder paths, so it does not
+disturb the `rule=`-stamped ladder data the soak accumulates.
+
+- [x] **Gate A — build and release v2.11.0.** Local only. Grok review before
       the tag, mandatory for the residue fix and the queued-perm gating. Ends
       at a published `v2.11.0` (`make release V=2.11.0`).
-- [ ] **Gate B — capture the baseline, then deploy to cds1.** Record
+- [x] **Gate B — capture the baseline, then deploy to cds1.** Record
       `swatter version`, the enforced perm count, a sample of perm reasons,
       and the live state of `SWARM_PUBLISH`/`ABUSEIPDB_REPORT` before touching
       the box. Deploy under a maintenance hold (pause cron, install,
@@ -63,11 +72,46 @@ made at gate D, and it has not been made.
       stays ON throughout — this is not a no-op deploy, it changes ban
       arithmetic in the safer direction (watermark + residue fix).
 - [ ] **Gate C — soak ~7 days, no config changes.** This is what brings the
-      CRITICAL-single bar alive: it's inert until every in-window temp carries
-      the `rule=` stamp, which pre-deploy temps lack. The soak also produces
+      CRITICAL-single bar alive **at `REPEAT_WINDOW_DAYS=7` only** — it's inert
+      until every in-window temp carries the `rule=` stamp, which pre-deploy
+      temps lack, so the 7-day window clears on 2026-08-03 22:40 UTC but a
+      30-day window does not clear until 2026-08-26 (see gate D). The soak also produces
       the tripwire's real numbers — record the per-day/per-run perm ceiling
       from the ledger and set `PERM_RATE_ALERT_PER_DAY`/`_PER_RUN` from that,
       not a guess.
+      - Band measured 2026-08-01 over the first 4.7 days (~1,350 runs, 207 perm
+        rows); see RUNBOOK §8 for the numbers and the queries. The band is flat
+        (per-day rolling-24h p50 43 / p95 51 / max 54), so the remaining days
+        are a formality, but the soak was specified as 7 and the gate stays open
+        until it is.
+      - [ ] **On or after 2026-08-03 23:45 UTC**, re-run the RUNBOOK §8 queries
+            and set `PERM_RATE_ALERT_PER_RUN="5"` / `PERM_RATE_ALERT_PER_DAY="85"`
+            on cds1 (currently the provisional `15`/`120`) — a **3×** tightening
+            per-run and **1.41×** per-day. Both clear this box's lifetime maxima
+            (per-run 4; per-day 83, from the June enforce ramp), so neither would
+            have tripped on any history it has.
+            - Per-run is **5 because that is the shipped default**
+              (`lib/common.sh:79`), and the shipped default already clears the
+              lifetime max of 4. An earlier draft of this line said `8`; that was
+              a straight error — it is *looser* than the default on a host whose
+              observed per-run max is **2**. Do not raise per-run above 5 without
+              a measured reason.
+            - Per-day `85` is the weaker of the two choices and is deliberately
+              conservative. Against the current regime (rolling-24h max 54) it
+              leaves ~31 rows of headroom, much of it `plane-upgrade` re-rows
+              rather than new attackers, and it inherits 83 from a **different
+              operational epoch** (the June report→enforce ramp). A number keyed
+              to the v2.11.0 regime would be nearer 65-70. Revisit at the same
+              time as the re-run.
+            - How to apply: edit `/etc/swatter/swatter.conf`, then
+              `swatter test-config` and confirm the `perm tripwire:` line reports
+              `5/run 85/day`. No cron hold is needed — these knobs only alert and
+              place no bans — but config is read per-process, so the values take
+              effect on the next `*/5` scan, not retroactively. Undo is editing
+              the conf back; nothing to roll back, because nothing was blocked.
+            - "Materially" = per-run max moving above 4, or rolling-24h max above
+              65, in the units RUNBOOK §8 defines. Either means re-derive both
+              numbers rather than pasting these.
 - [ ] **Gate D — preview at 30, review, then widen.** In order: populate
       `monitoring.cidr` (still empty on cds1 — see below); run
       `swatter escalate-preview --window 30` fresh (never review a saved
@@ -75,14 +119,77 @@ made at gate D, and it has not been made.
       anything resembling NAT/CGNAT, mobile carrier, VPN exit, crawler, or
       customer gets allowlisted first); confirm the gate B freeze is still
       active (nothing to change here); set `REPEAT_WINDOW_DAYS=30`; watch the
-      first 48h to establish gate D's own rate baseline (abort is judged
-      against *that*, not the gate C band, because gate C measured a 7-day
-      window and gate D triples it — comparing against gate C's band
+      first 48h to establish gate D's own rate baseline (the decision to back
+      out is judged against *that*, not the gate C band — and it is an
+      **operator** decision: `PERM_RATE_ALERT_*` only notifies, there is no
+      automatic abort, so a tripwire that stays silent is not a green light and
+      ladder perms keep landing every `*/5` scan while you wait. Gate C measured
+      a 7-day window and gate D widens it — measured at **4.9×** the candidate
+      count, not the "triples" figure used loosely elsewhere in this section;
+      comparing against gate C's band
       guarantees either a false abort or a silently blind one). After 14
       clean days post-widen, review what accumulated during the freeze before
       restoring `SWARM_PUBLISH`/`ABUSEIPDB_REPORT` — restoring publishes the
       *entire* backlog at once (`swatter_swarm_publish` defers, it does not
       suppress), so the review is the point, not a formality.
+
+**Gate D has a hard date floor of 2026-08-26 22:40 UTC, discovered 2026-08-01.**
+`REPEAT_N_CRITICAL_SINGLE` does not merely stay inert on unstamped temps — it
+degrades toward *more* banning. `swatter_store_temps_all_critical_single`
+(`lib/store_sqlite.sh`) returns 1 only when `tot > 0 && tot == crit`, and `crit`
+requires `reason LIKE '%critical_badpath%'`; an unstamped temp counts toward
+`tot` and never toward `crit`, so **one** unstamped in-window temp forces
+`allcrit=0` and drops the bar from `REPEAT_N_CRITICAL_SINGLE`(4) back to
+`REPEAT_N`(3) — the same failure the function's own flatfile branch warns about
+out loud. Note this drops the *predicate*, not every candidate's actual bar: an
+IP that was never all-`critical_badpath` was already at `REPEAT_N` and loses
+nothing (see the "unevaluable ≠ lost" arithmetic below). Measured on cds1 at window=30 on 2026-08-01: of **615** candidates
+only **79 (13%)** are fully stamped, **477 (78%)** have zero stamped temps, and
+the bar would fire for **25**. 2,633 unstamped temps are still inside a 30-day
+window; the last one is dated `2026-07-27 22:40:01 UTC`, so a 30-day window is
+not fully stamped until **2026-08-26 22:40 UTC**. Widening before then arms a
+30-day ladder whose single-CRITICAL-probe protection is **unevaluable for 536 of
+615 candidates (87%)**.
+
+Be precise about what that costs, because "unevaluable" is not the same as
+"lost": an IP whose temps were never all-CRITICAL would compute `allcrit=0`
+anyway, stamped or not, so it loses nothing. The harm falls only on IPs that
+*would* have qualified. Among the 79 fully-stamped candidates, 25 (32%) do
+qualify — if that rate carries, on the order of **~170** of the 536 are being
+denied a protection they had earned. That is an extrapolation from a
+13% sample, not a measurement; the honest floor is "unknown, plausibly in the
+hundreds."
+
+**The date is necessary, not sufficient — do not read 2026-08-27 as a green
+light.** Four limits, all verified in code:
+
+1. The bar only raises when **every** in-window temp is `critical_badpath`
+   (`tot == crit`, `lib/store_sqlite.sh`). It does nothing for `scanner_profile`
+   or mixed histories — which is the *majority* of the soft cohort (63 of the
+   stamped candidates decompose to `scanner_profile`, see below). Waiting fixes
+   one niche bar, not ladder safety generally.
+2. **`escalate-preview` does not model `REPEAT_N_CRITICAL_SINGLE` at all** — its
+   own preamble says so. The 615 / 64 / 551 counts are pure `REPEAT_N` math, so
+   the review instrument for gate D cannot show you the effect of this bar
+   either way.
+3. **The stamp is conditional in code**, not automatic:
+   `[[ -n "$drule" ]] && reason="${reason} rule=${drule}"` (`lib/score.sh`). A
+   temp whose evidence carries an empty `decisive_rule` is written unstamped
+   *even post-v2.11.0*, and one such row re-breaks `tot == crit` for that IP for
+   the rest of the window. Measured 2026-08-01: **0 of 664** post-deploy temps
+   were unstamped, so this has not happened on cds1 — but re-run that check at
+   gate D rather than assuming the date alone cleared it.
+4. The other gate D preconditions below (`monitoring.cidr` still empty, the
+   615-row human review, the publication freeze) are unaffected by this date and
+   remain open.
+
+The readiness check is the `critical_badpath` substring specifically, not the
+presence of `rule=` — grepping for "has a `rule=` stamp" is the wrong test.
+
+Also measured the same day, and worth sizing before the review: the candidate
+population at window=30 is **615** (64 at-bar, 551 one-away) against **125** at
+window=7 — 4.9×, not the ~3× "triples" language used throughout this section.
+The human-review step in gate D is therefore a 615-row job, not a 300-row one.
 
 Two items carried over as cds1-specific preconditions, still open:
 
@@ -122,14 +229,79 @@ What is NOT true: that this cohort dominates the ladder candidates. Decomposed b
 decisive rule, the 93 soft candidates are 46 `scanner_profile`, 35
 `high_badpath_repeat`, 5 blended, and only **3** `request_flood`.
 
-- [ ] Before gate D, sample ~20-30 of the 46 `scanner_profile` (score 78)
+- [x] Before gate D, sample ~20-30 of the 46 `scanner_profile` (score 78)
       candidates from the domlogs. One of the four verified false positives was
       in that band, so it is the cohort most likely to hold more. Humans look
       like 2xx + static assets + a browser UA.
-- [ ] Only if that sample shows a real FP rate, design a **rule-based** exclusion
-      (`request_flood` only, never a score threshold) — and design the TTL
-      coupling explicitly: `prior` drives both perm conversion and
-      `_swatter_pick_ttl`, so filtering it freezes the TTL ladder at 1h.
+      **Done 2026-08-01 — audited all 63 (the cohort grew from 46), 0 false
+      positives.** Every figure below is from the **raw domlogs**
+      (`/home/*/logs/*-{Jul,Aug}-2026.gz`), re-derived across all 63 IPs and
+      ~14k requests, not from swatter's own evidence JSON — that JSON folds
+      `sample_ua` to the **first** UA and `sample_paths` to the **first 5**
+      distinct paths (`lib/score.awk`), so it cannot support absolute claims.
+      An earlier draft of this entry asserted two absolutes from the folded
+      evidence and **both were wrong**; the raw numbers are:
+
+      - **43 of 63 sent no User-Agent on any request** (46 sent none on at
+        least one). No browser does this.
+      - **4 of 63 did request static assets** — the earlier draft claimed none
+        did. This is the finding worth keeping, because it falsifies the
+        heuristic in the task line above: *scanners fetch static assets to
+        fingerprint*. `103.83.237.2` pulled
+        `/wp-content/plugins/kirki-test/assets/css/kirki.min.css` (a probe
+        variant — it is testing whether the plugin exists); `27.124.10.134`
+        pulled `Divi/style.css` and `Divi-child/style.css` to fingerprint the
+        theme; `209.99.191.65`'s 84 "assets" are `/src/config.js`,
+        `/api/config.js`, `/admin/site_settings.json` — config exfiltration,
+        matched only because a naive extension test counts `.js`.
+        **"2xx + static assets + a browser UA" is not sufficient to call a
+        human.** Do not reuse it unqualified.
+      - **2 rotate User-Agents heavily** — `103.83.237.2` across 24 distinct
+        UAs, `27.124.10.134` across 18 (Safari 17.11 Mobile → Safari 16.2 →
+        Firefox 122 → Chrome 133/Fedora → Chrome 130/Mac) while enumerating
+        `/wp-content/plugins/*/readme.txt` in three case variants. UA rotation
+        within one source IP is conclusive on its own.
+      - `45.156.129.105` fires ~13 `readme.txt` probes inside one second with a
+        self-referential forged `Referer`, across vhosts.
+      - From the decision evidence (folded, and used only for aggregates, not
+        absolutes): 2xx fraction ≤15% for every IP and 0% for most;
+        `distinct_paths ≈ reqs` throughout. The score band is 80-82 now, not
+        the 78 recorded above.
+
+      Each of the 4 asset-fetchers is independently confirmed a scanner by UA
+      rotation, self-declared scanner UA (`securityresearch/1.0`), or
+      webshell/credential path enumeration — so the 0-FP conclusion survives
+      the correction, but it rests on those signals, **not** on the
+      static-asset test.
+
+      **What this does and does not establish.** It answers the gate D question
+      — "of the IPs the widened ladder is about to perm, how many are humans?" —
+      because the sample IS that population, drawn from a fresh
+      `escalate-preview --window 30`. It is not a general FP rate for
+      `scanner_profile`: an IP that never reached candidate status cannot appear,
+      and — the sharper limit — **an IP already permanently banned cannot appear
+      either**, so a human mis-scored and permed back in June is invisible to
+      this method by construction. The four known `request_flood` FPs are
+      likewise absent because they were allowlisted on 2026-07-27 — note they
+      were `request_flood`, a rule with the *opposite* profile (high 2xx, asset
+      re-fetch, low distinct-path count), so this cohort cannot speak to that FP
+      mode at all. It also cannot speak to temps that accrue between now and
+      gate D, nor to behaviour after the widen changes ban arithmetic.
+      - [ ] **Re-run this audit as part of the gate D preview**, not only on a
+            customer complaint. A customer-report trigger is post-damage by
+            construction: the FP is a live permanent ban on a paying site before
+            anyone looks, and `rollback-ladder` only reverses `recidivism=`-
+            stamped rows after detection. The audit is one script over the fresh
+            preview list — cheap enough that "the last one was clean" is not a
+            reason to skip it.
+- [x] ~~Only if that sample shows a real FP rate, design a **rule-based**
+      exclusion (`request_flood` only, never a score threshold)~~ — **not
+      warranted**, closed unstarted 2026-08-01. The sample above shows no FP
+      rate to exclude, so the premise fails. The `request_flood` FP mode found
+      on 2026-07-27 does not extend to `scanner_profile`. Kept on record because
+      the TTL coupling is the trap if this is ever revisited: `prior` drives both
+      perm conversion and `_swatter_pick_ttl`, so filtering it freezes the TTL
+      ladder at 1h.
 - [ ] Separate, larger question for its own design: the rate signal counts asset
       requests rather than page views (`lib/score.awk:198-202`).
 
