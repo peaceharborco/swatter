@@ -6,6 +6,13 @@ uncommitted**
 on cds1.** Written for a pickup on/after **2026-08-04**, by which point the gate C
 soak has closed and its one deferred action is live.
 
+> **Picked up 2026-08-04.** Items 1+2: full-window re-measure (per-run max 2,
+> rolling-24h max 59) held the gate; tripwire set on cds1 to `5/run 70/day`
+> (70 ratified over the drafted 85 — regime-keyed). Item 4: redacted forward
+> only, see the note in that section. Item 5: the tree had already been
+> committed on 08-01 (`c0447a0`, `b7684f2`). Item 3 (gate D) remains blocked
+> until 2026-08-26 22:40 UTC.
+
 Working tree when this was written:
 
 ```
@@ -156,11 +163,16 @@ review at gate D is a 615-row job.
 `swatter` is **public** (`gh repo view` → `"visibility":"PUBLIC"`). Already
 committed:
 
-- `TODO.md:170-171` — `50.37.64.109` (Ziply), `64.98.24.186` (Ting),
-  `207.5.243.121` "(g3min.org owner at wp-login)", `2600:1702:2aa5:...` (AT&T)
+- `TODO.md` (gate D prep section) — four residential IPs with ISP attribution,
+  one tied to a named customer site
 - `docs/superpowers/specs/2026-07-27-ladder-confidence-floor-design.md:53-55` —
   the same IPs tied to named customer sites, described as "a site owner",
   "Chrome + iPhone"
+
+> **Resolved forward-only 2026-08-04:** both files redacted in place
+> (anonymized FP labels; concrete entries remain in the cds1 allowlist).
+> History untouched — rewrite after publication is irreversible and old
+> commits stay reachable by SHA in GitHub's cache.
 
 Residential IPs joined to identifiable people. Untouched: history rewriting is
 irreversible and outward-facing, and per `~/Developer/CLAUDE.md` a rewrite after

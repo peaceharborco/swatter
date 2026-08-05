@@ -71,7 +71,8 @@ disturb the `rule=`-stamped ladder data the soak accumulates.
       (the shipped default of 15 would guarantee a false abort). The ladder
       stays ON throughout — this is not a no-op deploy, it changes ban
       arithmetic in the safer direction (watermark + residue fix).
-- [ ] **Gate C — soak ~7 days, no config changes.** This is what brings the
+- [x] **Gate C — soak ~7 days, no config changes.** (Closed 2026-08-03 23:45
+      UTC; tripwire set 2026-08-04, see below.) This is what brings the
       CRITICAL-single bar alive **at `REPEAT_WINDOW_DAYS=7` only** — it's inert
       until every in-window temp carries the `rule=` stamp, which pre-deploy
       temps lack, so the 7-day window clears on 2026-08-03 22:40 UTC but a
@@ -84,31 +85,33 @@ disturb the `rule=`-stamped ladder data the soak accumulates.
         (per-day rolling-24h p50 43 / p95 51 / max 54), so the remaining days
         are a formality, but the soak was specified as 7 and the gate stays open
         until it is.
-      - [ ] **On or after 2026-08-03 23:45 UTC**, re-run the RUNBOOK §8 queries
-            and set `PERM_RATE_ALERT_PER_RUN="5"` / `PERM_RATE_ALERT_PER_DAY="85"`
-            on cds1 (currently the provisional `15`/`120`) — a **3×** tightening
-            per-run and **1.41×** per-day. Both clear this box's lifetime maxima
-            (per-run 4; per-day 83, from the June enforce ramp), so neither would
-            have tripped on any history it has.
+      - [x] **Done 2026-08-04.** Re-ran the RUNBOOK §8 queries over the full
+            window (7.9d): per-run p95 1 / max 2, per-day rolling-24h p50 44 /
+            p95 55 / max 59 — both inside the "materially moved" bounds below.
+            Set `PERM_RATE_ALERT_PER_RUN="5"` / `PERM_RATE_ALERT_PER_DAY="70"`
+            on cds1 (was the provisional `15`/`120`); `test-config` confirms
+            `5/run 70/day`. Per-day **70**, not the 85 drafted here: the open
+            decision below was ratified toward the regime-keyed number — 70
+            clears the current regime's max (59) with ~19% headroom and would
+            have alerted on the June ramp, which is the desired behavior. Conf
+            backup on cds1: `swatter.conf.bak-2026-08-04`.
             - Per-run is **5 because that is the shipped default**
               (`lib/common.sh:79`), and the shipped default already clears the
               lifetime max of 4. An earlier draft of this line said `8`; that was
               a straight error — it is *looser* than the default on a host whose
               observed per-run max is **2**. Do not raise per-run above 5 without
               a measured reason.
-            - Per-day `85` is the weaker of the two choices and is deliberately
-              conservative. Against the current regime (rolling-24h max 54) it
-              leaves ~31 rows of headroom, much of it `plane-upgrade` re-rows
-              rather than new attackers, and it inherits 83 from a **different
-              operational epoch** (the June report→enforce ramp). A number keyed
-              to the v2.11.0 regime would be nearer 65-70. Revisit at the same
-              time as the re-run.
-            - How to apply: edit `/etc/swatter/swatter.conf`, then
-              `swatter test-config` and confirm the `perm tripwire:` line reports
-              `5/run 85/day`. No cron hold is needed — these knobs only alert and
-              place no bans — but config is read per-process, so the values take
-              effect on the next `*/5` scan, not retroactively. Undo is editing
-              the conf back; nothing to roll back, because nothing was blocked.
+            - Per-day: the draft's `85` (clear the lifetime max of 83) was
+              **rejected at ratification** in favor of the regime-keyed 70 —
+              85's headroom was mostly `plane-upgrade` re-rows, and the 83 it
+              cleared came from a **different operational epoch** (the June
+              report→enforce ramp), exactly the kind of event the tripwire
+              should catch.
+            - How it was applied: edited `/etc/swatter/swatter.conf`, then
+              `swatter test-config` confirmed the `perm tripwire:` line. No
+              cron hold — these knobs only alert and place no bans; config is
+              read per-process, so the values took effect on the next `*/5`
+              scan. Undo is editing the conf back (or restoring the `.bak`).
             - "Materially" = per-run max moving above 4, or rolling-24h max above
               65, in the units RUNBOOK §8 defines. Either means re-derive both
               numbers rather than pasting these.
@@ -222,8 +225,9 @@ What is true: a WordPress page serving >=60 assets in a burst deterministically
 floors at score 75 with `rule=request_flood` (`lib/score.awk:254`, `rps = n/span`
 over the observed request span). Four such IPs were verified as real visitors on
 customer sites and allowlisted 2026-07-27 (`unblock` then `allow`, so the ladder
-count reset): 50.37.64.109 (Ziply), 64.98.24.186 (Ting), 207.5.243.121
-(g3min.org owner at wp-login), 2600:1702:2aa5:1180:551b:d285:198f:305d (AT&T).
+count reset): three residential-fiber IPv4s and one residential IPv6, one of
+them a customer-site owner at wp-login (specifics redacted 2026-08-04 — public
+repo; the concrete entries live in the cds1 allowlist).
 
 What is NOT true: that this cohort dominates the ladder candidates. Decomposed by
 decisive rule, the 93 soft candidates are 46 `scanner_profile`, 35

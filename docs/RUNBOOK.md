@@ -416,9 +416,11 @@ starting bid.
 ```
 This host's measured band:  cds1
   perms/run (primary legs):  p95 1   max 2    (lifetime max 4)
-  perms/day (rolling 24h):   p95 51  max 54   (lifetime max 83, June enforce ramp)
-  measured over:             2026-07-27 23:44:45 UTC + 4.7d, v2.11.0/v2.12.0, ~1350 runs
-  last reviewed:             2026-08-01
+  perms/day (rolling 24h):   p95 55  max 59   (lifetime max 83, June enforce ramp)
+  measured over:             2026-07-27 23:44:45 UTC + 7.9d, v2.11.0/v2.12.0
+  thresholds set:            5/run (shipped default) · 70/day (regime max 59 + headroom,
+                             ratified 2026-08-04; supersedes the provisional 15/120)
+  last reviewed:             2026-08-04
 ```
 
 ---

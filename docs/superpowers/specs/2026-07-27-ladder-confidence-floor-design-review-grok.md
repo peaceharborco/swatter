@@ -132,7 +132,7 @@ check looks like, and it contradicts the claim.
 - **The four allowlisted IPs were correctly identified and correctly handled**
   (`unblock` then `allow`, so the ladder count reset). `[pass-a] m4` confirms the
   sequence.
-- **`scanner_profile` false-positives too.** One of the four (AT&T, spencermusic.com)
+- **`scanner_profile` false-positives too.** One of the four (`FP-4`, redacted 2026-08-04)
   scored 78, and 46 of the 93 candidates sit in that band. That cohort — not the
   flood band — is where a real review should focus.
 

@@ -50,10 +50,13 @@ sites:**
 
 | IP | Site | Actual activity |
 |---|---|---|
-| `50.37.64.109` (Ziply Fiber) | idahominingapparel.com | Chrome loading ShopEngine / RevSlider / Elementor assets; Outlook autodiscover POSTs |
-| `64.98.24.186` (Ting Fiber) | cornerstone-be-well.com | Chrome + iPhone loading ConvertKit / Divi theme assets |
-| `207.5.243.121` | g3min.org, praysmill.com | A site owner at `/wp-login.php` — `user-profile.js`, `zxcvbn-async.js` |
-| `2600:1702:…` (AT&T) | spencermusic.com | A human clicking `/staff`, `/students`, `/team`, `/ministries` |
+| `FP-1` (residential fiber, IPv4) | customer WordPress site A | Chrome loading ShopEngine / RevSlider / Elementor assets; Outlook autodiscover POSTs |
+| `FP-2` (residential fiber, IPv4) | customer WordPress site B | Chrome + iPhone loading ConvertKit / Divi theme assets |
+| `FP-3` (residential, IPv4) | customer WordPress sites C, D | The site owner at `/wp-login.php` — `user-profile.js`, `zxcvbn-async.js` |
+| `FP-4` (residential, IPv6) | customer WordPress site E | A human clicking `/staff`, `/students`, `/team`, `/ministries` |
+
+*(IPs and customer domains redacted 2026-08-04 — this repo is public. The
+concrete entries live in the cds1 allowlist, added 2026-07-27.)*
 
 All four were allowlisted on 2026-07-27 (`unblock` then `allow`, so the ladder
 count reset rather than merely being prevented from firing).
