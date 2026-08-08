@@ -12,9 +12,9 @@ carries only what remains. Two clocks, two pickups:
 | **1. Publication unfreeze** | **~2026-08-10** (target, not a deadline) | Reviewed flip of `SWARM_PUBLISH` / `ABUSEIPDB_REPORT` |
 | **2. Gate D** | **on/after 2026-08-26 22:40 UTC** (hard floor) | Widen `REPEAT_WINDOW_DAYS` 7 → 30, with preconditions |
 
-Between now and then item 0 below is passive — but **two live perm bans need
-clearing regardless of the flip** (Automattic/Jetpack + the Ahrefs crawler; see
-the backlog sizing in §1). Those are customer-facing today, not 08-10 work.
+Between now and then there is **nothing to do** except item 0 below, which is
+passive. (The backlog was sized 2026-08-08 and the two customer-facing bans it
+surfaced — Automattic/Jetpack + the Ahrefs crawler — are cleared; see §1.)
 
 Anchors that must not drift: cds1 go-live is `2026-07-27 23:44:45 UTC`
 (pinned to the second — do not round); cds1 runs v2.12.0; SSH host alias is
@@ -99,16 +99,20 @@ Pick one row per IP. Separately, in SQLite `a.action="perm"` silently resolves
 to the `offenders.perm` **column** (double quotes = identifier) and returns 0
 rows — use single quotes.
 
-**Two IPs must be cleared before any flip** (both `request_flood`, the rule
-that produced all three verified FPs already in `allow.cidr`):
+**Two IPs had to be cleared before any flip** (both `request_flood`, the rule
+that produced all three verified FPs already in `allow.cidr`) — **both DONE
+2026-08-08 21:46 UTC**, backlog 249 → **247**:
 
-- [ ] `192.0.91.143` — **Automattic, Inc.** (Jetpack / WordPress.com),
+- [x] `192.0.91.143` — **Automattic, Inc.** (Jetpack / WordPress.com),
       abuseipdb confidence **1**. No PTR, so a reverse-DNS sweep misses it;
-      whois catches it. Publishing lists Automattic publicly as an abuser, and
-      the ban plausibly breaks Jetpack on customer WP sites **right now**.
-- [ ] `202.8.43.217` — **Ahrefs crawler** (`sardine985.ahrefs.net`), **no
+      whois catches it. Publishing would have listed Automattic publicly as an
+      abuser, and the ban was live on the **Cloudflare plane** (TTL-emulated
+      perm expiring 2026-08-09 18:25 UTC) — plausibly breaking Jetpack on
+      customer WP sites in the meantime.
+- [x] `202.8.43.217` — **Ahrefs crawler** (`sardine985.ahrefs.net`), **no
       external intel at all**. The "crawler" category gate D says to allowlist
-      first.
+      first. Its CF block had already lapsed, but `offenders.perm=1` kept it in
+      the publish set regardless — an expired block still publishes.
 
 Both are live perm bans, so this is a customer-facing issue independent of
 publication. Unblocking also drops them from the delta at the source
@@ -133,6 +137,12 @@ swatter unblock 202.8.43.217 --perm-allow
 > drops out of the publish delta and *looks* remediated while CSF or CF may
 > still be denying it. Same pattern in `rollback-ladder`. Confirm live on both
 > planes: `swatter list perm`, `swatter list cf`, `csf -g <ip>`.
+>
+> **Verified 2026-08-08** for both IPs: `offenders.perm=0`, `plane_blocks`
+> empty, no `cf-rules.tsv` ref, no `csf.deny` line, both present in
+> `csf.allow` (from `--perm-allow`'s `csf -a`) and in `allow.cidr` with the
+> full note. Delta re-counted at **247**; `pending_blocks WHERE action='perm'`
+> = 0; freeze still `SWARM_PUBLISH=false` / `ABUSEIPDB_REPORT=false`.
 
 The other 5 weak rows are defensible (confidence 76–92, or own `recidivism=3/7d`
 evidence); `136.70.84.163`/`GOOGL-2` is a Google **Cloud customer** VM, not
