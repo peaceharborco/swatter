@@ -177,19 +177,48 @@ _errors_validate_fatal_scanner
 check xempty-fallback  "$ERROR_FATAL_SCANNER_EXCLUDE" "$_ERR_FATAL_SCANNER_EXCLUDE_DEFAULT"
 
 # --- grep/awk dialect gap is caught at config time, not at apply time --------
-# '$^' and '(?i)x' are legal to grep -E and syntax errors to awk. Before dual
-# validation these sailed through and blew up mid-classification, emptying the
-# result and dumping every fatal into genuine. Both patterns, both knobs.
+# '$^' and '(?i)x' are legal to grep -E and rejected by SOME awks. Which ones is
+# a property of the local awk, not of swatter, and it moves with the version:
+# BSD awk (macOS) rejects both, gawk 5.4 rejects '(?i)x' only, gawk 5.2 (CI)
+# accepts both. So do NOT assert "this pattern always falls back" — that
+# hardcodes one dialect and fails everywhere else, which is exactly how this
+# suite came to pass on macOS and fail in CI. Assert instead the invariant that
+# holds in every dialect and is the whole point of validating with awk as well
+# as grep: whatever survives validation is a pattern THIS awk can compile, so
+# classification can never abort mid-run, empty `marked`, and dump every fatal
+# into genuine. Where the dialect gap does exist locally, also pin the fallback
+# target — that is the half that catches a validator which forgot to probe awk,
+# so it bites on BSD awk and gawk >= 5.3 but is vacuous on an awk that accepts
+# both probes. There is no portable pattern that every awk rejects and grep
+# accepts, so that asymmetry is inherent, not an oversight.
+_awk_compiles() {  # 0 = this awk can compile the regex, 1 = it cannot
+  SWATTER_RE_CHK="$1" awk 'BEGIN { r = ("x" ~ ENVIRON["SWATTER_RE_CHK"]) }' </dev/null 2>/dev/null
+}
 for _bad in '$^' '(?i)x'; do
+  _rejected=0; _awk_compiles "$_bad" || _rejected=1
+
   ERROR_FATAL_SCANNER_EXCLUDE="$_bad"
   _errors_validate_fatal_scanner
-  check "xdialect-${_bad}" "$ERROR_FATAL_SCANNER_EXCLUDE" "$_ERR_FATAL_SCANNER_EXCLUDE_DEFAULT"
+  _awk_compiles "$ERROR_FATAL_SCANNER_EXCLUDE" && _r=compiles || _r=uncompilable
+  check "xdialect-${_bad}" "$_r" "compiles"
+  (( _rejected )) && check "xdialect-fallback-${_bad}" \
+    "$ERROR_FATAL_SCANNER_EXCLUDE" "$_ERR_FATAL_SCANNER_EXCLUDE_DEFAULT"
+
   ERROR_FATAL_SCANNER="$_bad"
   _errors_validate_fatal_scanner
-  check "sdialect-${_bad}" "$ERROR_FATAL_SCANNER" "$_ERR_FATAL_SCANNER_DEFAULT"
+  _awk_compiles "$ERROR_FATAL_SCANNER" && _r=compiles || _r=uncompilable
+  check "sdialect-${_bad}" "$_r" "compiles"
+  (( _rejected )) && check "sdialect-fallback-${_bad}" \
+    "$ERROR_FATAL_SCANNER" "$_ERR_FATAL_SCANNER_DEFAULT"
 done
 
-# and after a rejected pattern falls back, classification still actually works
+# and after a rejected pattern falls back, classification still actually works.
+# Reset both knobs explicitly: on an awk that ACCEPTS the probes above they are
+# still set to '(?i)x' here, and this block is about post-fallback behaviour, not
+# about whatever the loop happened to leave behind.
+ERROR_FATAL_SCANNER="$_ERR_FATAL_SCANNER_DEFAULT"
+ERROR_FATAL_SCANNER_EXCLUDE="$_ERR_FATAL_SCANNER_EXCLUDE_DEFAULT"
+_errors_validate_fatal_scanner
 {
   echo "[${TS}] [FATAL] [php/acct] ${CLI1}"
   echo "[${TS}] [FATAL] [php/acct] ${SCAN1}"

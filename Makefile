@@ -7,7 +7,10 @@ test:
 		printf '%-22s ' "$$(basename $$t)"; \
 		out="$$(bash "$$t")"; rc=$$?; \
 		printf '%s\n' "$$out" | tail -1; \
-		[ $$rc -eq 0 ] || fail=1; \
+		if [ $$rc -ne 0 ]; then \
+			printf '%s\n' "$$out" | sed '$$d' | sed 's/^/    | /'; \
+			fail=1; \
+		fi; \
 	done; exit $$fail
 
 # Cut a release. Pass the version or a bump word, plus optional flags:

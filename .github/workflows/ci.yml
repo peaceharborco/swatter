@@ -11,7 +11,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install gawk + shellcheck
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq gawk shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq gawk shellcheck
+          # Print the awk identity: lib/errors.sh validates the fatal-scanner
+          # regexes with the same awk that applies them, and awks disagree about
+          # which patterns are legal — so when this plane misbehaves, the awk
+          # build is the first thing you want in the log.
+          awk --version | head -1
       - name: Shellcheck (error severity)
         run: shellcheck --severity=error bin/swatter lib/*.sh lib/providers/*.sh install/*.sh test/*.sh
       - name: Full test suite
