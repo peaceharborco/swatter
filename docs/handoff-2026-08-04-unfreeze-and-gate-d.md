@@ -12,8 +12,9 @@ carries only what remains. Two clocks, two pickups:
 | **1. Publication unfreeze** | **~2026-08-10** (target, not a deadline) | Reviewed flip of `SWARM_PUBLISH` / `ABUSEIPDB_REPORT` |
 | **2. Gate D** | **on/after 2026-08-26 22:40 UTC** (hard floor) | Widen `REPEAT_WINDOW_DAYS` 7 → 30, with preconditions |
 
-Between now and then there is **nothing to do** except item 0 below, which is
-passive.
+Between now and then item 0 below is passive — but **two live perm bans need
+clearing regardless of the flip** (Automattic/Jetpack + the Ahrefs crawler; see
+the backlog sizing in §1). Those are customer-facing today, not 08-10 work.
 
 Anchors that must not drift: cds1 go-live is `2026-07-27 23:44:45 UTC`
 (pinned to the second — do not round); cds1 runs v2.12.0; SSH host alias is
@@ -47,14 +48,99 @@ alerts, and it was sized to be quiet in this regime.
 Frozen since the gate B deploy: `SWARM_PUBLISH=false`,
 `ABUSEIPDB_REPORT=false`. Last swarm publish `2026-07-27 23:40:07`, none since.
 
-**The trap:** `swatter_swarm_publish` **defers, it does not suppress**.
-Flipping back publishes the **entire backlog since 2026-07-27 at once** — to
-the swarm hub and (for perms, under `ABUSEIPDB_REPORT_MIN_ACTION=perm`) to
-AbuseIPDB. That backlog now includes ~2 weeks of enforced perms from a regime
-that has been reviewed (scanner_profile: 0 FPs in 63) — but review the actual
-outgoing set, not the audit's memory of it.
+**The trap — swarm only:** `swatter_swarm_publish` **defers, it does not
+suppress**. Flipping `SWARM_PUBLISH` publishes the **entire backlog since
+2026-07-27 at once**.
 
-- [ ] Size and eyeball the backlog first: what would go out, how many rows,
+**Correction (2026-08-08, Grok-falsified): the AbuseIPDB arm has NO backlog.**
+`swatter_abuseipdb_report` has exactly one production caller —
+`lib/score.sh:210`, inline at block time during a scan. There is no cursor and
+no ledger replay; the only persistence is a per-IP dedup marker with a 900s
+TTL, which *suppresses* rather than defers. Flipping `ABUSEIPDB_REPORT`
+reports only perms placed **after** the flip.
+
+> **Caveat — one real queue exists.** `_swatter_retry_pending`
+> (`lib/score.sh:377`, called from `swatter_scan` at `:532`) re-drives the
+> durable `pending_blocks` queue through `_swatter_apply_plane`. A queued
+> **primary** perm that succeeds on retry after the flip **will** be reported.
+> That is not a flush of the 249, but it is not nothing.
+> **Pre-flip check (cheap, read-only):**
+> `SELECT COUNT(*) FROM pending_blocks WHERE action='perm';` — verified **0**
+> on 2026-08-08, but the queue can refill before the flip. Re-check on the day.
+
+This inverts where the risk sits:
+
+| arm | on flip | recallable? |
+|---|---|---|
+| `SWARM_PUBLISH` | whole backlog at once | yes — `/purge`, 7-day TTL |
+| `ABUSEIPDB_REPORT` | ~21 IPs/day ongoing | **no** — no delete API |
+
+So "flip swarm first to stage the blast radius" front-loads the *recallable*
+arm's entire payload while the irreversible arm was never going to burst.
+Ordering matters less than making sure the gray-area IPs reach neither.
+
+### Backlog sizing — done 2026-08-08 (read-only)
+
+Publisher's own delta query against live cursor `1785195601`
+(`2026-07-27 23:40:01 UTC`):
+
+- **249 distinct IPs**, spanning `2026-07-27 23:44:45` → 08-08. The oldest is
+  exactly the go-live anchor — no pre-go-live leakage.
+- **0 subsequently unblocked**; **0 overlap** with `allow.cidr` / `OPERATOR_IPS`
+  — the four publish gates drop nothing, all 249 go out.
+- Rule mix (deduped to primary legs): scanner_profile 144, critical_badpath 85,
+  high_badpath_repeat 16, request_flood 2, error_burst 2.
+- **242/249 (97%) carry abuseipdb confidence100 or spamhaus DROP.** Only 7 are
+  weakly corroborated — that is the whole human-review set.
+
+**Dedup gotcha:** dual-plane / plane-upgrade legs share a `ts` with the primary
+leg, so a naive `JOIN ... ON r.ts = MAX(a.ts)` double-counts (369 vs 249).
+Pick one row per IP. Separately, in SQLite `a.action="perm"` silently resolves
+to the `offenders.perm` **column** (double quotes = identifier) and returns 0
+rows — use single quotes.
+
+**Two IPs must be cleared before any flip** (both `request_flood`, the rule
+that produced all three verified FPs already in `allow.cidr`):
+
+- [ ] `192.0.91.143` — **Automattic, Inc.** (Jetpack / WordPress.com),
+      abuseipdb confidence **1**. No PTR, so a reverse-DNS sweep misses it;
+      whois catches it. Publishing lists Automattic publicly as an abuser, and
+      the ban plausibly breaks Jetpack on customer WP sites **right now**.
+- [ ] `202.8.43.217` — **Ahrefs crawler** (`sardine985.ahrefs.net`), **no
+      external intel at all**. The "crawler" category gate D says to allowlist
+      first.
+
+Both are live perm bans, so this is a customer-facing issue independent of
+publication. Unblocking also drops them from the delta at the source
+(`swatter_store_perm_ips_since` requires `offenders.perm=1`), taking the
+backlog to 247. Allowlist first so a `*/5` scan cannot re-ban in the gap, then
+unblock with `--perm-allow` — the whole unblock runs under
+`swatter_with_state_lock` (`bin/swatter:158`), and `--perm-allow` additionally
+issues `csf -a`, which a plain `swatter allow` does **not** (`bin/swatter:171`).
+The inner `cmd_allow` no-ops ("already allowed"), preserving the richer note:
+
+```bash
+swatter allow 192.0.91.143 "Automattic/Jetpack infra - request_flood FP (abuseipdb confidence 1) - verified 2026-08-08"
+swatter unblock 192.0.91.143 --perm-allow
+
+swatter allow 202.8.43.217 "Ahrefs crawler (sardine985.ahrefs.net) - request_flood, no external intel - verified 2026-08-08"
+swatter unblock 202.8.43.217 --perm-allow
+```
+
+> **Verify after — do not trust the exit code alone.** `swatter_store_unblock`
+> runs **unconditionally at `bin/swatter:167`, before** the failure check at
+> `:174`. So a backend that fails still leaves `offenders.perm=0` — the IP
+> drops out of the publish delta and *looks* remediated while CSF or CF may
+> still be denying it. Same pattern in `rollback-ladder`. Confirm live on both
+> planes: `swatter list perm`, `swatter list cf`, `csf -g <ip>`.
+
+The other 5 weak rows are defensible (confidence 76–92, or own `recidivism=3/7d`
+evidence); `136.70.84.163`/`GOOGL-2` is a Google **Cloud customer** VM, not
+Google Fiber residential and not Googlebot. A PTR sweep of all 249 surfaced only
+the Ahrefs box and one EC2 instance (confidence100 + `crit-single` — publish it);
+209 have no PTR at all, itself a scanner signal.
+
+- [x] Size and eyeball the backlog first: what would go out, how many rows,
       any IP you would not stand behind publicly (allowlisted-after-the-fact,
       customer-adjacent, anything from the 08-01 FP audit's gray areas).
 - [ ] Flip in `/etc/swatter/swatter.conf` (config is read per-process; takes
