@@ -190,18 +190,38 @@ Preconditions, in order — none are optional:
       Baseline: 0 FPs in 63 (2026-08-01). This is a checklist item, not a
       "re-sample if a customer complains" trigger.
 - [x] **`monitoring.cidr` — RESOLVED 2026-08-08: correctly empty, nothing to
-      populate.** The premise (uptime monitors / status probes get temp-banned
-      by a 30-day ladder) does not hold on this host — **nothing probes it**:
-      - 0 hits for any known monitor UA (UptimeRobot, Pingdom, StatusCake,
-        Site24x7, BetterUptime, HetrixTools, NodePing, Freshping, Cronitor,
-        GTmetrix, Uptrends, Better Stack, Oh Dear) across current domlogs **and**
-        the 25 most recent rotations.
-      - The only monitoring agent running is **netdata**, bound to
-        **127.0.0.1:19999 / :8125 and [::1]** — agent-push to Netdata Cloud,
-        never an inbound probe, so the ladder can never reach it. `monit`,
-        `monitorix`, `zabbix-agent`, `node_exporter` all inactive.
-      - Origin-lock drops show no periodic low-volume prober; the top sources
-        are 1.2k–2.9k-hit scanners.
+      populate.** Not because nothing probes the host — **foghorn does** — but
+      because nothing that probes it is reachable by the ladder:
+      - **`foghorn` (`peaceharborco/foghorn`, Worker `down-detector`) probes
+        cds1 every minute** — `CHECK_URL=https://cds1.peaceharborhosting.com`,
+        cron `* * * * *`, cache-busted (`?_cb=<epoch_ms>`), ~1,440 origin
+        req/day. Confirmed live in `/etc/apache2/logs/access_log`:
+        `GET /?_cb=… HTTP/2.0" 200` with an **empty UA** (`"-"`) — which is why
+        a monitor-UA scan finds nothing. **It cannot be banned, for two
+        independent reasons:** (1) it lands in the main `access_log`, and
+        swatter ingests only `DOMLOGS_GLOB="/etc/apache2/logs/domlogs/*"` —
+        that log is never read; (2) the requests arrive from **Cloudflare edge
+        IPs** (162.158.163.234, 172.68.87.x, 172.69.40.x, 172.70.142.x), which
+        are never-block via `cloudflare.cidr`.
+      - **netdata** — bound to **127.0.0.1:19999 / :8125 and [::1]**,
+        agent-push to Netdata Cloud (sole outbound: ACLK to 54.198.178.11:443),
+        collectors `apache`/`mysql`/`phpfpm` only, **no `httpcheck`**. Its
+        localhost polling is never-block anyway via `lib/allowlist.sh:243`
+        (`127.*|::1|`RFC1918 → "local/private"); ledger has 0 rows for loopback
+        or `67.225.133.76`. `monit`/`monitorix`/`zabbix-agent`/`node_exporter`
+        inactive.
+      - No third-party monitor: 0 hits for any known monitor UA (UptimeRobot,
+        Pingdom, StatusCake, Site24x7, BetterUptime, HetrixTools, NodePing,
+        Freshping, Cronitor, GTmetrix, Uptrends, Better Stack, Oh Dear) across
+        current domlogs and the 25 most recent rotations. Origin-lock drops
+        show no periodic prober — top sources are 1.2k–2.9k-hit scanners.
+
+      **Conditional re-open — the one thing that would change this:** if
+      foghorn's `CHECK_URL` is ever pointed at a **customer vhost** instead of
+      the server hostname, its probes move into `domlogs/*` and become visible
+      to swatter. 1,440/day cache-busted GETs with an empty UA is a plausible
+      `request_flood` / `scanner_profile` shape. Re-open this item and add
+      foghorn's source range if that URL changes.
 
       **Do NOT pre-populate with well-known monitor ranges "just in case"** —
       every CIDR in this file is a never-block, so adding ranges for services
