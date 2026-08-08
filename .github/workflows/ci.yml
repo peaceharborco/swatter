@@ -9,7 +9,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install gawk + shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq gawk shellcheck
@@ -29,7 +29,7 @@ jobs:
       run:
         working-directory: hub
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 22
