@@ -1,5 +1,74 @@
 # Swatter — TODO / parked items
 
+## ⏭️ NEXT PICKUP: publication unfreeze (~2026-08-10)
+
+Full detail: `docs/handoff-2026-08-04-unfreeze-and-gate-d.md` §1. Nothing else
+is due before then — the perm tripwire (5/run, 70/day) is passive and only
+alerts.
+
+- [ ] **Re-size the backlog on the day — do NOT reuse 247.** It grows ~21
+      IPs/day (249 sized 08-08, minus the 2 cleared below), so expect ~290 by
+      08-10. Query is the publisher's own delta against the live cursor in
+      `/var/lib/swatter/swarm.publish.cursor`:
+      ```sql
+      SELECT a.ip FROM actions a JOIN offenders o ON o.ip = a.ip
+       WHERE o.perm=1 AND a.action='perm' AND a.dry_run=0
+       GROUP BY a.ip HAVING MAX(a.ts) > <cursor>;
+      ```
+      Two SQL traps: dual-plane/plane-upgrade legs **share a `ts`** with the
+      primary leg (a naive `r.ts = MAX(a.ts)` join double-counts — 369 vs 249),
+      and in SQLite `a.action="perm"` resolves to the **`offenders.perm`
+      column**, silently returning 0 rows. Single-quote SQL literals.
+- [ ] **Re-run the corroboration triage, don't reuse the old one.** On 08-08,
+      242/249 (97%) carried abuseipdb confidence100 or spamhaus DROP, leaving a
+      7-row human-review set. New weakly-corroborated rows accrue at the same
+      rate — that shortlist is where the next Automattic hides. Filter:
+      `reason NOT LIKE '%confidence100%' AND reason NOT LIKE '%spamhaus%'`,
+      then whois/PTR each. **whois beats PTR** — Automattic had no PTR at all.
+- [ ] **Check the retry queue before flipping AbuseIPDB:**
+      `SELECT COUNT(*) FROM pending_blocks WHERE action='perm';` (0 on 08-08).
+      `_swatter_retry_pending` (`lib/score.sh:377`, called from `swatter_scan`
+      at `:532`) re-drives queued failed blocks, and a queued **primary** perm
+      succeeding post-flip **will** be reported.
+- [ ] **Flip, then watch the first publish cycle** — cursor advances, hub
+      `/contribute` 200s, no rate-limit storms, AbuseIPDB no 429s.
+
+**Done 2026-08-08 (do not redo):** backlog sized (249 → **247**); the two
+customer-facing FP bans cleared — `192.0.91.143` (Automattic/Jetpack) and
+`202.8.43.217` (Ahrefs crawler), both `allow` + `unblock --perm-allow`,
+verified on both planes; `monitoring.cidr` closed as a gate D precondition;
+`request_flood` characterized (below).
+
+**Verify unblocks on both planes — the exit code is not enough.**
+`swatter_store_unblock` runs at `bin/swatter:167` **before** the failure check
+at `:174`, so a partial backend failure still clears `offenders.perm` — the IP
+drops out of the publish delta and *looks* remediated while CSF or CF may still
+deny it. Same pattern in `rollback-ladder`. Confirm with `swatter list perm`,
+`swatter list cf`, `csf -g <ip>`.
+
+## `request_flood` — tune on its own merits (open 2026-08-08, NOT a gate D blocker)
+
+Source of **all five** known false positives: three residential visitors
+(2026-07-27) plus Automattic and Ahrefs (2026-08-08). Lifetime perm record is
+**0 for 2** — exactly two perm bans ever, both wrong. Temps, last 30d: **72
+distinct IPs, zero with strong external corroboration** (56 no intel, 16 weak),
+against 97% hard-corroborated for the backlog as a whole.
+
+**The gate D amplification worry was checked and dropped — do not re-raise it
+without new data:** request_flood temps do not stack (**71 of 72 IPs have
+exactly 1 temp**, one has 2; none approach `REPEAT_N=3` in either window), and
+of the 90 escalation candidates at 30d, **0 carry a request_flood temp**. Both
+FPs escalated on **cross-rule** `recidivism=3/7d`, so a per-rule temp count is
+the wrong test — recidivism counts every rule's temps together.
+
+Residual cost is ~5 uncorroborated temp bans/day on legitimate-looking traffic:
+customer-visible, self-expiring, occasionally unlucky enough to combine with
+other rules into a perm. Worth tuning; not urgent, and not gate D's problem.
+
+(The 13/90 candidate counts are a rough ledger proxy, **not** `escalate-preview`
+numbers — that tool reports 125/615 under its own logic. Do not treat these as
+contradicting it.)
+
 ## Metrics: wire node_exporter textfile collector into monitoring (parked 2026-07-09)
 
 **Status:** DECIDED 2026-07-09 — **skip (option 3)**. Keeping NetData as the box
@@ -115,8 +184,11 @@ disturb the `rule=`-stamped ladder data the soak accumulates.
             - "Materially" = per-run max moving above 4, or rolling-24h max above
               65, in the units RUNBOOK §8 defines. Either means re-derive both
               numbers rather than pasting these.
-- [ ] **Gate D — preview at 30, review, then widen.** In order: populate
-      `monitoring.cidr` (still empty on cds1 — see below); run
+- [ ] **Gate D — preview at 30, review, then widen.** In order:
+      ~~populate `monitoring.cidr`~~ (**CLOSED 2026-08-08 — correctly empty,
+      do not populate; see below**); re-run the unstamped-temp check and the
+      `scanner_profile` audit **fresh** (both are freshness-sensitive — run
+      them near the 08-26 floor, not early); run
       `swatter escalate-preview --window 30` fresh (never review a saved
       list); human-review every candidate (ASN, PTR, customer mapping, plane;
       anything resembling NAT/CGNAT, mobile carrier, VPN exit, crawler, or
@@ -132,9 +204,15 @@ disturb the `rule=`-stamped ladder data the soak accumulates.
       comparing against gate C's band
       guarantees either a false abort or a silently blind one). After 14
       clean days post-widen, review what accumulated during the freeze before
-      restoring `SWARM_PUBLISH`/`ABUSEIPDB_REPORT` — restoring publishes the
-      *entire* backlog at once (`swatter_swarm_publish` defers, it does not
-      suppress), so the review is the point, not a formality.
+      restoring `SWARM_PUBLISH`/`ABUSEIPDB_REPORT`. **Correction 2026-08-08:
+      only the swarm arm flushes a backlog.** `swatter_swarm_publish` defers
+      rather than suppresses, so `SWARM_PUBLISH=true` publishes the *entire*
+      backlog at once — but `swatter_abuseipdb_report` has one caller
+      (`lib/score.sh:210`, inline at block time), no cursor and no replay, so
+      `ABUSEIPDB_REPORT=true` reports only perms placed **after** the flip
+      (~21/day). Swarm is the big-bang arm and is recallable (`/purge`, 7-day
+      TTL); AbuseIPDB trickles and is **irreversible** (no delete API). Either
+      way the review is the point, not a formality.
 
 **Gate D has a hard date floor of 2026-08-26 22:40 UTC, discovered 2026-08-01.**
 `REPEAT_N_CRITICAL_SINGLE` does not merely stay inert on unstamped temps — it
@@ -204,11 +282,33 @@ Two items carried over as cds1-specific preconditions, still open:
       is — but the README and digest both train operators to triage from it.
       `TEMP` is a LIFETIME enforced count, not the ladder's windowed number;
       read `escalate-preview` for "how close is this IP to a perm."
-- [ ] **`monitoring.cidr` is empty on cds1 — this is a gate D precondition,
-      not a nicety.** `allow.cidr` holds 4 entries of which 3 are documented
-      customer false positives (2026-06-10: a Fatbeam site owner, a Comcast
-      residential owner, a T-Mobile mobile user). Add real monitoring,
-      payment/webhook, and customer office ranges before the gate D preview.
+- [x] **`monitoring.cidr` — CLOSED 2026-08-08. Correctly empty; do NOT
+      populate it.** The precondition assumed monitors would be temp-banned by
+      a 30-day ladder. Nothing that probes cds1 is ban-reachable:
+      - **`foghorn` (Worker `down-detector`) probes cds1 every minute** —
+        `CHECK_URL=https://cds1.peaceharborhosting.com`, cron `* * * * *`,
+        cache-busted `?_cb=`, ~1,440 req/day, **empty UA** (so monitor-UA scans
+        miss it entirely). Unbannable twice over: it logs to
+        `/etc/apache2/logs/access_log` while swatter ingests only
+        `DOMLOGS_GLOB=/etc/apache2/logs/domlogs/*`, and it arrives from
+        Cloudflare edge IPs (never-block via `cloudflare.cidr`).
+      - **netdata** is localhost-bound (`127.0.0.1:19999/:8125`, `[::1]`),
+        agent-push only, no `httpcheck` collector; `127.*`/`::1`/RFC1918 are
+        never-block via `lib/allowlist.sh:243`. 0 ledger rows for loopback or
+        `67.225.133.76`.
+      - No third-party monitor UA in current domlogs or 25 rotations.
+
+      **Never pre-populate with well-known monitor ranges** — every CIDR here
+      is a never-block, so ranges for services you do not use are free passes
+      for anyone on them. **Re-open only if** foghorn's `CHECK_URL` is pointed
+      at a customer vhost (that moves its probes into `domlogs/*`, where
+      1,440/day cache-busted GETs with an empty UA is a plausible
+      `request_flood` shape).
+
+      Note the original framing still holds for `allow.cidr`, which now holds
+      **8** entries — the 4 from 2026-06-10/07-27 plus 4 more: three
+      `request_flood` FPs (2026-07-27) and one `scanner_profile` FP, then
+      Automattic + Ahrefs on 2026-08-08.
 
 Rollback at any point is `swatter rollback-ladder --since <ts>` — **never** a
 config revert, which does not undo bans already placed. `REPEAT_ENABLE=false`
