@@ -1,5 +1,6 @@
-// Pool 0.13.x exports cloudflareTest AND readD1Migrations from the package
-// root (the ./config subpath was removed with the Vitest-4 rewrite).
+// Pool 0.13.x through 0.20.x export cloudflareTest AND readD1Migrations from
+// the package root (the ./config subpath was removed with the Vitest-4
+// rewrite). Verified unchanged across the 0.13 -> 0.20 bump.
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 import path from "node:path";
