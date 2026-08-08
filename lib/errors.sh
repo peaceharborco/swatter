@@ -215,11 +215,18 @@ _ERR_FATAL_SCANNER_DEFAULT='PHP Fatal error: Uncaught Error: (Call to undefined 
 _ERR_FATAL_SCANNER_EXCLUDE_DEFAULT='phar:///usr/local/bin/|/usr/local/bin/wp-cli|wp-cli\.phar'
 
 # Both patterns are validated with grep -E AND with awk, because awk is what
-# actually applies them (`sigof[i] ~ re`). The two dialects disagree: '$^' and
-# '(?i)x' are grep-legal and awk-illegal, and an awk regex syntax error aborts
-# the whole classification, emptying `marked` — the caller then counts every
-# fatal as genuine. That direction is RED-safe, but it silently voids the
-# scanner class, so catch it here at config time instead.
+# actually applies them (`sigof[i] ~ re`). The two dialects disagree: patterns
+# like '$^' and '(?i)x' are grep-legal yet rejected by some awks, and an awk
+# regex syntax error aborts the whole classification, emptying `marked` — the
+# caller then counts every fatal as genuine. That direction is RED-safe, but it
+# silently voids the scanner class, so catch it here at config time instead.
+# Which patterns fall in that gap is a property of the local awk — not a fixed
+# list, and not even stable across versions of one awk: BSD awk (macOS) rejects
+# both of those, gawk 5.4 rejects '(?i)x' but accepts '$^', and gawk 5.2 (what
+# CI runs) accepts both. That is fine — the probe below runs the SAME awk that
+# will apply the pattern, so it is correct on every host without knowing the
+# dialect. (Do not re-pin a hardcoded "always illegal" list in the tests;
+# test/errors_test.sh asserts the dialect-agnostic invariant instead.)
 # The awk probe passes the pattern through ENVIRON, exactly as the classifier
 # does — `-v` would escape-process operator backslashes and validate a different
 # string than the one applied.
