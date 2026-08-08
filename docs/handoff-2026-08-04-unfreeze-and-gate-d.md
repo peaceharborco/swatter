@@ -189,9 +189,26 @@ Preconditions, in order — none are optional:
       UA only, `sample_paths` first 5 — they cannot support absolute claims).
       Baseline: 0 FPs in 63 (2026-08-01). This is a checklist item, not a
       "re-sample if a customer complains" trigger.
-- [ ] **Populate `monitoring.cidr`** — still empty (0 non-comment lines,
-      verified 2026-08-01). Uptime monitors / status probes get temp-banned by
-      a 30-day ladder otherwise.
+- [x] **`monitoring.cidr` — RESOLVED 2026-08-08: correctly empty, nothing to
+      populate.** The premise (uptime monitors / status probes get temp-banned
+      by a 30-day ladder) does not hold on this host — **nothing probes it**:
+      - 0 hits for any known monitor UA (UptimeRobot, Pingdom, StatusCake,
+        Site24x7, BetterUptime, HetrixTools, NodePing, Freshping, Cronitor,
+        GTmetrix, Uptrends, Better Stack, Oh Dear) across current domlogs **and**
+        the 25 most recent rotations.
+      - The only monitoring agent running is **netdata**, bound to
+        **127.0.0.1:19999 / :8125 and [::1]** — agent-push to Netdata Cloud,
+        never an inbound probe, so the ladder can never reach it. `monit`,
+        `monitorix`, `zabbix-agent`, `node_exporter` all inactive.
+      - Origin-lock drops show no periodic low-volume prober; the top sources
+        are 1.2k–2.9k-hit scanners.
+
+      **Do NOT pre-populate with well-known monitor ranges "just in case"** —
+      every CIDR in this file is a never-block, so adding ranges for services
+      you do not use hands an attacker on one of those IPs a free pass.
+      Re-open this item only if an external monitor is actually adopted.
+      *Residual (operator-only): confirm no external uptime monitor exists that
+      would not appear in this host's logs.*
 - [ ] **Run `swatter escalate-preview --window 30` fresh** (never review a
       saved list) and human-review every candidate — ASN, PTR, customer
       mapping, plane; anything resembling NAT/CGNAT, mobile carrier, VPN exit,
@@ -213,6 +230,35 @@ Preconditions, in order — none are optional:
       which does not undo bans already placed.
 
 ---
+
+## `request_flood` — characterized 2026-08-08 (watch, do not act yet)
+
+Every false positive on record comes from this one rule: the three residential
+visitors allowlisted 2026-07-27, plus Automattic and Ahrefs on 08-08. Its
+lifetime perm record is **0 for 2** — it has driven exactly two perm bans ever,
+and both were wrong. Temp behaviour, last 30d: **72 distinct IPs, none with
+strong external corroboration** (56 no intel at all, 16 weak) — against 97%
+hard-corroborated for the backlog as a whole.
+
+**But it is NOT a gate D amplifier, and that concern was checked and dropped:**
+
+- request_flood temps do not stack — **71 of 72 IPs have exactly 1 temp**, one
+  has 2. None approach `REPEAT_N=3` in either window.
+- Escalation candidates (≥3 temps, any rule): 13 at 7d, 90 at 30d — of which
+  **0 carry a request_flood temp**. Widening the window escalates none of them.
+- Note the two perms escalated on **cross-rule** `recidivism=3/7d`, not on
+  request_flood repetition. A per-rule temp count is the WRONG test here;
+  recidivism counts every rule's temps together.
+
+So the residual cost is not perms, it is ~5 uncorroborated temp bans/day landing
+on legitimate-looking traffic — customer-visible, self-expiring, and only
+occasionally unlucky enough to combine with other rules into a perm. Worth
+tuning on its own merits; **not** a gate D blocker.
+
+(Aside: the 13/90 counts above are a rough proxy over the `actions` ledger and
+are NOT `escalate-preview` numbers — that tool has its own logic and reports
+125/615. Do not treat these as contradicting it; run it fresh per the gate D
+checklist.)
 
 ## Standing decisions (do not relitigate without new facts)
 
