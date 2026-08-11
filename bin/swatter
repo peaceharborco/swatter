@@ -450,7 +450,7 @@ cmd_import_bans() {
     # store would firewall-block without recording — the exact divergence we guard
     # against — so abort before applying any block rather than leave untracked denies.
     swatter_store_init || die "store init failed — aborting import-bans (ledger unusable)"
-    local line ip nb n=0 dry
+    local line ip nb se n=0 dry
     dry="$([[ "${SWATTER_MODE}" == "enforce" ]] && echo 0 || echo 1)"
     local channel="${DIRECT_BACKEND:-csf}"
     # A deliberate operator import is NOT a scan — the per-run deny cap
@@ -465,6 +465,14 @@ cmd_import_bans() {
         [[ -n "$ip" ]] || continue
         swatter_is_valid_ip_or_cidr "$ip" 2>/dev/null || { log_warn "import-bans: skip invalid '${ip}'"; continue; }
         if nb="$(swatter_is_never_block "$ip")"; then log_info "import-bans: skip never-block ${ip} (${nb})"; continue; fi
+        # import-bans writes perms itself and never reaches _swatter_apply_plane,
+        # so the shared-egress veto there cannot see it. Skip rather than
+        # silently downgrade: an operator importing a list should be told the
+        # entry was refused, not quietly given something else.
+        if [[ "${SHARED_EGRESS_ENABLE:-true}" == "true" ]] && se="$(swatter_is_shared_egress "$ip")"; then
+            log_info "import-bans: skip shared-egress ${ip} (${se}) — permanent bans on shared consumer VPN egress are policy-capped"
+            continue
+        fi
         if swatter_block_direct_perm "$ip" "imported ban"; then
             swatter_store_record "$ip" perm "$channel" 0 90 "imported ban" "$dry"
             # Record the per-plane ledger row too (enforced imports only) so a
