@@ -9,15 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Shared consumer-VPN egress policy: permanent bans are capped at a ladder-max
-  temp on known shared egress (Cloudflare WARP ships by default), which also
-  keeps those addresses off the swarm and out of AbuseIPDB. New
-  `swatter shared-egress-audit [--fix]` sweeps perms already on the books.
+  temp on known shared egress (Cloudflare WARP ships by default). A capped perm
+  is never published — not to the swarm (which publishes only from the
+  permanent-ban store) and not to AbuseIPDB, regardless of
+  `ABUSEIPDB_REPORT_MIN_ACTION`. An ordinary first-offense *temp* on such an
+  address is not a capped perm and still follows that setting, which defaults to
+  `perm` (= temps are not reported). New `swatter shared-egress-audit [--fix]`
+  sweeps perms already on the books; `swatter test-config` reports whether the
+  policy has usable data.
+- `swatter_scan_shared_caps` metric + a scan-complete count, so an over-broad
+  CIDR line that mass-caps perms is visible per run and not only per IP.
 
 ### Changed
 - **`SHARED_EGRESS_ENABLE` defaults to `true`**, so upgrading changes behavior
   without opt-in: existing permanent bans are untouched, but new ones can no
   longer be placed on the shipped WARP range. Set it to `false` to keep the old
-  behavior. `import-bans` now skips shared-egress addresses.
+  behavior. `import-bans` now skips shared-egress addresses, and **refuses any
+  CIDR token that overlaps one** (`104.28.0.0/16` and `104.28.0.0/24` alike) —
+  matching is by overlap, not host-address containment.
+
+### Upgrade notes
+- **Two config files are load-bearing and are not created by copying code.**
+  `/etc/swatter/shared-egress.cidr` and `/etc/swatter/shared-egress-asns.txt`
+  are installed from `config/` by `install/install.sh` (never overwritten if
+  present). If you deploy by copying individual files, copy these too: without
+  the `.cidr` file the policy is enabled and caps **nothing**, silently. The
+  shipped ASN list is intentionally entry-free. Verify with
+  `swatter test-config`; `swatter shared-egress-audit` now exits non-zero rather
+  than reporting a false all-clear when neither arm has usable data.
+- The cap is forward-only. An address with a pre-existing `offenders.perm=1` and
+  no live per-plane row stays flagged (and swarm-publishable) even after the cap
+  downgrades its next block to a temp — `shared-egress-audit --fix` is what
+  clears it. Run it, and confirm a clean result, before unfreezing publication.
+  See RUNBOOK "Shared consumer-VPN egress".
 
 ## [2.12.0] - 2026-07-30
 

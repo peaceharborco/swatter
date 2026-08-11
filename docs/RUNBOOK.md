@@ -455,10 +455,18 @@ this document will no longer exist on that host until you upgrade again.
 Some addresses are used by many unrelated people at once — Cloudflare WARP
 (`104.28.0.0/16`, the 1.1.1.1 app) and consumer VPN exits. Offenses from them
 are real, but the *identifier* is not the offender, so swatter caps them at a
-ladder-maximum temp (72h) and never a permanent ban. That also keeps them off
-the swarm, which publishes only from the permanent-ban store, and out of
-AbuseIPDB, which excludes shared-egress explicitly regardless of the report
-threshold configured.
+ladder-maximum temp (72h) and never a permanent ban. A **capped perm** is
+therefore never published: the swarm publishes only from the permanent-ban
+store, and the AbuseIPDB report is skipped explicitly for a capped IP, whatever
+`ABUSEIPDB_REPORT_MIN_ACTION` is set to.
+
+**That exclusion covers capped perms, not every block on these ranges.** An
+ordinary first-offense *temp* is not a capped perm: the shared-egress lookup
+runs only on the perm branch, deliberately, so that a DNS lookup never lands on
+the temp path. A plain temp therefore follows `ABUSEIPDB_REPORT_MIN_ACTION` like
+any other temp. The default is `perm`, under which no temp is ever reported —
+but set it to `temp` and a first-offense temp on a WARP address **will** be
+reported to AbuseIPDB.
 
 **This is not an allowlist.** The IP is still blocked, repeatedly, for as long
 as it misbehaves. Do **not** add these ranges to `allow.cidr` or
@@ -472,15 +480,49 @@ hand anyone a bypass by switching on a free consumer VPN.
 - Disable entirely: `SHARED_EGRESS_ENABLE="false"` (takes effect next scan;
   does not re-ban anything already capped)
 
+**Two config files are load-bearing, and a file-by-file deploy does not create
+them.** The policy ships enabled but is entirely data-driven:
+
+| File | Effect if absent |
+|---|---|
+| `/etc/swatter/shared-egress.cidr` | CIDR arm inert — **WARP is not capped at all** |
+| `/etc/swatter/shared-egress-asns.txt` | ASN arm inert (this is the shipped default: the file ships with documentation and no entries) |
+
+`install/install.sh` creates both from `config/`, without overwriting an
+existing one. A surgical deploy that copies only `bin/swatter` and `lib/*.sh`
+leaves the policy enabled and capping nothing, silently. Copy both files too, or
+run the installer. Verify with `swatter test-config`, which prints the state of
+each (`cidr: … (1 range(s))` vs `MISSING — deploy it; CIDR arm INERT`);
+`swatter shared-egress-audit` refuses to run and exits non-zero when neither arm
+is usable, rather than printing an all-clear it cannot back up.
+
 **Adding entries.** Prefer a precise CIDR over an ASN — an ASN caps everything
 that AS originates. Any line broader than `/16` (v4) or `/32` (v6) is rejected
 and disables the whole CIDR file, because a wide entry would silently stop all
-permanent banning. Check `swatter test-config` after editing.
+permanent banning. Check `swatter test-config` after editing. Entries are
+matched by **overlap**, not containment, so an import or block target that is
+itself a prefix (`104.28.0.0/16`) is refused exactly like a member address is.
 
 **Residual risk, accepted knowingly.** Permanent bans are impossible on these
 ranges, so a patient attacker can rotate through the pool and return within 72h.
 On the Cloudflare plane this costs nothing — a CF "perm" is already TTL-emulated
 at the same ladder maximum — so the real change is confined to the CSF plane.
+
+**The cap is forward-only, and a legacy perm can linger half-demoted.** If an
+address already carries `offenders.perm=1` from before this feature (an old
+`import-bans` entry, or a perm placed by an earlier release) and then re-offends,
+the perm gate's backfill re-applies it, the cap turns that into a temp — but
+`offenders.perm` stays `1`, because the ledger's rollup only ever raises that
+flag (`perm=MAX(perm,0)`). The firewall is correct (a temp), while the ledger
+still says perm, so **the swarm will still publish that IP** even though the cap
+fired. This is deliberate: the sweep, not the scan, is what clears existing
+perms, and rewriting the rollup from inside the hot block path would change
+semantics shared by `rollback-ladder`, `top`, and the unblock watermark.
+
+Practically it costs nothing, because `shared-egress-audit` selects on that same
+`perm=1` predicate — every IP in this state is listed, and `--fix` clears it. So:
+**run `swatter shared-egress-audit --fix` and confirm a clean result before
+unfreezing publication.** A capped IP that never had a legacy perm is unaffected.
 
 ---
 

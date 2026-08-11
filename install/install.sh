@@ -11,21 +11,21 @@
 #               undisturbed. Re-enable manually once test-config is green.
 #
 # Layout installed:
-#   /usr/local/bin/swatter                 (CLI, 0755)
-#   /usr/local/lib/swatter/*.sh            (libs incl. providers/, score.awk)
-#   /etc/swatter/swatter.conf              (0600; copied from example if absent)
-#   /etc/swatter/badpaths.conf             (0644)
-#   /etc/swatter/monitoring.cidr           (0644)
-#   /etc/swatter/hosting-asns.txt          (0644; not overwritten on upgrade)
-#   /etc/swatter/hosting-asns.txt.example  (0644; latest curated list to diff)
+#   /usr/local/bin/swatter                      (CLI, 0755)
+#   /usr/local/lib/swatter/*.sh                 (libs incl. providers/, score.awk)
+#   /etc/swatter/swatter.conf                   (0600; copied from example if absent)
+#   /etc/swatter/badpaths.conf                  (0644)
+#   /etc/swatter/monitoring.cidr                (0644)
+#   /etc/swatter/hosting-asns.txt               (0644; not overwritten on upgrade)
+#   /etc/swatter/hosting-asns.txt.example       (0644; latest curated list to diff)
 #   /etc/swatter/shared-egress.cidr             (0644; not overwritten on upgrade)
 #   /etc/swatter/shared-egress.cidr.example     (0644; latest curated list to diff)
 #   /etc/swatter/shared-egress-asns.txt         (0644; not overwritten on upgrade)
 #   /etc/swatter/shared-egress-asns.txt.example (0644; latest curated list to diff)
-#   /etc/swatter/honeypot.paths.example    (0644; live honeypot.paths is never overwritten)
-#   /etc/cron.d/swatter                    (0644; skipped with --no-cron)
-#   /etc/logrotate.d/swatter               (0644)
-#   /var/lib/swatter, /var/log/swatter     (0750)
+#   /etc/swatter/honeypot.paths.example         (0644; live honeypot.paths is never overwritten)
+#   /etc/cron.d/swatter                         (0644; skipped with --no-cron)
+#   /etc/logrotate.d/swatter                    (0644)
+#   /var/lib/swatter, /var/log/swatter          (0750)
 #
 # After install: run `swatter refresh-feeds` then `swatter test-config`, leave it
 # in report mode for ~a week, review `swatter top`, then set SWATTER_MODE=enforce.
