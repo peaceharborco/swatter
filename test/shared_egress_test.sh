@@ -70,7 +70,7 @@ reset; : > "$SHARED_EGRESS_CIDR_FILE"; : > "$SHARED_EGRESS_ASNS_FILE"
 no_ empty-files swatter_is_shared_egress 104.28.1.1
 
 # --- poisoned ASN cache is rejected on READ, not just on write ---
-printf '206092 # VPN Consumer\n' > "$SHARED_EGRESS_ASNS_FILE"
+printf '64496 # Example consumer VPN\n' > "$SHARED_EGRESS_ASNS_FILE"
 printf '104.28.0.0/16\n' > "$SHARED_EGRESS_CIDR_FILE"; reset
 printf 'not-an-asn' > "$STATE_DIR/asn/203.0.113.9"
 CYMRU_TXT=""   # cache is the only source; a corrupt entry must not be trusted
