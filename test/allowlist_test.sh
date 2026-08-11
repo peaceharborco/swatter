@@ -58,6 +58,25 @@ check csf-allow "$(never_block 198.51.100.7)" "0:csf.allow"
 # --- Plain attacker IP: NOT allowlisted, must be blockable (rc=1, no reason) ---
 check attacker "$(never_block 203.0.113.7)" "1:"
 
+# --- A CIDR TOKEN must not bypass the never-block set -------------------------
+# import-bans, the swarm publish gate and the pending-retry replay all pass block
+# TARGETS through swatter_is_never_block, and a target may be a prefix. Host
+# containment can never match one (_ip2int rejects a token with a slash), so
+# every prefix read as "not allowlisted" — `swatter import-bans` with a line
+# reading 162.158.0.0/15, a real Cloudflare edge range, would have CSF-denied
+# the proxy. That is the outage this whole file exists to prevent.
+check nb-cidr-equals-cf-range   "$(never_block 162.158.0.0/15)" "0:cloudflare-range(builtin)"
+check nb-cidr-inside-cf-range   "$(never_block 104.16.8.0/24)"  "0:cloudflare-range(builtin)"
+check nb-cidr-contains-cf-range "$(never_block 104.16.0.0/12)"  "0:cloudflare-range(builtin)"
+check nb-cidr-v6-cf-range       "$(never_block 2400:cb00::/32)" "0:cloudflare-range(builtin)"
+# ...and a prefix that touches nothing allowlisted is still blockable, so this
+# refuses overlap rather than refusing CIDRs.
+check nb-cidr-unrelated         "$(never_block 203.0.113.0/24)" "1:"
+OPERATOR_IPS="198.51.100.0/24"
+check nb-cidr-operator          "$(never_block 198.51.100.0/25)" "0:operator-ip"
+check nb-cidr-operator-wider    "$(never_block 198.51.0.0/16)"   "0:operator-ip"
+OPERATOR_IPS=""
+
 # --- _cidr_overlaps_file: the two-way test used wherever a CIDR TOKEN can be an
 # enforcement target. Containment (_ip_in_cidr_file) answers "is this host in
 # that range"; overlap answers "would banning this token touch that range",

@@ -187,14 +187,16 @@ _cidr_overlaps_file() {
     ' "$file"
 }
 
-# _ip_in_cidr_list <ip> <space-separated CIDRs> : membership against an inline list.
+# _ip_in_cidr_list <ip> <space-separated CIDRs> : overlap against an inline list.
+# Only ever used for the never-block set (the compiled-in CF fallback and
+# OPERATOR_IPS), so it uses the same overlap test the file checks there do.
 _ip_in_cidr_list() {
     local ip="$1"; shift
     local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/swatter-cidrs.XXXXXX")"
     # shellcheck disable=SC2048,SC2086
     printf '%s\n' $* > "$tmp"
     local rc=1
-    _ip_in_cidr_file "$ip" "$tmp" && rc=0
+    _cidr_overlaps_file "$ip" "$tmp" && rc=0
     rm -f "$tmp"
     return $rc
 }
@@ -285,6 +287,17 @@ _swatter_is_good_crawler() {
 
 # swatter_is_never_block <ip> : returns 0 (never block) with a reason on stdout,
 # or 1 (blockable).
+#
+# <ip> may be a CIDR — import-bans, the swarm publish gate and the pending-retry
+# replay all pass block TARGETS through here, and a target may be a prefix. Every
+# range check below therefore uses _cidr_overlaps_file, not host containment: a
+# prefix token makes _ip2int/_ipv6_expand fail, so containment answered "not
+# allowlisted" for EVERY prefix, and `swatter import-bans` with a line reading
+# 162.158.0.0/15 (a real Cloudflare edge range) would have CSF-denied the proxy —
+# the outage this whole file exists to prevent. Overlap is also the right
+# semantics on its own terms: banning a prefix that merely touches an allowlisted
+# range still bans the allowlisted addresses inside it. Host addresses are
+# unaffected — a /32 overlaps a range exactly when it is inside it.
 swatter_is_never_block() {
     local ip="$1"
 
@@ -307,26 +320,26 @@ swatter_is_never_block() {
 
     # Cloudflare ranges — the catastrophic case. Check the live file first, then
     # the compiled-in fallback so a never-refreshed install is still protected.
-    if _ip_in_cidr_file "$ip" "${CLOUDFLARE_IPS_FILE}"; then echo "cloudflare-range"; return 0; fi
+    if _cidr_overlaps_file "$ip" "${CLOUDFLARE_IPS_FILE}"; then echo "cloudflare-range"; return 0; fi
     if _ip_in_cidr_list "$ip" "${SWATTER_CF_FALLBACK_V4} ${SWATTER_CF_FALLBACK_V6}"; then echo "cloudflare-range(builtin)"; return 0; fi
 
     # Operator IPs (inline list -> temp file membership for CIDR support).
     if [[ -n "${OPERATOR_IPS}" ]]; then
         local of; of="$(mktemp "${TMPDIR:-/tmp}/swatter-op.XXXXXX")"
         printf '%s\n' ${OPERATOR_IPS} > "$of"
-        if _ip_in_cidr_file "$ip" "$of"; then rm -f "$of"; echo "operator-ip"; return 0; fi
+        if _cidr_overlaps_file "$ip" "$of"; then rm -f "$of"; echo "operator-ip"; return 0; fi
         rm -f "$of"
     fi
 
     # Operator allow file (managed by `swatter allow`).
-    if _ip_in_cidr_file "$ip" "${OPERATOR_ALLOW_FILE}"; then echo "operator-allow"; return 0; fi
+    if _cidr_overlaps_file "$ip" "${OPERATOR_ALLOW_FILE}"; then echo "operator-allow"; return 0; fi
 
     # Monitoring ranges file.
-    if _ip_in_cidr_file "$ip" "${MONITORING_RANGES_FILE}"; then echo "monitoring"; return 0; fi
+    if _cidr_overlaps_file "$ip" "${MONITORING_RANGES_FILE}"; then echo "monitoring"; return 0; fi
 
     # csf.allow.
     local caf; caf="$(_swatter_csf_allow_file)"
-    if _ip_in_cidr_file "$ip" "$caf"; then echo "csf.allow"; return 0; fi
+    if _cidr_overlaps_file "$ip" "$caf"; then echo "csf.allow"; return 0; fi
 
     # Server's own IPs.
     if _swatter_self_ips | grep -qxF "$ip"; then echo "server-self"; return 0; fi
