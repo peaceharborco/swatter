@@ -71,6 +71,31 @@ check import-keeps-normal "$(imported 192.0.2.77)" "1"
 case "$out" in *"skip shared-egress"*) PASS=$((PASS+1));;
   *) echo "FAIL import-logs-skip: ${out}"; FAIL=$((FAIL+1));; esac
 
+# --- shared-egress-audit ---
+now="$(date +%s)"
+seed() {  # <ip>
+  sqlite3 "$db" "INSERT INTO offenders(ip,first_seen,last_seen,worst_score,total_offenses,temp_count,perm,last_label,channel)
+                 VALUES('$1',${now},${now},91,1,0,1,'x','csf');
+                 INSERT INTO actions(ip,ts,action,channel,ttl,score,reason,dry_run)
+                 VALUES('$1',${now},'perm','csf',0,91,'seeded',0);"
+}
+seed 104.28.11.11
+seed 192.0.2.99
+
+out="$(sw shared-egress-audit)"
+case "$out" in *104.28.11.11*) PASS=$((PASS+1));;
+  *) echo "FAIL audit-lists-shared: ${out}"; FAIL=$((FAIL+1));; esac
+case "$out" in *192.0.2.99*) echo "FAIL audit-lists-normal: ${out}"; FAIL=$((FAIL+1));;
+  *) PASS=$((PASS+1));; esac
+permflag() { sqlite3 "$db" "SELECT perm FROM offenders WHERE ip='$1';"; }
+check audit-readonly-no-change "$(permflag 104.28.11.11)" "1"
+
+out="$(sw shared-egress-audit --fix)"
+check audit-fix-clears     "$(permflag 104.28.11.11)" "0"
+check audit-fix-spares     "$(permflag 192.0.2.99)"   "1"
+# --fix must NOT allowlist: allow.cidr stays empty.
+check audit-fix-no-allow   "$(grep -c . "$WORK/etc/allow.cidr" | tr -d ' ')" "0"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

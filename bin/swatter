@@ -26,6 +26,7 @@
 #   swatter metrics [--print]      write the Prometheus textfile (or print it)
 #   swatter export-bans [file]     write perm-ban list to file (or stdout)
 #   swatter import-bans <file>     block each listed IP as perm (skips never-block/invalid)
+#   swatter shared-egress-audit [--fix]  list (or unblock) perms on shared VPN egress
 #   swatter swarm {enroll|status|disable|purge}  fleet reputation sharing (see SWARM_* config)
 #   swatter escalate-preview [--window N]  who perms on their NEXT offense (read-only)
 #   swatter rollback-ladder --since <epoch|iso> [--dry-run]   undo ladder perms
@@ -485,6 +486,89 @@ cmd_import_bans() {
     log_info "import-bans: ${n} ban(s) applied (mode=${SWATTER_MODE}, backend=${channel})"
 }
 
+# swatter shared-egress-audit [--fix] [--force]
+#
+# Lists permanent bans that the shared-egress policy would now refuse to place.
+# The veto in _swatter_apply_plane is forward-only: it stops new perms, it does
+# not clear perms already on the books.
+#
+# --fix UNBLOCKS ONLY. It deliberately does not allowlist: these addresses
+# rotate between clients, so a per-IP never-block would become a standing free
+# pass for whoever receives the address next. Future offenses are the veto's job.
+cmd_shared_egress_audit() {
+    local fix=0 force=0 max="${SHARED_EGRESS_AUDIT_MAX:-25}"
+    while (( $# )); do
+        case "$1" in
+            --fix)   fix=1 ;;
+            --force) force=1 ;;
+            *) die "usage: swatter shared-egress-audit [--fix] [--force]" ;;
+        esac; shift
+    done
+    [[ "${STORE}" == "sqlite" ]] || die "shared-egress-audit needs the sqlite store"
+
+    local ip ts label ips=() labels=()
+    while IFS=$'\t' read -r ip ts; do
+        [[ -n "$ip" ]] || continue
+        label="$(swatter_is_shared_egress "$ip")" || continue
+        ips+=("$ip"); labels+=("$label")
+    done < <(swatter_store_perm_ips_since 0)
+
+    if (( ${#ips[@]} == 0 )); then
+        echo "shared-egress-audit: no permanent bans match the shared-egress policy."
+        return 0
+    fi
+
+    local i
+    if (( ! fix )); then
+        printf 'shared-egress-audit: %d permanent ban(s) match (read-only)\n\n' "${#ips[@]}"
+        for i in "${!ips[@]}"; do printf '  %-39s %s\n' "${ips[$i]}" "${labels[$i]}"; done
+        printf '\nRe-run with --fix to unblock these. --fix does NOT allowlist.\n'
+        return 0
+    fi
+
+    # Count gate: an over-broad list must not mass-lift silently.
+    if (( ${#ips[@]} > max && ! force )); then
+        die "shared-egress-audit: ${#ips[@]} IPs selected, over the ${max} safety limit — review the list first, then re-run with --force"
+    fi
+
+    local rc=0
+    swatter_with_state_lock 60 || die "shared-egress-audit: could not take the state lock"
+    for i in "${!ips[@]}"; do
+        ip="${ips[$i]}"
+        local failed=0
+        SWATTER_LAST_BACKEND_ERR=""
+        # Both backends unconditionally (no &&-short-circuit): a perm can be
+        # dual-planed, so a failed direct-plane unblock must not skip the
+        # Cloudflare unblock for the same IP. Their exit codes ARE the
+        # verification — swatter_csf_unblock/swatter_cf_unblock only return 0
+        # when the underlying `csf -tr/-dr` or CF rule-delete actually
+        # succeeded (lib/block_csf.sh, lib/block_cf.sh).
+        swatter_block_direct_unblock "$ip" || failed=1
+        swatter_cf_unblock "$ip"           || failed=1
+        # swatter_store_unblock runs regardless of $failed, same as
+        # cmd_unblock/cmd_rollback_ladder: it unconditionally clears
+        # offenders.perm AND plane_blocks (swatter_store_plane_clear), so a
+        # POST-hoc swatter_store_is_perm_on check here would always read
+        # "not on" — it would be re-querying a ledger this same call just
+        # wiped, not the live firewall/CF state, and could never catch a
+        # real divergence. $failed (the backend calls' own exit codes) is
+        # the only real verification available; clearing the ledger either
+        # way keeps a later retry of this IP from being blocked by stale
+        # perm/plane state.
+        swatter_store_unblock "$ip"
+        if (( failed )); then
+            printf '  %-39s PARTIAL%s\n' "$ip" "${SWATTER_LAST_BACKEND_ERR:+ (${SWATTER_LAST_BACKEND_ERR})}"
+            rc=1
+        else
+            printf '  %-39s ok (%s)\n' "$ip" "${labels[$i]}"
+        fi
+    done
+    (( rc == 0 )) \
+        && printf '\nshared-egress-audit: %d unblocked (both backends confirmed).\n' "${#ips[@]}" \
+        || printf '\nshared-egress-audit: FINISHED WITH FAILURES — re-run and check `swatter list perm` / `csf -g <ip>`.\n' >&2
+    return "$rc"
+}
+
 cmd_escalate_preview() {
     local win="${REPEAT_WINDOW_DAYS}"
     while (( $# )); do
@@ -757,7 +841,7 @@ cmd_pending() {
     echo "pending: cleared ${cleared} queued perm intent(s)${heldmsg}"
 }
 
-usage() { sed -n '2,33p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,34p' "${SWATTER_ENTRYPOINT}" | sed 's/^# \{0,1\}//'; }
 
 main() {
     local sub="${1:-}"; shift || true
@@ -778,6 +862,7 @@ main() {
         metrics)       cmd_metrics "$@" ;;
         export-bans)   cmd_export_bans "$@" ;;
         import-bans)   cmd_import_bans "$@" ;;
+        shared-egress-audit) cmd_shared_egress_audit "$@" ;;
         swarm)         cmd_swarm "$@" ;;
         escalate-preview) cmd_escalate_preview "$@" ;;
         rollback-ladder)  cmd_rollback_ladder "$@" ;;
