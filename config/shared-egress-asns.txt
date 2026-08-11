@@ -10,4 +10,4 @@
 # listing it wholesale caps more than the measured problem.
 #
 # Example (add locally if it applies to your host):
-# 206092 # F.N.S. Holdings / "VPN Consumer" — consumer VPN exits
+# 64496 # Example consumer-VPN provider — replace with a real, evidence-backed entry
