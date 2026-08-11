@@ -465,9 +465,11 @@ In `lib/score.sh`, immediately after the never-block block that ends at `:145` a
         ev="$(_swatter_ev_stamp "$ev" shared_egress 1)"   # integer only — a label here no-ops
         SWATTER_RUN_SHARED_CAPS=$(( ${SWATTER_RUN_SHARED_CAPS:-0} + 1 ))
         log_warn "shared-egress cap: ${ip} (${shared_egress}) perm -> temp ttl=${ttl}"
-    else
-        shared_egress=""   # a failed match leaves $? in the var; normalize it
     fi
+    # No else branch is needed: swatter_is_shared_egress echoes nothing when it
+    # returns 1, and a short-circuit on the `action`/enable test never runs the
+    # assignment at all — `shared_egress` is "" in both cases. It stays in scope
+    # for the AbuseIPDB guard below.
 ```
 
 - [ ] **Step 4: Add the explicit AbuseIPDB guard**
