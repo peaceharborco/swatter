@@ -573,6 +573,101 @@ Recovery after a rollback:
   for you.
 - **The swarm hub has no per-IP retract** — see the gotcha above.
 
+## Shared consumer-VPN egress
+
+Some addresses are used by many unrelated people at once — Cloudflare WARP
+(`104.28.0.0/16`, the 1.1.1.1 app) and consumer VPN exits. Offenses from them
+are real and the scoring is right, but the **identifier is not the offender**:
+the ladder counts offenses per *address*, so three bad afternoons from three
+different people behind one exit escalate it exactly as if one attacker had
+come back three times.
+
+So Swatter caps them. On a match, a permanent ban becomes a **ladder-maximum
+temp (72h)** and the perm is never placed. A **capped perm is never published**
+either: the swarm publishes only from the permanent-ban store (and there is now
+no perm there), and the AbuseIPDB report is skipped *explicitly* for a capped
+IP, whatever `ABUSEIPDB_REPORT_MIN_ACTION` says — that protection must not rest
+on a config value an operator may change for unrelated reasons.
+
+**This is not an allowlist.** The address is still blocked, repeatedly, for as
+long as it misbehaves. Do **not** add these ranges to `allow.cidr` or
+`cloudflare.cidr` — everything in those files is a never-block, which would hand
+anyone a bypass for the price of a free consumer VPN.
+
+**The exclusion covers capped perms, not every block on these ranges.** The
+shared-egress lookup runs on the perm branch only, deliberately, so that a DNS
+lookup never lands on the hot temp path. An ordinary first-offense *temp* is
+therefore not a capped perm and follows `ABUSEIPDB_REPORT_MIN_ACTION` like any
+other temp. The default (`perm`) reports no temps at all; set it to `temp` and a
+first-offense temp on a WARP address **will** be reported.
+
+`import-bans` participates too: it skips shared-egress addresses, and **refuses
+any CIDR token that overlaps one** — `104.28.0.0/16` and `104.28.0.0/24` alike.
+Matching is by prefix *overlap*, not host-address containment, so a prefix is
+tested as a prefix rather than silently matching nothing.
+
+### Two config files are load-bearing
+
+The policy ships **enabled** (`SHARED_EGRESS_ENABLE` defaults to `true`) but is
+entirely data-driven, and both lists live under `/etc/swatter` — which a
+file-by-file deploy never creates:
+
+| File | Effect if absent |
+|---|---|
+| `/etc/swatter/shared-egress.cidr` | CIDR arm inert — **WARP is not capped at all** |
+| `/etc/swatter/shared-egress-asns.txt` | ASN arm inert (this is the shipped default: the file ships with documentation and no entries) |
+
+`install/install.sh` creates both from `config/`, never overwriting an existing
+one. A surgical deploy that copies only `bin/swatter` and `lib/*.sh` leaves the
+policy enabled and capping nothing, **silently**. `swatter test-config` prints
+the state of each arm (`cidr: … (1 range(s))` vs `MISSING — deploy it; CIDR arm
+INERT`), and `swatter shared-egress-audit` exits non-zero rather than printing
+an all-clear it cannot back up when neither arm is usable.
+
+### Operating it
+
+```bash
+# Which permanent bans would the policy refuse today? (read-only, sqlite store)
+swatter shared-egress-audit
+
+# Unblock them. Does NOT allowlist — these addresses rotate between people.
+swatter shared-egress-audit --fix
+
+# Over SHARED_EGRESS_AUDIT_MAX (default 25) rows, --fix refuses until you have
+# reviewed the list and re-run with --force.
+swatter shared-egress-audit --fix --force
+
+# Confirm both arms have usable data
+swatter test-config
+```
+
+- **The cap is forward-only, and a legacy perm can linger half-demoted.** An
+  address carrying `offenders.perm=1` from before this feature keeps that flag
+  when the cap downgrades its next block to a temp (the rollup only ever raises
+  it), so the firewall is correct while the ledger still says perm — and **the
+  swarm will still publish that IP**. `shared-egress-audit` selects on that same
+  predicate, so every such IP is listed and `--fix` clears it. Run it, and
+  confirm a clean result, **before unfreezing publication**.
+- **Adding entries:** prefer a precise CIDR over an ASN — an ASN caps everything
+  that AS originates. Any line broader than `/16` (v4) or `/32` (v6) is rejected
+  and switches the whole CIDR arm off for that run, because a wide entry would
+  silently stop all permanent banning. Check `swatter test-config` after editing.
+- **Watch it in aggregate.** `swatter_scan_shared_caps` (Prometheus) counts the
+  perms downgraded last run, so an over-broad CIDR line that mass-caps perms is
+  visible per run and not only per IP.
+
+**Residual risk, accepted knowingly.** Permanent bans are impossible on these
+ranges, so a patient attacker can rotate through the pool and return within 72h.
+On the Cloudflare plane this costs nothing — a CF "perm" is already TTL-emulated
+at the same ladder maximum — so the enforcement change is confined to the CSF
+plane. Set `SHARED_EGRESS_ENABLE="false"` to disable entirely (takes effect next
+scan; does not re-ban anything already capped).
+
+Knobs: `SHARED_EGRESS_ENABLE` (`true`), `SHARED_EGRESS_CIDR_FILE`,
+`SHARED_EGRESS_ASNS_FILE`, `SHARED_EGRESS_MIN_PREFIX4` (`16`),
+`SHARED_EGRESS_MIN_PREFIX6` (`32`), `SHARED_EGRESS_AUDIT_MAX` (`25`). Full
+incident procedure in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
+
 ## Beyond reputation: ASN, traps, persistence, metrics
 
 - **Hosting-ASN signal** *(`ASN_SIGNAL_ENABLE`)* — when an offender is already
@@ -599,7 +694,10 @@ report (verdict line → stat tiles → per-plane tables). Each report leads wit
 live here, that's Swatter working), 🟡 YELLOW (elevated non-fatal error volume,
 worth a look), 🔴 RED (a genuine fatal error — a service or app may be down;
 one-off fatals from bots executing PHP files directly are classified
-scanner-induced and stay off the RED trigger, see `ERROR_FATAL_SCANNER`) —
+scanner-induced and stay off the RED trigger, see `ERROR_FATAL_SCANNER`;
+`ERROR_FATAL_SCANNER_EXCLUDE` vetoes that classification for your own CLI
+entrypoints, so a broken `wp` maintenance script still turns the light RED —
+the veto only ever moves a fatal *toward* genuine, never away) —
 shown in the subject line so the inbox list reads at a glance. It covers up to four
 planes of server health:
 
@@ -678,6 +776,16 @@ All the knobs live in `/etc/swatter/swatter.conf`:
   a single window, so one anomalous burst can't blackhole a shared/CGNAT IP. See
   [Recidivism ladder](#recidivism-ladder) below for the escalation details,
   preview/rollback tooling, and the operator gotchas that go with it.
+- **Shared addresses can never be permanently banned.** On a known consumer-VPN
+  exit (Cloudflare WARP ships covered), escalation stops at a ladder-max 72h
+  temp — one address there is hundreds of unrelated people, so the identifier
+  isn't the offender. That **capped perm** is never published to the swarm or
+  reported to AbuseIPDB; two narrower cases still can be, and both are spelled
+  out in [Shared consumer-VPN egress](#shared-consumer-vpn-egress) — an ordinary
+  temp under `ABUSEIPDB_REPORT_MIN_ACTION="temp"`, and an address still carrying
+  a legacy `offenders.perm=1` that `shared-egress-audit --fix` has not cleared.
+  It is *not* an allowlist either: the address is still blocked, every time it
+  misbehaves.
 - **Circuit breakers.** Hard caps on blocks per run, with a separate, lower cap on
   the catastrophic CSF channel. A log-parsing bug can't nuke thousands of IPs.
 - **Never-block allowlist**, checked last: Cloudflare ranges, your `csf.allow`,
@@ -865,6 +973,7 @@ error responses), so even the default tuning won't ban an owner for logging in.
 | `swatter escalate-preview [--window N]` | who would escalate to a perm, or is one offense away, read-only from the ledger (sqlite only) |
 | `swatter rollback-ladder --since <epoch\|iso> [--dry-run]` | bulk-undo permanent bans the recidivism ladder placed |
 | `swatter pending [--drain-perms] [--dry-run]` | inspect, or clear, the durable failed-block retry queue (sqlite only) |
+| `swatter shared-egress-audit [--fix] [--force]` | list (or unblock) permanent bans sitting on shared consumer-VPN egress (sqlite only) |
 
 ---
 
