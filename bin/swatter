@@ -336,11 +336,11 @@ cmd_test_config() {
         elif ! _swatter_shared_egress_cidr_usable; then
             se_cstate="REJECTED (invalid or over-broad line); CIDR arm INERT"
         else
-            se_cn="$(grep -cE '^[[:space:]]*[^#[:space:]]' "$se_cidr" 2>/dev/null || echo 0)"
+            se_cn="$(grep -cE '^[[:space:]]*[^#[:space:]]' "$se_cidr" 2>/dev/null)"
             se_cok=1; se_cstate="${se_cn} range(s)"
         fi
         if _swatter_shared_egress_asns_usable; then
-            se_an="$(grep -cE '^[[:space:]]*[0-9]' "$se_asns" 2>/dev/null || echo 0)"
+            se_an="$(grep -cE '^[[:space:]]*[0-9]' "$se_asns" 2>/dev/null)"
             se_aok=1; se_astate="${se_an} ASN(s)"
         elif [[ -f "$se_asns" ]]; then
             se_astate="0 entries; ASN arm inert (the shipped default)"
