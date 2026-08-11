@@ -208,6 +208,8 @@ ABUSEIPDB_DAILY_QUOTA=1000
 # purpose: a too-broad line here fails toward NOT banning, which is silent.
 : "${SHARED_EGRESS_MIN_PREFIX4:=16}"
 : "${SHARED_EGRESS_MIN_PREFIX6:=32}"
+# Above this many selected IPs, `shared-egress-audit --fix` demands --force.
+: "${SHARED_EGRESS_AUDIT_MAX:=25}"
 : "${HONEYPOT_PATHS_FILE:=/etc/swatter/honeypot.paths}"
 : "${HONEYPOT_OVERRIDES_SUPPRESS:=false}"
 : "${PERSIST_ENABLE:=true}"

@@ -162,6 +162,70 @@ rc_gate=$?
 check audit-fix-count-gate-untouched-1 "$(permflag 104.28.30.1)" "1"
 check audit-fix-count-gate-untouched-2 "$(permflag 104.28.30.2)" "1"
 
+# --- "clean" must never be printed by a policy that could not look ------------
+# The operator's next move after a clean audit is unfreezing AbuseIPDB
+# publication, which has no undo — so an audit that cannot match anything must
+# say so and exit non-zero, not print the same sentence as a genuinely clean
+# fleet. Three ways to be inert, all previously indistinguishable.
+seed 104.28.40.1   # a real match, so only the inert guard can produce "clean"
+# 1. CIDR file missing (the surgical-deploy case: /etc/swatter never written).
+mv "$WORK/etc/shared-egress.cidr" "$WORK/etc/shared-egress.cidr.away"
+sw shared-egress-audit >"$WORK/inert-missing.out" 2>&1; rc_missing=$?
+[[ "$rc_missing" -ne 0 ]] && PASS=$((PASS+1)) \
+  || { echo "FAIL audit-inert-missing-rc (got ${rc_missing})"; FAIL=$((FAIL+1)); }
+case "$(cat "$WORK/inert-missing.out")" in
+  *"no usable data source"*) PASS=$((PASS+1));;
+  *) echo "FAIL audit-inert-missing-msg: $(cat "$WORK/inert-missing.out")"; FAIL=$((FAIL+1));; esac
+case "$(cat "$WORK/inert-missing.out")" in
+  *"no permanent bans match"*) echo "FAIL audit-inert-missing-claims-clean"; FAIL=$((FAIL+1));;
+  *) PASS=$((PASS+1));; esac
+mv "$WORK/etc/shared-egress.cidr.away" "$WORK/etc/shared-egress.cidr"
+
+# 2. CIDR file present but rejected as over-broad (a /8 paste error).
+printf '104.0.0.0/8\n' > "$WORK/etc/shared-egress.cidr"
+sw shared-egress-audit >"$WORK/inert-broad.out" 2>&1; rc_broad=$?
+[[ "$rc_broad" -ne 0 ]] && PASS=$((PASS+1)) \
+  || { echo "FAIL audit-inert-overbroad-rc (got ${rc_broad})"; FAIL=$((FAIL+1)); }
+case "$(cat "$WORK/inert-broad.out")" in
+  *"no usable data source"*) PASS=$((PASS+1));;
+  *) echo "FAIL audit-inert-overbroad-msg: $(cat "$WORK/inert-broad.out")"; FAIL=$((FAIL+1));; esac
+printf '104.28.0.0/16\n' > "$WORK/etc/shared-egress.cidr"
+
+# 3. Policy switched off entirely. Flipped in the CONF, not the environment: the
+# conf is sourced after the defaults and would overwrite an exported value.
+sed 's/^SHARED_EGRESS_ENABLE=true/SHARED_EGRESS_ENABLE=false/' "$WORK/etc/swatter.conf" > "$WORK/etc/swatter-off.conf"
+SWATTER_CONF="$WORK/etc/swatter-off.conf" PATH="$FAKEBIN:$PATH" \
+    bash "${ROOT}/bin/swatter" shared-egress-audit >"$WORK/inert-off.out" 2>&1; rc_off=$?
+[[ "$rc_off" -ne 0 ]] && PASS=$((PASS+1)) \
+  || { echo "FAIL audit-inert-disabled-rc (got ${rc_off})"; FAIL=$((FAIL+1)); }
+
+# ...and with a usable list the audit still works, and now says what it checked.
+sw shared-egress-audit >"$WORK/live.out" 2>&1
+case "$(cat "$WORK/live.out")" in *104.28.40.1*) PASS=$((PASS+1));;
+  *) echo "FAIL audit-live-still-lists: $(cat "$WORK/live.out")"; FAIL=$((FAIL+1));; esac
+
+# A broken store must abort too: swatter_store_perm_ips_since over an unopenable
+# DB returns nothing, which read as "no permanent bans match" — a fourth silent
+# path to a false all-clear. Same idiom as cli_test.sh's store-init cases.
+WORK2="$(mktemp -d "${TMPDIR:-/tmp}/swatter-seaudit2.XXXXXX")"
+trap 'rm -rf "$WORK" "$FAKEBIN" "$FAKEBIN2" "$WORK2"' EXIT
+mkdir -p "$WORK2/state/swatter.db"   # a DIRECTORY where the DB file goes
+cat > "$WORK2/swatter.conf" <<CONF
+STORE=sqlite
+STATE_DIR="$WORK2/state"
+SHARED_EGRESS_ENABLE=true
+SHARED_EGRESS_CIDR_FILE="$WORK/etc/shared-egress.cidr"
+SHARED_EGRESS_ASNS_FILE="$WORK/etc/shared-egress-asns.txt"
+CF_MODE=off
+CONF
+SWATTER_CONF="$WORK2/swatter.conf" bash "${ROOT}/bin/swatter" shared-egress-audit \
+    >"$WORK2/store.out" 2>&1; rc_store=$?
+[[ "$rc_store" -ne 0 ]] && PASS=$((PASS+1)) \
+  || { echo "FAIL audit-broken-store-rc (got ${rc_store})"; FAIL=$((FAIL+1)); }
+case "$(cat "$WORK2/store.out")" in
+  *"no permanent bans match"*) echo "FAIL audit-broken-store-claims-clean"; FAIL=$((FAIL+1));;
+  *) PASS=$((PASS+1));; esac
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -320,6 +320,41 @@ cmd_test_config() {
     echo "  ladder knobs:   REPEAT_N=${REPEAT_N} window=${REPEAT_WINDOW_DAYS}d crit-single=${REPEAT_N_CRITICAL_SINGLE}"
     echo "  perm tripwire:  ${PERM_RATE_ALERT_PER_RUN}/run ${PERM_RATE_ALERT_PER_DAY}/day (ALERT floor — not an abort threshold)"
     echo "  publication:    swarm=${SWARM_PUBLISH:-true} abuseipdb=${ABUSEIPDB_REPORT}"
+    # Shared-egress ships ENABLED but is entirely data-driven, and both lists
+    # live under /etc/swatter — which a surgical file-by-file deploy never
+    # creates. So the policy can read "on" and cap nothing at all, silently:
+    # _swatter_shared_egress_cidr_usable warns only on a REJECTED file, never on
+    # a missing one. Report the DATA (present? valid? how many entries?), not the
+    # flag, and print it next to `publication:` because that is the decision it
+    # informs. Deliberately in the effective-control-state block rather than the
+    # advisory section below: this one is enforcement, not readiness.
+    if [[ "${SHARED_EGRESS_ENABLE:-true}" == "true" ]]; then
+        local se_cidr="${SHARED_EGRESS_CIDR_FILE:-unset}" se_asns="${SHARED_EGRESS_ASNS_FILE:-unset}"
+        local se_cn=0 se_an=0 se_cok=0 se_aok=0 se_cstate se_astate
+        if [[ ! -f "$se_cidr" ]]; then
+            se_cstate="MISSING — deploy it; CIDR arm INERT"
+        elif ! _swatter_shared_egress_cidr_usable; then
+            se_cstate="REJECTED (invalid or over-broad line); CIDR arm INERT"
+        else
+            se_cn="$(grep -cE '^[[:space:]]*[^#[:space:]]' "$se_cidr" 2>/dev/null || echo 0)"
+            se_cok=1; se_cstate="${se_cn} range(s)"
+        fi
+        if _swatter_shared_egress_asns_usable; then
+            se_an="$(grep -cE '^[[:space:]]*[0-9]' "$se_asns" 2>/dev/null || echo 0)"
+            se_aok=1; se_astate="${se_an} ASN(s)"
+        elif [[ -f "$se_asns" ]]; then
+            se_astate="0 entries; ASN arm inert (the shipped default)"
+        else
+            se_astate="MISSING; ASN arm inert"
+        fi
+        echo "  shared-egress:  ENABLED (a matching perm becomes a ladder-max temp, unpublished)"
+        echo "                  cidr: ${se_cidr} (${se_cstate})"
+        echo "                  asns: ${se_asns} (${se_astate})"
+        (( se_cok || se_aok )) \
+            || echo "                  WARNING: both arms inert -> the policy caps NOTHING and audits will read clean"
+    else
+        echo "  shared-egress:  off (SHARED_EGRESS_ENABLE=false) — perms on shared consumer VPN egress are NOT capped"
+    fi
     local n=0 f
     for f in ${DOMLOGS_GLOB}; do [[ -f "$f" ]] && n=$(( n + 1 )); done
     local domlog_status=""
@@ -516,6 +551,25 @@ cmd_shared_egress_audit() {
         esac; shift
     done
     [[ "${STORE}" == "sqlite" ]] || die "shared-egress-audit needs the sqlite store"
+    # Without this, a missing/unopenable store makes swatter_store_perm_ips_since
+    # return nothing and the audit prints the same reassuring "no permanent bans
+    # match" as a genuinely clean fleet.
+    swatter_store_init || die "shared-egress-audit: store init failed — an empty result would be meaningless"
+    # Same reason, for the policy's own inputs. The lists live in /etc/swatter and
+    # a file-by-file deploy never creates them, so "enabled" does not imply
+    # "armed": with neither arm usable NOTHING can ever match and a clean audit
+    # means only that the audit could not look. That matters more here than
+    # anywhere else — the operator's next move after a clean sweep is unfreezing
+    # AbuseIPDB publication, which has no undo.
+    [[ "${SHARED_EGRESS_ENABLE:-true}" == "true" ]] \
+        || die "shared-egress-audit: SHARED_EGRESS_ENABLE=false — the policy is off, so nothing can match; this is not a clean bill of health"
+    local cidr_ok=0 asn_ok=0
+    # This also PRIMES _SW_SHARED_CIDR_OK in this shell, so the per-IP calls below
+    # (each a $( ) subshell) inherit the verdict instead of re-validating and
+    # re-warning once per row.
+    _swatter_shared_egress_cidr_usable && cidr_ok=1
+    _swatter_shared_egress_asns_usable && asn_ok=1
+    (( cidr_ok || asn_ok )) || die "shared-egress-audit: no usable data source — ${SHARED_EGRESS_CIDR_FILE:-unset} is missing or rejected and ${SHARED_EGRESS_ASNS_FILE:-unset} has no entries. Nothing can match; deploy the lists (RUNBOOK: Shared consumer-VPN egress) before reading a clean result as clean."
     # A malformed SHARED_EGRESS_AUDIT_MAX (e.g. "1 2") makes the `(( ... ))`
     # comparison below a syntax error, which the surrounding `&&` swallows —
     # the gate would silently fail OPEN and let a mass unblock through. Same
@@ -523,15 +577,22 @@ cmd_shared_egress_audit() {
     # swatter_with_state_lock (lib/common.sh) use for the same reason.
     [[ "$max" =~ ^[0-9]+$ ]] || max=25
 
-    local ip ts label ips=() labels=()
+    local ip ts label ips=() labels=() scanned=0
     while IFS=$'\t' read -r ip ts; do
         [[ -n "$ip" ]] || continue
+        scanned=$(( scanned + 1 ))
         label="$(swatter_is_shared_egress "$ip")" || continue
         ips+=("$ip"); labels+=("$label")
     done < <(swatter_store_perm_ips_since 0)
 
     if (( ${#ips[@]} == 0 )); then
-        echo "shared-egress-audit: no permanent bans match the shared-egress policy."
+        # Say what was actually checked against what. "No matches" over an empty
+        # ledger, or against one live arm out of two, is a much weaker statement
+        # than it reads as.
+        printf 'shared-egress-audit: no permanent bans match the shared-egress policy (%d perm ban(s) checked; cidr arm %s, asn arm %s).\n' \
+            "$scanned" \
+            "$( (( cidr_ok )) && echo 'live' || echo 'inert' )" \
+            "$( (( asn_ok  )) && echo 'live' || echo 'inert' )"
         return 0
     fi
 
