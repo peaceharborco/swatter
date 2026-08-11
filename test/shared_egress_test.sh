@@ -5,7 +5,7 @@ set -uo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "${HERE}/.." && pwd)"
 source "${ROOT}/lib/common.sh"
-source "${ROOT}/lib/allowlist.sh"   # _ip_in_cidr_file, _ipv6_expand
+source "${ROOT}/lib/allowlist.sh"   # _cidr_overlaps_file, _ipv6_expand
 source "${ROOT}/lib/asn.sh"
 
 PASS=0; FAIL=0
@@ -46,6 +46,29 @@ no_ zeroslash-no-selfmatch swatter_is_shared_egress 104.28.1.1
 printf '104.0.0.0/8\n' > "$SHARED_EGRESS_CIDR_FILE"; reset
 no_ overbroad-rejected swatter_is_shared_egress 104.28.1.1
 
+# --- CIDR TOKENS: a prefix that overlaps a protected range must match too ---
+# import-bans and _swatter_apply_plane both accept a prefix as a block target,
+# so a policy that only recognized member addresses would refuse 104.28.1.1 and
+# then perm-ban 104.28.0.0/16 — the whole pool — on the next line of the same
+# file. Both directions of overlap count: the token inside the range, and the
+# range inside the token.
+printf '104.28.0.0/16 # WARP\n' > "$SHARED_EGRESS_CIDR_FILE"
+: > "$SHARED_EGRESS_ASNS_FILE"
+SWATTER_HAVE_DNS=0; reset
+check cidr-token-narrower "$(swatter_is_shared_egress 104.28.0.0/24)" "cidr"
+check cidr-token-exact    "$(swatter_is_shared_egress 104.28.0.0/16)" "cidr"
+check cidr-token-wider    "$(swatter_is_shared_egress 104.0.0.0/8)"   "cidr"
+check cidr-token-offset   "$(swatter_is_shared_egress 104.28.9.0/24)" "cidr"
+no_ cidr-token-nonmatch swatter_is_shared_egress 192.0.2.0/24
+no_ cidr-token-adjacent swatter_is_shared_egress 104.29.0.0/16
+# v6 parity: the same overlap logic, both directions.
+printf '2001:db8:1::/48 # documentation range\n' > "$SHARED_EGRESS_CIDR_FILE"; reset
+check cidr6-token-narrower "$(swatter_is_shared_egress 2001:db8:1:2::/64)" "cidr"
+check cidr6-token-wider    "$(swatter_is_shared_egress 2001:db8::/32)"     "cidr"
+no_ cidr6-token-nonmatch swatter_is_shared_egress 2001:db8:9::/48
+printf '104.28.0.0/16 # WARP\n' > "$SHARED_EGRESS_CIDR_FILE"; reset
+SWATTER_HAVE_DNS=1
+
 # --- ASN arm ---
 printf '104.28.0.0/16\n' > "$SHARED_EGRESS_CIDR_FILE"
 printf '64496 # Example consumer VPN\n' > "$SHARED_EGRESS_ASNS_FILE"; reset
@@ -53,6 +76,21 @@ CYMRU_TXT='64496 | 203.0.113.0/24 | ZZ | example | 2020-01-01'
 check asn-match "$(swatter_is_shared_egress 203.0.113.64)" "AS64496(Example consumer VPN)"
 reset; CYMRU_TXT='16276 | 51.222.0.0/16 | FR | ripencc | 2015-01-01'
 no_ asn-unlisted swatter_is_shared_egress 51.222.1.1
+
+# Whether a DNS lookup HAPPENED is the assertion for the two cases below, and
+# swatter_is_shared_egress resolves inside $( ) — so the tally has to survive a
+# subshell. A file does; a shell variable would silently read 0 either way.
+DNS_LOG="$STATE_DIR/dns-calls"; : > "$DNS_LOG"
+_swatter_dns_txt() { echo x >> "$DNS_LOG"; [[ -n "$CYMRU_TXT" ]] && printf '%s\n' "$CYMRU_TXT"; }
+dns_calls() { grep -c . "$DNS_LOG" | tr -d ' '; }
+
+# The ASN arm must be SKIPPED for a prefix token: a prefix has no single origin
+# ASN, so the lookup can only ever waste a DNS round trip (and, cached under the
+# raw token, poison $STATE_DIR/asn with a "1.0.28.104/24"-shaped key).
+reset; CYMRU_TXT='64496 | 203.0.113.0/24 | ZZ | example | 2020-01-01'
+: > "$DNS_LOG"
+no_ asn-arm-skipped-for-prefix swatter_is_shared_egress 203.0.113.0/24
+check asn-arm-no-dns-for-prefix "$(dns_calls)" "0"
 
 # --- fail open: DNS dead + no CIDR match ---
 reset; CYMRU_TXT=""

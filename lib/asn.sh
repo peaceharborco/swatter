@@ -111,13 +111,21 @@ _swatter_shared_egress_cidr_usable() {
 # would make a third-party DNS service an availability lever on the whole ladder.
 # Callers MUST have validated the IP already (the ASN cache key is the raw
 # string); _swatter_apply_plane does this at :135, before the veto.
+#
+# <ip> may be a CIDR: import-bans and _swatter_apply_plane both accept a prefix
+# as a block target, and a prefix that OVERLAPS a shared-egress range would ban
+# the whole pool at once — the exact outcome this policy exists to prevent, at
+# the largest possible blast radius. Hence _cidr_overlaps_file rather than plain
+# membership. The ASN arm is skipped for prefixes: a prefix has no single origin
+# ASN to resolve, and feeding one to Cymru is a guaranteed-useless DNS query.
 swatter_is_shared_egress() {
     local ip="$1" asn line fasn name
     [[ "${SHARED_EGRESS_ENABLE:-true}" == "true" ]] || return 1
     if _swatter_shared_egress_cidr_usable \
-       && _ip_in_cidr_file "$ip" "${SHARED_EGRESS_CIDR_FILE}"; then
+       && _cidr_overlaps_file "$ip" "${SHARED_EGRESS_CIDR_FILE}"; then
         printf 'cidr'; return 0
     fi
+    [[ "$ip" != */* ]] || return 1
     [[ -s "${SHARED_EGRESS_ASNS_FILE:-}" ]] || return 1
     asn="$(swatter_asn_resolve "$ip")" || return 1
     [[ -n "$asn" ]] || return 1

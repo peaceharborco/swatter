@@ -126,6 +126,67 @@ _ip_in_cidr_file() {
     ' "$file"
 }
 
+# _cidr_overlaps_file <ip-or-cidr> <file> : 0 if the TOKEN OVERLAPS any CIDR/IP
+# line of the file — i.e. the two share a network at the SHORTER of the two
+# prefix lengths, so either contains the other.
+#
+# _ip_in_cidr_file answers a narrower question: "is this host address inside a
+# listed range". That is the wrong question wherever a CIDR token can itself be
+# an enforcement target: 104.28.1.1 is inside 104.28.0.0/16, but the token
+# 104.28.0.0/16 is not "inside" itself by host-address membership (_ip2int
+# rejects a token with a slash), so a policy built on containment alone refuses
+# the members of a protected pool while waving the pool itself through. A bare
+# address is just a /32 (/128) here, so this is a strict superset of the
+# containment test and behaves identically for every host IP.
+_cidr_overlaps_file() {
+    local tok="$1" file="$2" addr="${1%%/*}" plen="${1#*/}"
+    [[ -f "$file" ]] || return 1
+    [[ "$plen" == "$tok" ]] && plen=""      # no '/' at all -> single address
+    if [[ "$addr" == *:* ]]; then
+        local tx pfx net nplen netx m
+        tx="$(_ipv6_expand "$addr")" || return 1
+        plen="${plen:-128}"
+        [[ "$plen" =~ ^[0-9]+$ ]] || return 1
+        plen=$(( 10#$plen )); (( plen <= 128 )) || return 1
+        while IFS= read -r pfx; do
+            pfx="${pfx%%#*}"; pfx="${pfx//[[:space:]]/}"
+            [[ -z "$pfx" || "$pfx" != *:* ]] && continue
+            net="${pfx%%/*}" nplen="${pfx##*/}"
+            [[ "$nplen" == "$pfx" ]] && nplen=128
+            [[ "$nplen" =~ ^[0-9]+$ ]] || continue
+            nplen=$(( 10#$nplen ))
+            netx="$(_ipv6_expand "$net")" || continue
+            m=$(( nplen < plen ? nplen : plen ))
+            _ipv6_in_prefix "$tx" "$netx" "$m" && return 0
+        done < "$file"
+        return 1
+    fi
+    local ipint; ipint="$(_ip2int "$addr")" || return 1
+    plen="${plen:-32}"
+    [[ "$plen" =~ ^[0-9]+$ ]] || return 1
+    plen=$(( 10#$plen )); (( plen <= 32 )) || return 1
+    awk -v ipint="$ipint" -v tlen="$plen" '
+        /^[[:space:]]*#/ { next }
+        { sub(/#.*/, ""); gsub(/[[:space:]]/, "") }
+        $0 == "" { next }
+        $0 ~ /:/ { next }                       # skip IPv6 lines here
+        {
+            n = split($0, p, "/")
+            split(p[1], o, ".")
+            if (o[1]=="" || o[4]=="") next
+            base = (o[1]*16777216) + (o[2]*65536) + (o[3]*256) + o[4]
+            len = (n >= 2) ? p[2]+0 : 32
+            if (len < 0 || len > 32) next
+            # Compare only the bits BOTH prefixes actually pin down.
+            m = (len < tlen) ? len : tlen
+            if (m == 0) { found=1; exit }
+            div = 2 ^ (32 - m)
+            if (int(base/div) == int(ipint/div)) { found=1; exit }
+        }
+        END { exit (found ? 0 : 1) }
+    ' "$file"
+}
+
 # _ip_in_cidr_list <ip> <space-separated CIDRs> : membership against an inline list.
 _ip_in_cidr_list() {
     local ip="$1"; shift

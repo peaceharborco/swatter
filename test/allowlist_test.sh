@@ -58,5 +58,29 @@ check csf-allow "$(never_block 198.51.100.7)" "0:csf.allow"
 # --- Plain attacker IP: NOT allowlisted, must be blockable (rc=1, no reason) ---
 check attacker "$(never_block 203.0.113.7)" "1:"
 
+# --- _cidr_overlaps_file: the two-way test used wherever a CIDR TOKEN can be an
+# enforcement target. Containment (_ip_in_cidr_file) answers "is this host in
+# that range"; overlap answers "would banning this token touch that range",
+# which is the question a prefix target actually poses.
+ov="${STATE_DIR}/overlap.cidr"
+printf '104.28.0.0/16 # WARP\n2001:db8:1::/48\n198.51.100.0/24\n' > "$ov"
+ovl() { _cidr_overlaps_file "$1" "$ov" && echo yes || echo no; }
+check ov-host-in        "$(ovl 104.28.1.1)"        "yes"
+check ov-host-out       "$(ovl 192.0.2.1)"         "no"
+check ov-equal          "$(ovl 104.28.0.0/16)"     "yes"
+check ov-narrower       "$(ovl 104.28.7.0/24)"     "yes"
+check ov-wider          "$(ovl 104.0.0.0/8)"       "yes"
+check ov-adjacent       "$(ovl 104.29.0.0/16)"     "no"
+check ov-slash32        "$(ovl 104.28.1.1/32)"     "yes"
+check ov-disjoint-cidr  "$(ovl 192.0.2.0/24)"      "no"
+check ov-v6-narrower    "$(ovl 2001:db8:1:2::/64)" "yes"
+check ov-v6-wider       "$(ovl 2001:db8::/32)"     "yes"
+check ov-v6-disjoint    "$(ovl 2001:db8:9::/48)"   "no"
+check ov-v6-host        "$(ovl 2001:db8:1::5)"     "yes"
+# Cross-family lines are skipped, not misread: a v4 token must not match a v6
+# entry and vice versa.
+check ov-v4-token-vs-v6 "$(ovl 32.1.13.184/30)"    "no"
+check ov-missing-file   "$(_cidr_overlaps_file 104.28.1.1 "${STATE_DIR}/nope" && echo yes || echo no)" "no"
+
 echo "Total: ${PASS} passed, ${FAIL} failed"
 [[ $FAIL -eq 0 ]]

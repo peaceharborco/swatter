@@ -470,8 +470,19 @@ cmd_import_bans() {
         # so the shared-egress veto there cannot see it. Skip rather than
         # silently downgrade: an operator importing a list should be told the
         # entry was refused, not quietly given something else.
+        #
+        # A CIDR token is refused WHOLE, and loudly, when it overlaps a
+        # shared-egress range in either direction — importing 104.28.0.0/16 must
+        # not perm-ban all of consumer WARP just because the token is a prefix
+        # rather than one of its member addresses. Partially applying the
+        # non-overlapping remainder would be worse than refusing: the operator's
+        # list and the firewall would silently disagree about what got banned.
         if [[ "${SHARED_EGRESS_ENABLE:-true}" == "true" ]] && se="$(swatter_is_shared_egress "$ip")"; then
-            log_info "import-bans: skip shared-egress ${ip} (${se}) — permanent bans on shared consumer VPN egress are policy-capped"
+            if [[ "$ip" == */* ]]; then
+                log_warn "import-bans: REFUSED ${ip} — overlaps shared consumer VPN egress (${se}); a permanent ban on that prefix would blanket a shared pool"
+            else
+                log_info "import-bans: skip shared-egress ${ip} (${se}) — permanent bans on shared consumer VPN egress are policy-capped"
+            fi
             continue
         fi
         if swatter_block_direct_perm "$ip" "imported ban"; then

@@ -61,15 +61,28 @@ FAKEBIN="$(mktemp -d "${TMPDIR:-/tmp}/swatter-fakecsf.XXXXXX")"
 printf '#!/bin/sh\nexit 0\n' > "$FAKEBIN/csf"; chmod +x "$FAKEBIN/csf"
 trap 'rm -rf "$WORK" "$FAKEBIN"' EXIT
 
-printf '104.28.9.9\n192.0.2.77\n' > "$WORK/bans.txt"
+# The CIDR tokens are the point of this list, not padding. import-bans accepts a
+# prefix (swatter_is_valid_ip_or_cidr) and hands it straight to `csf -d`, so a
+# gate that only recognizes member ADDRESSES refuses 104.28.9.9 on one line and
+# then permanently bans all of consumer WARP on the next — the single worst
+# outcome the whole policy exists to prevent. 192.0.2.0/24 proves the refusal is
+# scoped to overlap and did not just break CIDR imports.
+printf '104.28.9.9\n192.0.2.77\n104.28.0.0/24\n104.28.0.0/16\n192.0.2.0/24\n' > "$WORK/bans.txt"
 out="$(sw import-bans "$WORK/bans.txt")"
 db="$WORK/state/swatter.db"
 imported() { sqlite3 "$db" "SELECT COUNT(*) FROM actions WHERE ip='$1' AND action='perm';" 2>/dev/null || echo 0; }
 
 check import-skips-shared "$(imported 104.28.9.9)" "0"
 check import-keeps-normal "$(imported 192.0.2.77)" "1"
+check import-refuses-cidr-24 "$(imported 104.28.0.0/24)" "0"
+check import-refuses-cidr-16 "$(imported 104.28.0.0/16)" "0"
+check import-keeps-normal-cidr "$(imported 192.0.2.0/24)" "1"
 case "$out" in *"skip shared-egress"*) PASS=$((PASS+1));;
   *) echo "FAIL import-logs-skip: ${out}"; FAIL=$((FAIL+1));; esac
+# The refusal has to be visible: a bulk import that would blanket a shared pool
+# is an operator error worth a warning, not a silent one-fewer-line outcome.
+case "$out" in *"REFUSED 104.28.0.0/16"*) PASS=$((PASS+1));;
+  *) echo "FAIL import-logs-cidr-refusal: ${out}"; FAIL=$((FAIL+1));; esac
 
 # --- shared-egress-audit ---
 now="$(date +%s)"
