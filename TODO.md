@@ -1,21 +1,43 @@
 # Swatter — TODO / parked items
 
-## ⏭️ NEXT PICKUP: AbuseIPDB arm + the WARP cohort
+## ⏭️ NEXT PICKUP: the AbuseIPDB arm (last frozen knob)
 
-**Swarm publication was unfrozen 2026-08-11 01:30 UTC — 257 IPs published, one
-clean cycle, cursor `1785195601` → `1786410301`, hub 200, 0 residual backlog, no
-WARN/ERROR.** `ABUSEIPDB_REPORT` is deliberately **still `false`** (staged: swarm
-first, watch, then the irreversible arm). Conf backup on cds1:
-`swatter.conf.bak-2026-08-10-unfreeze`.
+**cds1 is on v2.13.0 as of 2026-08-11 12:54 UTC** — the shared-egress cap is
+deployed, verified, and the whole WARP/shared-VPN cohort is remediated. Swarm
+publication has been live since 01:30 UTC (257 IPs, cursor now advancing
+normally). **`ABUSEIPDB_REPORT` is the only thing still `false`.**
 
-- [ ] **Flip `ABUSEIPDB_REPORT=true`** once you're satisfied with the swarm
-      cycle. Remember it has **no backlog** — it reports only perms placed
-      *after* the flip (~8/day at the current rate), so there is no burst to
-      stage. Re-check `SELECT COUNT(*) FROM pending_blocks WHERE action='perm';`
-      first (0 at the swarm flip): a queued **primary** perm succeeding on retry
-      post-flip **will** be reported, and AbuseIPDB has no delete API.
-- [ ] **Decide the WARP / shared-VPN policy** — see the new section below. Nine
-      WARP IPs are still live perm bans.
+- [ ] **Flip `ABUSEIPDB_REPORT=true`** — its precondition (the cap) is now met.
+      It has **no backlog**: it reports only perms placed *after* the flip
+      (~8/day), so there is no burst to stage. Re-check
+      `SELECT COUNT(*) FROM pending_blocks WHERE action='perm';` first — a queued
+      **primary** perm succeeding on retry post-flip **will** be reported, and
+      AbuseIPDB has no delete API.
+
+### Deployed 2026-08-11 (v2.13.0) — do not redo
+
+- Released `v2.13.0` (GitHub + GitLab), surgical-scp deployed under a cron hold;
+  all 7 code files sha256-verified against the tag. Backups on cds1:
+  `*.bak-9ac0c31-20260811-125417` (bin + 6 libs).
+- **`/etc/swatter/shared-egress.cidr` + `shared-egress-asns.txt` were installed
+  too** — these are load-bearing; a libs-only scp leaves the policy enabled and
+  capping nothing. `swatter test-config` now reports both arms.
+- **`206092` added to cds1's `shared-egress-asns.txt`** (cds1-local per the
+  design; the shipped default is entry-free). This is what activates the ASN arm
+  — without it the 3 AS206092 IPs below would have been left unprotected.
+- **12 shared-VPN perms swept** via `shared-egress-audit --fix`, all verified on
+  both planes: the 9 known WARP IPs, plus **3 AS206092 IPs the ASN arm surfaced**
+  (`158.173.77.34`, `45.157.112.60`, `45.157.112.81`, permed 07-09/07-20/07-24 —
+  already published to the swarm before the freeze, so unblocking does not
+  retract those hub entries; `/purge` is all-or-nothing and was not used).
+- **The 7 `--perm-allow` never-blocks from the morning were removed** from
+  `allow.cidr` (17 → 10) and `csf.allow`. Verified: all 7 are now
+  *not* never-block but *are* shared-egress, i.e. still bannable, just not
+  permanently. Backups: `allow.cidr.bak-20260811-preclean`,
+  `csf.allow.bak-20260811-preclean`.
+- Verified live on prod: CF edge ranges (`162.158.0.0/15`, `104.16.0.0/13`) are
+  never-block as CIDR **tokens** for the first time, and
+  `import-bans 104.28.0.0/16` is REFUSED with 0 applied.
 
 ### What the 08-10/11 unfreeze actually did
 
@@ -107,16 +129,15 @@ on `offenders.perm=1`; AbuseIPDB gets an explicit guard). Rejected: allowlisting
 the range — every CIDR in those files is a **never-block**, so it would hand any
 attacker a bypass via the 1.1.1.1 app.
 
-- [ ] **Implement the spec** (not yet started — no code written).
-- [ ] **BL1 fallout — convert the 7 to plain unblocks.** The IPs cleared
-      2026-08-11 used `--perm-allow`, so they are permanent **never-blocks**
-      today. Review flagged this as the same hazard at smaller scale: WARP
-      addresses rotate between clients, so a per-IP never-block becomes a
-      standing free pass for whoever gets that address next. Once the veto ships,
-      remove them from `allow.cidr` / `csf.allow` so the cap protects them
-      instead. The 9 below should be cleared **unblock-only** from the start.
-- [ ] The same question applies to AS206092 and any other consumer-VPN ASN. The
-      ASN sweep above is the instrument for finding them.
+- [x] **Implemented, released as v2.13.0, and deployed to cds1 2026-08-11.**
+- [x] **BL1 fallout — the 7 `--perm-allow` never-blocks were removed** on deploy;
+      they are capped now rather than exempt.
+- [x] **AS206092 handled** — added to cds1's local ASN file, which surfaced and
+      cleared 3 more live perms.
+- [ ] **Remaining: watch for other consumer-VPN ASNs.** The Team Cymru sweep
+      (see the methodology note above) is the instrument. Only `104.28.0.0/16`
+      ships by default; every ASN entry is deliberately local and
+      evidence-backed.
 - [ ] **Gate D interaction:** gate D's review rule already says VPN exits get
       allowlisted first. At `REPEAT_WINDOW_DAYS=30` the WARP cohort's temps get a
       4.3× wider window to accumulate into perms, so settle this **before** the
