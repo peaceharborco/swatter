@@ -97,28 +97,34 @@ cursor, so they were never in the backlog and publication did not touch them):
 `104.28.219.190`. Each is customer-facing today: a WARP user assigned that egress
 IP cannot reach any customer site.
 
-- [ ] **Decide the policy, then apply it uniformly.** Three options, and the
-      obvious one is a trap:
-      1. Clear the 9 individually (same treatment as the 7). Narrow, reversible,
-         but the range keeps generating new ones — 77 IPs seen so far.
-      2. Add `104.28.0.0/16` to `cloudflare.cidr` or `allow.cidr`. **This is the
-         trap.** Every CIDR in those files is a **never-block**, so allowlisting
-         the whole WARP pool means any attacker can bypass swatter entirely by
-         switching on the 1.1.1.1 app. Same hazard the `monitoring.cidr` note
-         warns about, but with a mass-market client. Do not do this casually.
-      3. Treat shared-VPN egress as temp-only — never let it reach a perm —
-         which is a scoring/ladder change, not a config one, and needs its own
-         design.
-- [ ] Whichever is chosen, the same question applies to AS206092 and any other
-      consumer-VPN ASN. The ASN sweep above is the instrument for finding them.
+**Policy DECIDED 2026-08-11 — option 3 (temp-only), designed and reviewed.**
+Spec: `docs/superpowers/specs/2026-08-11-shared-vpn-egress-policy-design.md`
+(revision 2); adversarial review beside it as `…-design-review-grok.md` (two
+grok-4.5 passes, both EXECUTE-WITH-FIXES, all 5 blockers + 9 majors folded).
+Shape: a veto inside `_swatter_apply_plane` caps shared-egress perms at a
+ladder-max temp, which suppresses **both** publication arms for free (swarm keys
+on `offenders.perm=1`; AbuseIPDB gets an explicit guard). Rejected: allowlisting
+the range — every CIDR in those files is a **never-block**, so it would hand any
+attacker a bypass via the 1.1.1.1 app.
+
+- [ ] **Implement the spec** (not yet started — no code written).
+- [ ] **BL1 fallout — convert the 7 to plain unblocks.** The IPs cleared
+      2026-08-11 used `--perm-allow`, so they are permanent **never-blocks**
+      today. Review flagged this as the same hazard at smaller scale: WARP
+      addresses rotate between clients, so a per-IP never-block becomes a
+      standing free pass for whoever gets that address next. Once the veto ships,
+      remove them from `allow.cidr` / `csf.allow` so the cap protects them
+      instead. The 9 below should be cleared **unblock-only** from the start.
+- [ ] The same question applies to AS206092 and any other consumer-VPN ASN. The
+      ASN sweep above is the instrument for finding them.
 - [ ] **Gate D interaction:** gate D's review rule already says VPN exits get
       allowlisted first. At `REPEAT_WINDOW_DAYS=30` the WARP cohort's temps get a
       4.3× wider window to accumulate into perms, so settle this **before** the
       widen, not during the 615-row review.
 
 **Verify unblocks on both planes — the exit code is not enough.**
-`swatter_store_unblock` runs at `bin/swatter:167` **before** the failure check
-at `:174`, so a partial backend failure still clears `offenders.perm` — the IP
+`swatter_store_unblock` runs at `bin/swatter:168` **before** the failure check
+at `:175`, so a partial backend failure still clears `offenders.perm` — the IP
 drops out of the publish delta and *looks* remediated while CSF or CF may still
 deny it. Same pattern in `rollback-ladder`. Confirm with `swatter list perm`,
 `swatter list cf`, `csf -g <ip>`.
