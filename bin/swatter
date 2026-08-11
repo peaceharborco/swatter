@@ -505,6 +505,12 @@ cmd_shared_egress_audit() {
         esac; shift
     done
     [[ "${STORE}" == "sqlite" ]] || die "shared-egress-audit needs the sqlite store"
+    # A malformed SHARED_EGRESS_AUDIT_MAX (e.g. "1 2") makes the `(( ... ))`
+    # comparison below a syntax error, which the surrounding `&&` swallows —
+    # the gate would silently fail OPEN and let a mass unblock through. Same
+    # idiom as swatter_store_perm_ips_since (lib/store_sqlite.sh) and
+    # swatter_with_state_lock (lib/common.sh) use for the same reason.
+    [[ "$max" =~ ^[0-9]+$ ]] || max=25
 
     local ip ts label ips=() labels=()
     while IFS=$'\t' read -r ip ts; do
@@ -563,8 +569,13 @@ cmd_shared_egress_audit() {
             printf '  %-39s ok (%s)\n' "$ip" "${labels[$i]}"
         fi
     done
+    # "no backend reported a failure", not "confirmed clear": swatter_cf_unblock
+    # returns 0 without checking anything when cf-rules.tsv has no ref for the IP
+    # (lib/block_cf.sh), and swatter_csf_unblock returns 0 with only a warning
+    # when csf isn't installed (lib/block_csf.sh) — neither is a live-state
+    # confirmation, so the message must not claim more than $failed established.
     (( rc == 0 )) \
-        && printf '\nshared-egress-audit: %d unblocked (both backends confirmed).\n' "${#ips[@]}" \
+        && printf '\nshared-egress-audit: %d unblocked (no backend reported a failure).\n' "${#ips[@]}" \
         || printf '\nshared-egress-audit: FINISHED WITH FAILURES — re-run and check `swatter list perm` / `csf -g <ip>`.\n' >&2
     return "$rc"
 }

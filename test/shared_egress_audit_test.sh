@@ -96,6 +96,59 @@ check audit-fix-spares     "$(permflag 192.0.2.99)"   "1"
 # --fix must NOT allowlist: allow.cidr stays empty.
 check audit-fix-no-allow   "$(grep -c . "$WORK/etc/allow.cidr" | tr -d ' ')" "0"
 
+# The two cases above pass identically whether or not $failed/rc and the count
+# gate exist at all — deleting either from bin/swatter still leaves all of the
+# assertions above green (CF_MODE=off makes swatter_cf_unblock a no-op 0, and
+# the fake csf above is an unconditional `exit 0`, so nothing ever drives a
+# real backend to failure). That is exactly the "test passes while production
+# is broken" shape this task's own design doc warns against, so the two cases
+# below drive a REAL backend failure and a REAL over-the-cap selection, and
+# check the exit status directly rather than through a command substitution
+# (`out="$(sw ...)"` loses no exit status by itself, but making the check
+# explicit — write to a file, read $? right after — removes any doubt).
+
+# --- partial-failure verification: a real backend failure must produce
+# PARTIAL + a non-zero exit, and must not stop the run for the other IP.
+BADIP="104.28.20.1"
+FAKEBIN2="$(mktemp -d "${TMPDIR:-/tmp}/swatter-fakecsf2.XXXXXX")"
+cat > "$FAKEBIN2/csf" <<EOF
+#!/bin/sh
+if [ "\$1" = "-dr" ] && [ "\$2" = "$BADIP" ]; then
+  echo "simulated failure" >&2
+  exit 1
+fi
+exit 0
+EOF
+chmod +x "$FAKEBIN2/csf"
+trap 'rm -rf "$WORK" "$FAKEBIN" "$FAKEBIN2"' EXIT
+
+seed 104.28.20.1
+seed 104.28.20.2
+SWATTER_CONF="$WORK/etc/swatter.conf" PATH="$FAKEBIN2:$PATH" \
+    bash "${ROOT}/bin/swatter" shared-egress-audit --fix >"$WORK/fix-partial.out" 2>&1
+rc_partial=$?
+fixout="$(cat "$WORK/fix-partial.out")"
+[[ "$rc_partial" -eq 1 ]] && PASS=$((PASS+1)) \
+  || { echo "FAIL audit-fix-partial-rc (got ${rc_partial}): ${fixout}"; FAIL=$((FAIL+1)); }
+case "$fixout" in *"104.28.20.1"*"PARTIAL"*) PASS=$((PASS+1));;
+  *) echo "FAIL audit-fix-partial-marks-failed: ${fixout}"; FAIL=$((FAIL+1));; esac
+case "$fixout" in *"104.28.20.2"*"ok"*) PASS=$((PASS+1));;
+  *) echo "FAIL audit-fix-partial-still-processes-other: ${fixout}"; FAIL=$((FAIL+1));; esac
+
+# --- count-gate verification: over SHARED_EGRESS_AUDIT_MAX without --force
+# must refuse AND must not have mutated anything yet (offenders.perm intact
+# for every selected IP) — proving the gate fires before any unblock, not that
+# it merely races the loop and reports failure after partial damage.
+seed 104.28.30.1
+seed 104.28.30.2
+SWATTER_CONF="$WORK/etc/swatter.conf" PATH="$FAKEBIN:$PATH" SHARED_EGRESS_AUDIT_MAX=1 \
+    bash "${ROOT}/bin/swatter" shared-egress-audit --fix >"$WORK/fix-gate.out" 2>&1
+rc_gate=$?
+[[ "$rc_gate" -ne 0 ]] && PASS=$((PASS+1)) \
+  || { echo "FAIL audit-fix-count-gate-rc (got ${rc_gate})"; FAIL=$((FAIL+1)); }
+check audit-fix-count-gate-untouched-1 "$(permflag 104.28.30.1)" "1"
+check audit-fix-count-gate-untouched-2 "$(permflag 104.28.30.2)" "1"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
