@@ -736,7 +736,14 @@ swatter_with_state_lock() {
     [[ "${SWATTER_NO_LOCK:-}" == "1" ]] && return 0
     have flock || return 0
     local wait="${1:-30}"; [[ "$wait" =~ ^[0-9]+$ ]] || wait=30
-    exec 9>"${STATE_DIR}/.lock" 2>/dev/null || return 0
+    # `exec` with only redirections (no command word) applies ALL of them to the
+    # shell PERMANENTLY, not just for this one open attempt. An unbraced
+    # `2>/dev/null` here therefore silently redirects the process's real fd 2 to
+    # /dev/null for the rest of its life, killing every log_* call after a
+    # successful lock acquisition — invisibly, since there's no error to notice.
+    # The brace group confines that 2>/dev/null to the group, so only fd 9 (the
+    # lock) persists.
+    { exec 9>"${STATE_DIR}/.lock"; } 2>/dev/null || return 0
     flock -w "$wait" 9
 }
 

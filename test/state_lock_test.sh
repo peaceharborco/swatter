@@ -19,6 +19,21 @@ STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/swatter-lock.XXXXXX")"; trap 'rm -rf "$S
 # free lock -> acquired (rc 0). On a box without flock this is also a no-op success.
 ( swatter_with_state_lock 1 ); check free-acquire "$(rc_class $?)" "zero"
 
+# Regression: swatter_with_state_lock used to open fd 9 via a bare `exec
+# 9>lock 2>/dev/null` — an exec with no command word applies ALL its
+# redirections to the current shell PERMANENTLY, so that unbraced 2>/dev/null
+# silently killed fd 2 for the rest of the process, not just for that one open
+# attempt. Every log_* call issued after a successful lock acquisition (by
+# unblock, import-bans, rollback-ladder, and the scan's own lock path) went
+# dark with no error to notice. Confirm a log_* call after acquiring still
+# reaches stderr. Wrapped in its own $(...) subshell so the acquired fd 9 is
+# scoped like the other cases above.
+out="$( { swatter_with_state_lock 1; log_warn "post-lock stderr probe"; } 2>&1 )"
+case "$out" in
+    *"post-lock stderr probe"*) PASS=$((PASS+1)) ;;
+    *) echo "FAIL post-lock-stderr-survives: got '${out}'"; FAIL=$((FAIL+1)) ;;
+esac
+
 if command -v flock >/dev/null 2>&1; then
     # Hold the lock on a SEPARATE open file description (fd 8). flock treats each
     # open() independently, so a second acquire (fd 9) must block even in-process.

@@ -22,17 +22,21 @@ printf '104.28.0.0/16\n' > "$WORK/etc/shared-egress.cidr"
 : > "$WORK/etc/shared-egress-asns.txt"
 : > "$WORK/etc/allow.cidr"; : > "$WORK/etc/cloudflare.cidr"; : > "$WORK/etc/monitoring.cidr"
 
-# import-bans takes the blocking state lock (swatter_with_state_lock), which,
-# when flock is present, opens fd 9 on the lock file via a bare `exec` with no
-# command word — a bash quirk where a bare exec's redirections (including its
-# incidental 2>/dev/null) attach to the shell itself, not just that one open,
-# so stderr goes dark for the REST of the process and this test's "did it log
-# the skip" assertion could never see it. cli_test.sh / fleet_test.sh /
-# rollback_ladder_test.sh / etc. dodge the same way: SWATTER_NO_LOCK=1 for a
-# single-process test. (NOTE for future edits to this comment: keep it OUTSIDE
-# the <<CONF heredoc below — that heredoc is unquoted for $WORK expansion, so
-# any backticks placed inside it are executed as real command substitution,
-# not treated as inline-code punctuation.)
+# import-bans takes the blocking state lock (swatter_with_state_lock) BEFORE
+# the loop that contains the shared-egress skip line below, so this test
+# deliberately does NOT set SWATTER_NO_LOCK=1 here — it exercises the real
+# lock-then-log path production actually runs. That used to matter a lot:
+# swatter_with_state_lock opened fd 9 via a bare `exec ... 2>/dev/null` (no
+# command word), which is a bash quirk where ALL of an unbraced exec's
+# redirections attach to the shell PERMANENTLY, not just for that one open —
+# so stderr went dark for the rest of the process, and the operator-facing
+# "skip shared-egress" log line this task exists to produce would have been
+# silently swallowed in every real run, not just dry ones. Fixed in
+# lib/common.sh (brace-scoped the 2>/dev/null); see test/state_lock_test.sh
+# for the focused regression. (NOTE for future edits to this comment: keep it
+# OUTSIDE the <<CONF heredoc below — that heredoc is unquoted for $WORK
+# expansion, so any backticks placed inside it are executed as real command
+# substitution, not treated as inline-code punctuation.)
 cat > "$WORK/etc/swatter.conf" <<CONF
 STORE=sqlite
 SWATTER_MODE=enforce
@@ -45,7 +49,6 @@ CLOUDFLARE_IPS_FILE="$WORK/etc/cloudflare.cidr"
 MONITORING_RANGES_FILE="$WORK/etc/monitoring.cidr"
 CF_MODE=off
 DIRECT_BACKEND=csf
-SWATTER_NO_LOCK=1
 CONF
 
 sw() { SWATTER_CONF="$WORK/etc/swatter.conf" PATH="$FAKEBIN:$PATH" bash "${ROOT}/bin/swatter" "$@" 2>&1; }
