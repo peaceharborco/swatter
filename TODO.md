@@ -1,43 +1,120 @@
 # Swatter — TODO / parked items
 
-## ⏭️ NEXT PICKUP: publication unfreeze (~2026-08-10)
+## ⏭️ NEXT PICKUP: AbuseIPDB arm + the WARP cohort
 
-Full detail: `docs/handoff-2026-08-04-unfreeze-and-gate-d.md` §1. Nothing else
-is due before then — the perm tripwire (5/run, 70/day) is passive and only
-alerts.
+**Swarm publication was unfrozen 2026-08-11 01:30 UTC — 257 IPs published, one
+clean cycle, cursor `1785195601` → `1786410301`, hub 200, 0 residual backlog, no
+WARN/ERROR.** `ABUSEIPDB_REPORT` is deliberately **still `false`** (staged: swarm
+first, watch, then the irreversible arm). Conf backup on cds1:
+`swatter.conf.bak-2026-08-10-unfreeze`.
 
-- [ ] **Re-size the backlog on the day — do NOT reuse 247.** It grows ~21
-      IPs/day (249 sized 08-08, minus the 2 cleared below), so expect ~290 by
-      08-10. Query is the publisher's own delta against the live cursor in
-      `/var/lib/swatter/swarm.publish.cursor`:
-      ```sql
-      SELECT a.ip FROM actions a JOIN offenders o ON o.ip = a.ip
-       WHERE o.perm=1 AND a.action='perm' AND a.dry_run=0
-       GROUP BY a.ip HAVING MAX(a.ts) > <cursor>;
-      ```
-      Two SQL traps: dual-plane/plane-upgrade legs **share a `ts`** with the
-      primary leg (a naive `r.ts = MAX(a.ts)` join double-counts — 369 vs 249),
-      and in SQLite `a.action="perm"` resolves to the **`offenders.perm`
-      column**, silently returning 0 rows. Single-quote SQL literals.
-- [ ] **Re-run the corroboration triage, don't reuse the old one.** On 08-08,
-      242/249 (97%) carried abuseipdb confidence100 or spamhaus DROP, leaving a
-      7-row human-review set. New weakly-corroborated rows accrue at the same
-      rate — that shortlist is where the next Automattic hides. Filter:
-      `reason NOT LIKE '%confidence100%' AND reason NOT LIKE '%spamhaus%'`,
-      then whois/PTR each. **whois beats PTR** — Automattic had no PTR at all.
-- [ ] **Check the retry queue before flipping AbuseIPDB:**
-      `SELECT COUNT(*) FROM pending_blocks WHERE action='perm';` (0 on 08-08).
-      `_swatter_retry_pending` (`lib/score.sh:377`, called from `swatter_scan`
-      at `:532`) re-drives queued failed blocks, and a queued **primary** perm
-      succeeding post-flip **will** be reported.
-- [ ] **Flip, then watch the first publish cycle** — cursor advances, hub
-      `/contribute` 200s, no rate-limit storms, AbuseIPDB no 429s.
+- [ ] **Flip `ABUSEIPDB_REPORT=true`** once you're satisfied with the swarm
+      cycle. Remember it has **no backlog** — it reports only perms placed
+      *after* the flip (~8/day at the current rate), so there is no burst to
+      stage. Re-check `SELECT COUNT(*) FROM pending_blocks WHERE action='perm';`
+      first (0 at the swarm flip): a queued **primary** perm succeeding on retry
+      post-flip **will** be reported, and AbuseIPDB has no delete API.
+- [ ] **Decide the WARP / shared-VPN policy** — see the new section below. Nine
+      WARP IPs are still live perm bans.
 
-**Done 2026-08-08 (do not redo):** backlog sized (249 → **247**); the two
-customer-facing FP bans cleared — `192.0.91.143` (Automattic/Jetpack) and
-`202.8.43.217` (Ahrefs crawler), both `allow` + `unblock --perm-allow`,
-verified on both planes; `monitoring.cidr` closed as a gate D precondition;
-`request_flood` characterized (below).
+### What the 08-10/11 unfreeze actually did
+
+- Backlog re-sized fresh: **264**, not the ~290 the old note predicted. Growth
+  ran **~7.7 IPs/day** since 08-08, not the 21/day extrapolated from the June
+  regime — **do not reuse the 21/day figure.**
+- `pending_blocks WHERE action='perm'` = 0; zero overlap with `allow.cidr` /
+  `OPERATOR_IPS`; all four publish gates dropped nothing.
+- Rule mix (primary legs): scanner_profile 150, critical_badpath 94,
+  high_badpath_repeat 18, error_burst 2, **request_flood 0** (the only two ever
+  were the 08-08 FPs, now cleared).
+- 7 IPs allowlisted + unblocked before the flip (264 → **257**) — see below.
+- `allow.cidr` is now **17** entries (was 10).
+
+**Methodology change, and the reason for it — do this every time from now on:**
+the 08-08 review filtered to weakly-corroborated rows and whois'd only those. It
+passed `45.157.112.169` and `158.173.77.149` as "defensible" on *confidence
+numbers alone*; whois was never run on them, and both turned out to be consumer
+VPN exits. **The corroboration filter cannot find this class of problem** — a
+shared VPN exit legitimately earns high abuseipdb confidence. Instead, profile
+**the whole backlog by ASN** (Team Cymru DNS bulk lookup:
+`dig +short <reversed-ip>.origin.asn.cymru.com TXT`, then
+`dig +short AS<n>.asn.cymru.com TXT`). It is free, unrated, runs over hundreds of
+IPs in a couple of minutes, and it is what surfaced both VPN cohorts. Then whois
+the weak set on top. **whois beats PTR** — Automattic had no PTR at all, and 4 of
+the 7 cleared this round had none either.
+
+**SQL traps (still true, still bite):** dual-plane/plane-upgrade legs **share a
+`ts`** with the primary leg, so a naive `r.ts = MAX(a.ts)` join double-counts;
+and in SQLite `a.action="perm"` resolves to the **`offenders.perm` column**
+(double quotes = identifier) and silently returns 0 rows. Single-quote SQL
+literals. The delta query is:
+```sql
+SELECT a.ip FROM actions a JOIN offenders o ON o.ip = a.ip
+ WHERE o.perm=1 AND a.action='perm' AND a.dry_run=0
+ GROUP BY a.ip HAVING MAX(a.ts) > <cursor>;
+```
+Note `MAX(a.ts) > cursor` also pulls in IPs whose **primary perm predates the
+cursor** but that took a `plane-upgrade` leg after it — `103.148.104.75` was
+permed 2026-06-25 and entered the backlog on an 08-09 upgrade row. "Oldest ts =
+go-live anchor" does **not** mean every ban in the delta is post-go-live.
+
+**Done 2026-08-08 (do not redo):** the two customer-facing FP bans cleared —
+`192.0.91.143` (Automattic/Jetpack) and `202.8.43.217` (Ahrefs crawler), both
+`allow` + `unblock --perm-allow`, verified on both planes; `monitoring.cidr`
+closed as a gate D precondition; `request_flood` characterized (below).
+
+## Cloudflare WARP + shared consumer VPN exits (opened 2026-08-11)
+
+**Found during the unfreeze review; the publishable slice is handled, the ban
+policy is not.**
+
+`104.28.0.0/16` is Cloudflare's **consumer WARP egress pool** (the 1.1.1.1 app) —
+AS13335, but **not** in Cloudflare's published edge IP list and therefore **not in
+`cloudflare.cidr`**, which covers `104.16.0.0/13` + `104.24.0.0/14` (104.16–
+104.27) and stops one block short. That is arguably by design: `cloudflare.cidr`
+exists to keep us from banning the reverse-proxy **edge**, and WARP is a client,
+not the proxy. But the collateral question is independent of that intent.
+
+Lifetime in `104.28.0.0/16` on cds1: **77 distinct IPs temp-banned, 13
+perm-banned.** Evidence tier is genuinely strong — most carry
+`abuseipdb confidence100` + `rule=critical_badpath` at score 91. These are not
+detection false positives; someone really did probe critical paths. The problem
+is that the source IP is shared by a large ordinary-user population.
+
+**Cleared 2026-08-11 (allowlist + `unblock --perm-allow`, both planes verified —
+`offenders.perm=0`, no `plane_blocks` row, no `cf-rules.tsv` ref, no `csf.deny`
+line, present in `csf.allow` + `allow.cidr`, `csf -g` deny hits 2 → 0):**
+
+- `104.28.208.56`, `104.28.214.118`, `104.28.240.187`, `104.28.254.16` — WARP.
+- `45.157.112.64`, `45.157.112.169`, `158.173.77.149` — **AS206092**, netname
+  `PARIS-FR-45-157-112-0`, org *"VPN Consumer Paris, France"* (F.N.S. Holdings,
+  CY). Consumer VPN exit.
+
+**Still open — 9 WARP IPs remain live perm bans** (they predate the publish
+cursor, so they were never in the backlog and publication did not touch them):
+`104.28.196.52`, `104.28.196.57`, `104.28.201.181`, `104.28.203.54`,
+`104.28.208.49`, `104.28.211.186`, `104.28.214.112`, `104.28.217.137`,
+`104.28.219.190`. Each is customer-facing today: a WARP user assigned that egress
+IP cannot reach any customer site.
+
+- [ ] **Decide the policy, then apply it uniformly.** Three options, and the
+      obvious one is a trap:
+      1. Clear the 9 individually (same treatment as the 7). Narrow, reversible,
+         but the range keeps generating new ones — 77 IPs seen so far.
+      2. Add `104.28.0.0/16` to `cloudflare.cidr` or `allow.cidr`. **This is the
+         trap.** Every CIDR in those files is a **never-block**, so allowlisting
+         the whole WARP pool means any attacker can bypass swatter entirely by
+         switching on the 1.1.1.1 app. Same hazard the `monitoring.cidr` note
+         warns about, but with a mass-market client. Do not do this casually.
+      3. Treat shared-VPN egress as temp-only — never let it reach a perm —
+         which is a scoring/ladder change, not a config one, and needs its own
+         design.
+- [ ] Whichever is chosen, the same question applies to AS206092 and any other
+      consumer-VPN ASN. The ASN sweep above is the instrument for finding them.
+- [ ] **Gate D interaction:** gate D's review rule already says VPN exits get
+      allowlisted first. At `REPEAT_WINDOW_DAYS=30` the WARP cohort's temps get a
+      4.3× wider window to accumulate into perms, so settle this **before** the
+      widen, not during the 615-row review.
 
 **Verify unblocks on both planes — the exit code is not enough.**
 `swatter_store_unblock` runs at `bin/swatter:167` **before** the failure check

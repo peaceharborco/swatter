@@ -45,6 +45,20 @@ alerts, and it was sized to be quiet in this regime.
 
 ## 1. Publication unfreeze (~2026-08-10) — a reviewed flip, not a toggle
 
+> **STATUS 2026-08-11 01:30 UTC — swarm arm DONE, AbuseIPDB arm still frozen.**
+> Backlog re-sized fresh at **264** (growth was ~7.7/day, **not** the 21/day
+> predicted); 7 shared-consumer-VPN IPs allowlisted + unblocked first (264 →
+> **257**); `SWARM_PUBLISH=true` flipped, one clean cycle published all 257,
+> cursor `1785195601` → `1786410301`, hub `/contribute` 200, hub health ok, 0
+> residual backlog, no WARN/ERROR. `ABUSEIPDB_REPORT` remains `false` by choice
+> (staged). Conf backup: `/etc/swatter/swatter.conf.bak-2026-08-10-unfreeze`.
+> The review found a cohort this document's own method could not have caught —
+> see **todo.md → "Cloudflare WARP + shared consumer VPN exits"**, and note the
+> methodology change: **profile the whole backlog by ASN, not just the weakly-
+> corroborated slice.** Two IPs cleared on 08-08 as "defensible on confidence"
+> were consumer VPN exits; a shared VPN exit legitimately earns high abuseipdb
+> confidence, so the corroboration filter is blind to this class by construction.
+
 Frozen since the gate B deploy: `SWARM_PUBLISH=false`,
 `ABUSEIPDB_REPORT=false`. Last swarm publish `2026-07-27 23:40:07`, none since.
 
