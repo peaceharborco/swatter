@@ -1,18 +1,29 @@
 # Swatter — TODO / parked items
 
-## ⏭️ NEXT PICKUP: the AbuseIPDB arm (last frozen knob)
+## ⏭️ NEXT PICKUP: confirm the first AbuseIPDB report, then gate D
 
-**cds1 is on v2.13.0 as of 2026-08-11 12:54 UTC** — the shared-egress cap is
-deployed, verified, and the whole WARP/shared-VPN cohort is remediated. Swarm
-publication has been live since 01:30 UTC (257 IPs, cursor now advancing
-normally). **`ABUSEIPDB_REPORT` is the only thing still `false`.**
+**Everything is unfrozen and deployed as of 2026-08-11.** cds1 runs v2.13.0, the
+shared-egress cap is live, the WARP/shared-VPN cohort is remediated, and **both**
+publication arms are on: `SWARM_PUBLISH="true"` and `ABUSEIPDB_REPORT="true"`
+(flipped 13:05 UTC; conf backup `swatter.conf.bak-2026-08-11-abuseipdb`).
 
-- [ ] **Flip `ABUSEIPDB_REPORT=true`** — its precondition (the cap) is now met.
-      It has **no backlog**: it reports only perms placed *after* the flip
-      (~8/day), so there is no burst to stage. Re-check
-      `SELECT COUNT(*) FROM pending_blocks WHERE action='perm';` first — a queued
-      **primary** perm succeeding on retry post-flip **will** be reported, and
-      AbuseIPDB has no delete API.
+Pre-flight at the flip, all clean: `pending_blocks WHERE action='perm'` = 0;
+`shared-egress-audit` clean over 1,073 perm bans with both arms live;
+`ABUSEIPDB_REPORT_MIN_ACTION` unset → shipped default `perm`, so **temps are
+never reported** — which, with the cap, means shared-VPN addresses cannot reach
+AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/day.
+
+- [ ] **Confirm the first real report.** Four post-flip scans were clean but
+      placed **0 perms**, so the arm is enabled and erroring on nothing — the
+      first actual submission is still unobserved. Check with:
+      ```bash
+      grep -i abuseipdb /var/log/swatter/swatter.log | tail
+      ```
+      Healthy = a report line per new perm, no `429`, no auth failure. Perms land
+      roughly every 2–3h at the current rate. If it 429s, the arm backs off; that
+      is worth knowing but is not urgent.
+- [ ] Then the only remaining scheduled work is **gate D** (floor
+      **2026-08-26 22:40 UTC**) — see its section below; preconditions unchanged.
 
 ### Deployed 2026-08-11 (v2.13.0) — do not redo
 
