@@ -143,6 +143,31 @@ _swatter_apply_plane() {
         log_info "exempt ${ip} (${nb}) score=${folded}"
         _swatter_audit "$ip" "$folded" "exempt" "none" 0 "exempt:${nb}" "$ev" "$rep"; return 1
     fi
+    # Shared consumer-VPN egress: cap at a ladder-max temp, never a perm.
+    # The offense is real, but the identifier is shared by many unrelated
+    # people, so a PERMANENT ban is collateral against all of them — and a
+    # published one recommends that every other host do the same.
+    #
+    # audit_action MUST move with action. It is bound once at entry (:128) and
+    # is what the success audit writes (:212) — and the nightly digest counts
+    # perms from the AUDIT log, not the ledger (lib/report.sh). Downgrading
+    # only `action` would report a permanent ban that was never placed.
+    # A secondary leg's own label (dual-plane / plane-upgrade) is preserved.
+    local shared_egress=""
+    if [[ "$action" == "perm" && "${SHARED_EGRESS_ENABLE:-true}" == "true" ]] \
+       && shared_egress="$(swatter_is_shared_egress "$ip")"; then
+        action="temp"
+        [[ "$audit_action" == "perm" ]] && audit_action="temp"
+        ttl="$(_swatter_pick_ttl 99)"   # ladder max; :168's CF rewrite is skipped now
+        reason="${reason} shared-egress=${shared_egress} perm-capped"
+        ev="$(_swatter_ev_stamp "$ev" shared_egress 1)"   # integer only — a label here no-ops
+        SWATTER_RUN_SHARED_CAPS=$(( ${SWATTER_RUN_SHARED_CAPS:-0} + 1 ))
+        log_warn "shared-egress cap: ${ip} (${shared_egress}) perm -> temp ttl=${ttl}"
+    fi
+    # No else branch is needed: swatter_is_shared_egress echoes nothing when it
+    # returns 1, and a short-circuit on the `action`/enable test never runs the
+    # assignment at all — `shared_egress` is "" in both cases. It stays in scope
+    # for the AbuseIPDB guard below.
     if (( _SW_TOTAL_BLOCKS >= MAX_BLOCKS_PER_RUN )); then
         log_warn "circuit_breaker: MAX_BLOCKS_PER_RUN=${MAX_BLOCKS_PER_RUN} reached; ${ip} skipped"
         SWATTER_RUN_BREAKER=1
@@ -205,7 +230,13 @@ _swatter_apply_plane() {
         # high-confidence PERM blocks (repeat offender / hard intel), not first-seen
         # temps — a scoring false-positive or a swarm-corroborated temp is outbound
         # reputational harm to a third party. Set to 'temp' to report both.
-        if [[ "$audit_action" == "$action" ]] \
+        # `shared_egress` is checked FIRST and explicitly: the protection must
+        # not rest on the perm/temp distinction. With
+        # ABUSEIPDB_REPORT_MIN_ACTION=temp the clauses below are both true for a
+        # capped IP, which would report the very address the cap exists to keep
+        # off a public blocklist.
+        if [[ -z "$shared_egress" ]] \
+           && [[ "$audit_action" == "$action" ]] \
            && { [[ "${ABUSEIPDB_REPORT_MIN_ACTION:-perm}" == "temp" ]] || [[ "$action" == "perm" ]]; }; then
             swatter_abuseipdb_report "$ip" "$ev" "$reason"
         fi
