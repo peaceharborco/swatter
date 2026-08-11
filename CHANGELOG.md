@@ -28,6 +28,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CIDR token that overlaps one** (`104.28.0.0/16` and `104.28.0.0/24` alike) —
   matching is by overlap, not host-address containment.
 
+### Fixed
+- **A CIDR block target bypassed the never-block set entirely** (pre-existing,
+  all prior versions). `swatter_is_never_block` matched by host-address
+  containment, so a prefix was tested as an address and never matched anything —
+  `swatter import-bans` with a line reading `162.158.0.0/15` or `104.16.0.0/13`
+  would `csf -d` a **Cloudflare edge range**, taking every proxied site offline
+  at the origin. Matching is now by prefix *overlap*, which is bit-identical to
+  the old behavior for host addresses (verified over 2,000 sweep cases) and
+  differs only for the CIDR tokens that were previously unprotected. Found while
+  closing the same hole in the shared-egress gate.
+- `swatter_with_state_lock` permanently redirected the process's stderr to
+  `/dev/null`. `exec 9>"$STATE_DIR/.lock" 2>/dev/null` applies **both**
+  redirections to the shell, not just the lock fd, so every `log_*` call after
+  the lock was silently discarded — affecting `unblock`, `import-bans`,
+  `rollback-ladder`, and the swarm sweep inside `refresh-feeds`. The redirection
+  is now brace-scoped to the `exec` itself.
+
 ### Upgrade notes
 - **Two config files are load-bearing and are not created by copying code.**
   `/etc/swatter/shared-egress.cidr` and `/etc/swatter/shared-egress-asns.txt`
