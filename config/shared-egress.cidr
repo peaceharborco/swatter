@@ -1,0 +1,10 @@
+# Shared consumer-VPN egress ranges — matching addresses are capped at a
+# ladder-max TEMP ban and can never become permanent or published.
+#
+# This is NOT an allowlist. Addresses here are still banned; they just cannot be
+# banned FOREVER, because one address is shared by many unrelated people.
+#
+# Every line must be a real, narrow range with evidence. Lines broader than a
+# /16 (v4) or /32 (v6) are rejected and disable this file entirely — a wide
+# entry here silently stops ALL permanent banning on the host.
+104.28.0.0/16  # Cloudflare consumer WARP egress (1.1.1.1 app); NOT in the published CDN edge list

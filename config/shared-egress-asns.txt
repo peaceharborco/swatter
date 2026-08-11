@@ -1,0 +1,13 @@
+# Shared consumer-VPN egress ASNs — the fallback arm of the shared-egress cap,
+# used only when the CIDR file does not match. Format: "<asn> # name".
+#
+# EMPTY BY DEFAULT, deliberately. An ASN is a blunt instrument: it caps every
+# address that AS originates. Add an entry only with documented evidence that
+# the AS is consumer-VPN egress, and prefer a precise CIDR whenever one exists.
+#
+# Do NOT add 13335 (Cloudflare). Its published CDN edge ranges are already
+# never-blocked earlier, but the AS also originates non-edge, non-WARP space —
+# listing it wholesale caps more than the measured problem.
+#
+# Example (add locally if it applies to your host):
+# 206092 # F.N.S. Holdings / "VPN Consumer" — consumer VPN exits

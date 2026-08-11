@@ -195,6 +195,19 @@ ABUSEIPDB_DAILY_QUOTA=1000
 : "${ASN_SIGNAL_ENABLE:=false}"
 : "${HOSTING_ASNS_FILE:=/etc/swatter/hosting-asns.txt}"
 : "${W_ASN:=12}"
+
+# Shared consumer-VPN egress (Cloudflare WARP et al). An address here is used by
+# many ordinary people at once, so a PERMANENT ban on it is collateral against
+# everyone sharing it — the offense is real, the identifier is not the offender.
+# Matching caps enforcement at a ladder-max temp; see lib/score.sh's veto.
+# CIDR is checked first and needs no DNS; the ASN list is the fallback.
+: "${SHARED_EGRESS_ENABLE:=true}"
+: "${SHARED_EGRESS_CIDR_FILE:=/etc/swatter/shared-egress.cidr}"
+: "${SHARED_EGRESS_ASNS_FILE:=/etc/swatter/shared-egress-asns.txt}"
+# Width floor for the CIDR file. Tighter than the intel-feed floor (/8) on
+# purpose: a too-broad line here fails toward NOT banning, which is silent.
+: "${SHARED_EGRESS_MIN_PREFIX4:=16}"
+: "${SHARED_EGRESS_MIN_PREFIX6:=32}"
 : "${HONEYPOT_PATHS_FILE:=/etc/swatter/honeypot.paths}"
 : "${HONEYPOT_OVERRIDES_SUPPRESS:=false}"
 : "${PERSIST_ENABLE:=true}"
