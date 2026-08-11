@@ -295,7 +295,7 @@ swatter_is_shared_egress() {
 - [ ] **Step 7: Run the test to verify it passes**
 
 Run: `bash test/shared_egress_test.sh`
-Expected: `Total: 14 passed, 0 failed`
+Expected: `Total: 12 passed, 0 failed`
 
 - [ ] **Step 8: Confirm no existing suite regressed**
 
