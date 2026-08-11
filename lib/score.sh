@@ -154,20 +154,31 @@ _swatter_apply_plane() {
     # only `action` would report a permanent ban that was never placed.
     # A secondary leg's own label (dual-plane / plane-upgrade) is preserved.
     local shared_egress=""
-    if [[ "$action" == "perm" && "${SHARED_EGRESS_ENABLE:-true}" == "true" ]] \
-       && shared_egress="$(swatter_is_shared_egress "$ip")"; then
-        action="temp"
-        [[ "$audit_action" == "perm" ]] && audit_action="temp"
-        ttl="$(_swatter_pick_ttl 99)"   # ladder max; :168's CF rewrite is skipped now
-        reason="${reason} shared-egress=${shared_egress} perm-capped"
-        ev="$(_swatter_ev_stamp "$ev" shared_egress 1)"   # integer only — a label here no-ops
-        SWATTER_RUN_SHARED_CAPS=$(( ${SWATTER_RUN_SHARED_CAPS:-0} + 1 ))
-        log_warn "shared-egress cap: ${ip} (${shared_egress}) perm -> temp ttl=${ttl}"
+    if [[ "$action" == "perm" && "${SHARED_EGRESS_ENABLE:-true}" == "true" ]]; then
+        # A missing lib/asn.sh must not resolve to the same outcome as a
+        # genuine non-match: both leave `shared_egress` empty and let the
+        # perm proceed, but a silent skip here is indistinguishable from "not
+        # shared egress" in exactly the dangerous direction (an uncapped perm,
+        # unlogged, uncounted). Production always sources asn.sh before
+        # score.sh (bin/swatter's module loop), so this only fires for a
+        # future entry point that forgets it — but it must be loud when it
+        # does. Still fails open: the perm proceeds either way.
+        if ! declare -F swatter_is_shared_egress >/dev/null; then
+            log_warn "shared-egress cap unavailable: lib/asn.sh not loaded (swatter_is_shared_egress undefined); ${ip} perm proceeding uncapped"
+        elif shared_egress="$(swatter_is_shared_egress "$ip")"; then
+            action="temp"
+            [[ "$audit_action" == "perm" ]] && audit_action="temp"
+            ttl="$(_swatter_pick_ttl 99)"   # ladder max; :168's CF rewrite is skipped now
+            reason="${reason} shared-egress=${shared_egress} perm-capped"
+            ev="$(_swatter_ev_stamp "$ev" shared_egress 1)"   # integer only — a label here no-ops
+            SWATTER_RUN_SHARED_CAPS=$(( ${SWATTER_RUN_SHARED_CAPS:-0} + 1 ))
+            log_warn "shared-egress cap: ${ip} (${shared_egress}) perm -> temp ttl=${ttl}"
+        fi
     fi
     # No else branch is needed: swatter_is_shared_egress echoes nothing when it
-    # returns 1, and a short-circuit on the `action`/enable test never runs the
-    # assignment at all — `shared_egress` is "" in both cases. It stays in scope
-    # for the AbuseIPDB guard below.
+    # returns 1, and a short-circuit on the outer `action`/enable test never
+    # reaches either inner branch at all — `shared_egress` is "" in every
+    # non-match case. It stays in scope for the AbuseIPDB guard below.
     if (( _SW_TOTAL_BLOCKS >= MAX_BLOCKS_PER_RUN )); then
         log_warn "circuit_breaker: MAX_BLOCKS_PER_RUN=${MAX_BLOCKS_PER_RUN} reached; ${ip} skipped"
         SWATTER_RUN_BREAKER=1

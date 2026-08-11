@@ -5,6 +5,7 @@ set -uo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "${HERE}/.." && pwd)"
 source "${ROOT}/lib/common.sh"
+source "${ROOT}/lib/asn.sh"
 source "${ROOT}/lib/score.sh"
 
 PASS=0; FAIL=0
