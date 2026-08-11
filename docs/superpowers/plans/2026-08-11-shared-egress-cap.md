@@ -127,9 +127,9 @@ no_ overbroad-rejected swatter_is_shared_egress 104.28.1.1
 
 # --- ASN arm ---
 printf '104.28.0.0/16\n' > "$SHARED_EGRESS_CIDR_FILE"
-printf '206092 # VPN Consumer\n' > "$SHARED_EGRESS_ASNS_FILE"; reset
-CYMRU_TXT='206092 | 45.157.112.0/24 | CY | ripencc | 2019-01-01'
-check asn-match "$(swatter_is_shared_egress 45.157.112.64)" "AS206092(VPN Consumer)"
+printf '64496 # Example consumer VPN\n' > "$SHARED_EGRESS_ASNS_FILE"; reset
+CYMRU_TXT='64496 | 203.0.113.0/24 | ZZ | example | 2020-01-01'
+check asn-match "$(swatter_is_shared_egress 203.0.113.64)" "AS64496(Example consumer VPN)"
 reset; CYMRU_TXT='16276 | 51.222.0.0/16 | FR | ripencc | 2015-01-01'
 no_ asn-unlisted swatter_is_shared_egress 51.222.1.1
 
@@ -149,7 +149,7 @@ reset; : > "$SHARED_EGRESS_CIDR_FILE"; : > "$SHARED_EGRESS_ASNS_FILE"
 no_ empty-files swatter_is_shared_egress 104.28.1.1
 
 # --- poisoned ASN cache is rejected on READ, not just on write ---
-printf '206092 # VPN Consumer\n' > "$SHARED_EGRESS_ASNS_FILE"
+printf '64496 # Example consumer VPN\n' > "$SHARED_EGRESS_ASNS_FILE"
 printf '104.28.0.0/16\n' > "$SHARED_EGRESS_CIDR_FILE"; reset
 printf 'not-an-asn' > "$STATE_DIR/asn/203.0.113.9"
 CYMRU_TXT=""   # cache is the only source; a corrupt entry must not be trusted
@@ -289,7 +289,7 @@ swatter_is_shared_egress() {
 # listing it wholesale caps more than the measured problem.
 #
 # Example (add locally if it applies to your host):
-# 206092 # F.N.S. Holdings / "VPN Consumer" — consumer VPN exits
+# 64496 # Example consumer-VPN provider — replace with a real, evidence-backed entry
 ```
 
 - [ ] **Step 7: Run the test to verify it passes**
