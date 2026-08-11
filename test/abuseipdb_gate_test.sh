@@ -8,6 +8,7 @@ HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "${HERE}/.." && pwd)"
 source "${ROOT}/lib/common.sh"
 source "${ROOT}/lib/store_sqlite.sh"
+source "${ROOT}/lib/asn.sh"
 source "${ROOT}/lib/score.sh"
 command -v sqlite3 >/dev/null 2>&1 || { echo "SKIP (no sqlite3)"; echo "Total: 0 passed, 0 failed"; exit 0; }
 
