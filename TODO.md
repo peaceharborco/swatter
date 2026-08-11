@@ -1,6 +1,6 @@
 # Swatter — TODO / parked items
 
-## ⏭️ NEXT PICKUP: confirm the first AbuseIPDB report, then gate D
+## ⏭️ NEXT PICKUP: gate D
 
 **Everything is unfrozen and deployed as of 2026-08-11.** cds1 runs v2.13.0, the
 shared-egress cap is live, the WARP/shared-VPN cohort is remediated, and **both**
@@ -13,17 +13,38 @@ Pre-flight at the flip, all clean: `pending_blocks WHERE action='perm'` = 0;
 never reported** — which, with the cap, means shared-VPN addresses cannot reach
 AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/day.
 
-- [ ] **Confirm the first real report.** Four post-flip scans were clean but
-      placed **0 perms**, so the arm is enabled and erroring on nothing — the
-      first actual submission is still unobserved. Check with:
+- [x] **Confirm the first real report — CONFIRMED 2026-08-11.** First submission
+      landed **17:00:17 UTC** (`34.66.85.241`, `critical_badpath`). Three perms
+      have been placed since the flip and **all three reported cleanly** —
+      `34.66.85.241` 17:00, `20.194.31.226` 19:05, `34.53.54.51` 19:30. No
+      failures, no `429`, no auth error. The two earlier perms that day (03:15,
+      12:05) predate the flip and correctly have no marker.
+
+      **The verification command in the old note was wrong — do not reuse it.**
+      `grep -i abuseipdb swatter.log` returns only *intel-enrichment* lines
+      (`intel=abuseipdb:confidenceNN`) and never a report line, because the
+      success path logs **nothing at all**. swatter.log contained zero lines
+      matching `report` in any case. The real check is the marker dir plus the
+      failure grep, and it only works **as a pair**:
       ```bash
-      grep -i abuseipdb /var/log/swatter/swatter.log | tail
+      ls /var/lib/swatter/reported/                                    # a file = that IP reported OK
+      grep 'abuseipdb report .* failed' /var/log/swatter/swatter.log   # empty = no failures
       ```
-      Healthy = a report line per new perm, no `429`, no auth failure. Perms land
-      roughly every 2–3h at the current rate. If it 429s, the arm backs off; that
-      is worth knowing but is not urgent.
-- [ ] Then the only remaining scheduled work is **gate D** (floor
-      **2026-08-26 22:40 UTC**) — see its section below; preconditions unchanged.
+      Why the pair: on curl failure `lib/report_abuseipdb.sh` runs `rm -f
+      "$marker"` so the next perm retries — therefore a **surviving marker means
+      curl exited 0**, not merely "attempted", while a **missing** marker is
+      ambiguous (never attempted *or* failed-and-cleared). Only the empty
+      failure-grep disambiguates. The WARN does reach the log: `log_warn` →
+      stderr (`lib/common.sh:489`) → cron's `>> swatter.log 2>&1`; `LOG_LEVEL`
+      is `info` so warn passes, and the append-to-file redirect stays valid for
+      the backgrounded POST subshell after the parent scan exits.
+
+      Gotcha for later: the marker is **never removed on success** and nothing
+      prunes the dir, so it grows one file per reported IP forever. It is an
+      append-only ledger — do not read a file count as "recent activity".
+      `ABUSEIPDB_REPORT_TTL` is unset → default 900s.
+- [ ] **Gate D** (floor **2026-08-26 22:40 UTC**) is now the only remaining
+      scheduled work — see its section below; preconditions unchanged.
 
 ### Deployed 2026-08-11 (v2.13.0) — do not redo
 
