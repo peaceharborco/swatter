@@ -18,6 +18,10 @@
 #   /etc/swatter/monitoring.cidr           (0644)
 #   /etc/swatter/hosting-asns.txt          (0644; not overwritten on upgrade)
 #   /etc/swatter/hosting-asns.txt.example  (0644; latest curated list to diff)
+#   /etc/swatter/shared-egress.cidr             (0644; not overwritten on upgrade)
+#   /etc/swatter/shared-egress.cidr.example     (0644; latest curated list to diff)
+#   /etc/swatter/shared-egress-asns.txt         (0644; not overwritten on upgrade)
+#   /etc/swatter/shared-egress-asns.txt.example (0644; latest curated list to diff)
 #   /etc/swatter/honeypot.paths.example    (0644; live honeypot.paths is never overwritten)
 #   /etc/cron.d/swatter                    (0644; skipped with --no-cron)
 #   /etc/logrotate.d/swatter               (0644)
@@ -233,6 +237,13 @@ _install_local() {
     [[ -f /etc/swatter/hosting-asns.txt ]] || install -m 0644 "${SRC}"/config/hosting-asns.txt /etc/swatter/hosting-asns.txt 2>/dev/null \
         || echo "warning: could not install /etc/swatter/hosting-asns.txt — hosting-ASN heuristics disabled until it exists" >&2
     install -m 0644 "${SRC}"/config/hosting-asns.txt /etc/swatter/hosting-asns.txt.example 2>/dev/null || true
+    # shared-egress lists are operator-editable; install live only if absent,
+    # always ship .example to diff.
+    [[ -f /etc/swatter/shared-egress.cidr ]] || install -m 0644 "${SRC}"/config/shared-egress.cidr /etc/swatter/shared-egress.cidr 2>/dev/null \
+        || echo "warning: could not install /etc/swatter/shared-egress.cidr — shared-egress CIDR arm disabled until it exists" >&2
+    install -m 0644 "${SRC}"/config/shared-egress.cidr /etc/swatter/shared-egress.cidr.example 2>/dev/null || true
+    [[ -f /etc/swatter/shared-egress-asns.txt ]] || install -m 0644 "${SRC}"/config/shared-egress-asns.txt /etc/swatter/shared-egress-asns.txt 2>/dev/null || true
+    install -m 0644 "${SRC}"/config/shared-egress-asns.txt /etc/swatter/shared-egress-asns.txt.example 2>/dev/null || true
     # honeypot is operator-authored; ship only the example, never overwrite a live file.
     install -m 0644 "${SRC}"/config/honeypot.paths.example /etc/swatter/honeypot.paths.example 2>/dev/null || true
     if [[ -f /etc/swatter/swatter.conf ]]; then

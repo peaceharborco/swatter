@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Shared consumer-VPN egress policy: permanent bans are capped at a ladder-max
+  temp on known shared egress (Cloudflare WARP ships by default), which also
+  keeps those addresses off the swarm and out of AbuseIPDB. New
+  `swatter shared-egress-audit [--fix]` sweeps perms already on the books.
+
+### Changed
+- **`SHARED_EGRESS_ENABLE` defaults to `true`**, so upgrading changes behavior
+  without opt-in: existing permanent bans are untouched, but new ones can no
+  longer be placed on the shipped WARP range. Set it to `false` to keep the old
+  behavior. `import-bans` now skips shared-egress addresses.
+
 ## [2.12.0] - 2026-07-30
 
 ### Added

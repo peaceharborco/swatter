@@ -450,6 +450,40 @@ this document will no longer exist on that host until you upgrade again.
 
 ---
 
+## Shared consumer-VPN egress
+
+Some addresses are used by many unrelated people at once — Cloudflare WARP
+(`104.28.0.0/16`, the 1.1.1.1 app) and consumer VPN exits. Offenses from them
+are real, but the *identifier* is not the offender, so swatter caps them at a
+ladder-maximum temp (72h) and never a permanent ban. That also keeps them off
+the swarm, which publishes only from the permanent-ban store, and out of
+AbuseIPDB, which excludes shared-egress explicitly regardless of the report
+threshold configured.
+
+**This is not an allowlist.** The IP is still blocked, repeatedly, for as long
+as it misbehaves. Do **not** add these ranges to `allow.cidr` or
+`cloudflare.cidr` — everything in those files is a never-block, so that would
+hand anyone a bypass by switching on a free consumer VPN.
+
+- Review what the policy would refuse: `swatter shared-egress-audit`
+- Clear pre-existing perms: `swatter shared-egress-audit --fix`
+  (unblocks only — it does not allowlist, because these addresses rotate
+  between clients)
+- Disable entirely: `SHARED_EGRESS_ENABLE="false"` (takes effect next scan;
+  does not re-ban anything already capped)
+
+**Adding entries.** Prefer a precise CIDR over an ASN — an ASN caps everything
+that AS originates. Any line broader than `/16` (v4) or `/32` (v6) is rejected
+and disables the whole CIDR file, because a wide entry would silently stop all
+permanent banning. Check `swatter test-config` after editing.
+
+**Residual risk, accepted knowingly.** Permanent bans are impossible on these
+ranges, so a patient attacker can rotate through the pool and return within 72h.
+On the Cloudflare plane this costs nothing — a CF "perm" is already TTL-emulated
+at the same ladder maximum — so the real change is confined to the CSF plane.
+
+---
+
 ## Command reference used above
 
 | Command | Purpose |
