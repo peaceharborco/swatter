@@ -76,7 +76,13 @@ _swatter_asn_attack_shaped() {
 }
 
 # --- shared consumer-VPN egress -------------------------------------------
-# Memoized per process: "" unchecked, 1 usable, 0 rejected.
+# "" unchecked, 1 usable, 0 rejected. This memo only spans the shell that sets
+# it, and every production caller of swatter_is_shared_egress runs it inside
+# $( ) — so a per-IP call validates (and warns) in its own subshell and the
+# result dies with it. It is still worth having: a caller that sweeps many IPs
+# primes it ONCE in the parent first (cmd_shared_egress_audit does), and every
+# subshell below then inherits the verdict instead of re-reading, re-validating
+# and re-warning per IP.
 _SW_SHARED_CIDR_OK=""
 
 # _swatter_shared_egress_cidr_usable : 0 if the CIDR file exists and every line
@@ -103,6 +109,21 @@ _swatter_shared_egress_cidr_usable() {
     _SW_SHARED_CIDR_OK=0; return 1
 }
 
+# _swatter_shared_egress_asns_usable : 0 if the ASN list holds at least one real
+# entry.
+#
+# NOT `[[ -s ]]`: the shipped list is deliberately entry-free but carries ~13
+# lines of documentation, so a size test called it usable and put a Team Cymru
+# DNS lookup (dig +time=3) on the path of every perm candidate outside the CIDR
+# ranges — hundreds of serial lookups on a cold-cache audit, to compare against
+# nothing. A line starting with a digit is the same shape swatter_is_shared_egress
+# and test-config parse as an entry.
+_swatter_shared_egress_asns_usable() {
+    local f="${SHARED_EGRESS_ASNS_FILE:-}"
+    [[ -s "$f" ]] || return 1
+    grep -qE '^[[:space:]]*[0-9]' "$f" 2>/dev/null
+}
+
 # swatter_is_shared_egress <ip> : echo a label + return 0 if the IP is shared
 # consumer-VPN egress, else return 1 silently.
 #
@@ -126,7 +147,7 @@ swatter_is_shared_egress() {
         printf 'cidr'; return 0
     fi
     [[ "$ip" != */* ]] || return 1
-    [[ -s "${SHARED_EGRESS_ASNS_FILE:-}" ]] || return 1
+    _swatter_shared_egress_asns_usable || return 1
     asn="$(swatter_asn_resolve "$ip")" || return 1
     [[ -n "$asn" ]] || return 1
     while IFS= read -r line; do

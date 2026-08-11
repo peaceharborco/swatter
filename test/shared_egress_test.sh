@@ -92,6 +92,21 @@ reset; CYMRU_TXT='64496 | 203.0.113.0/24 | ZZ | example | 2020-01-01'
 no_ asn-arm-skipped-for-prefix swatter_is_shared_egress 203.0.113.0/24
 check asn-arm-no-dns-for-prefix "$(dns_calls)" "0"
 
+# The ASN arm must also be inert when the list holds only comments. The shipped
+# /etc/swatter/shared-egress-asns.txt is exactly that shape — documentation, no
+# entries — so a `-s` (non-empty) gate here bought a Cymru lookup per perm
+# candidate against a list nothing can match.
+reset; printf '# only comments, no entries\n#64496 # commented out\n' > "$SHARED_EGRESS_ASNS_FILE"
+: > "$DNS_LOG"
+no_ asn-comments-only-no-match swatter_is_shared_egress 203.0.113.64
+check asn-comments-only-no-dns "$(dns_calls)" "0"
+printf '64496 # Example consumer VPN\n' > "$SHARED_EGRESS_ASNS_FILE"; reset
+# Control: with a real entry the arm IS live and DOES resolve — otherwise the
+# two zero-lookup assertions above would also pass on a permanently dead arm.
+: > "$DNS_LOG"
+check asn-live-arm-match "$(swatter_is_shared_egress 203.0.113.64)" "AS64496(Example consumer VPN)"
+check asn-live-arm-resolves "$(dns_calls)" "1"
+
 # --- fail open: DNS dead + no CIDR match ---
 reset; CYMRU_TXT=""
 no_ dns-fail-open swatter_is_shared_egress 51.222.1.1
@@ -108,10 +123,18 @@ reset; : > "$SHARED_EGRESS_CIDR_FILE"; : > "$SHARED_EGRESS_ASNS_FILE"
 no_ empty-files swatter_is_shared_egress 104.28.1.1
 
 # --- poisoned ASN cache is rejected on READ, not just on write ---
+# Asserted against swatter_asn_resolve DIRECTLY, which is the only place the
+# read-time validation is observable. Routing it through swatter_is_shared_egress
+# proves nothing: a corrupt cached value is compared against a list of numeric
+# ASNs, so it cannot match whether or not it was validated — that assertion stays
+# green with the validation deleted. Here, deleting it makes swatter_asn_resolve
+# hand "not-an-asn" back to its caller as a resolved ASN.
 printf '64496 # Example consumer VPN\n' > "$SHARED_EGRESS_ASNS_FILE"
 printf '104.28.0.0/16\n' > "$SHARED_EGRESS_CIDR_FILE"; reset
 printf 'not-an-asn' > "$STATE_DIR/asn/203.0.113.9"
 CYMRU_TXT=""   # cache is the only source; a corrupt entry must not be trusted
+check poisoned-cache-not-returned "$(swatter_asn_resolve 203.0.113.9)" ""
+no_ poisoned-cache-resolve-fails swatter_asn_resolve 203.0.113.9
 no_ poisoned-cache-rejected swatter_is_shared_egress 203.0.113.9
 
 echo "----------------------------------------"
