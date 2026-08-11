@@ -566,7 +566,7 @@ swatter_scan() {
 
     local ip score reqs ev novhost rep replabel suppress folded
     _SW_TOTAL_BLOCKS=0; SWATTER_RUN_WATCHED=0; SWATTER_RUN_ACTED=0; SWATTER_RUN_BREAKER=0
-    SWATTER_RUN_PERMS=0
+    SWATTER_RUN_PERMS=0; SWATTER_RUN_SHARED_CAPS=0
     # Re-drive durably-queued failed blocks FIRST — before this scan's fresh
     # offenders — so a transient backend failure is retried even when the offender
     # never reappears in the log. Retries count against MAX_BLOCKS_PER_RUN (they go
@@ -682,7 +682,12 @@ swatter_scan() {
 
     [[ "${PERSIST_ENABLE:-true}" == "true" ]] && swatter_store_sighting_sweep "${PERSIST_WINDOW_DAYS:-3}"
 
-    log_info "scan complete: ${SWATTER_RUN_WATCHED} over-watch, ${SWATTER_RUN_ACTED} acted (mode=${SWATTER_MODE}, cap=${MAX_BLOCKS_PER_RUN})"
+    # shared-egress caps are reported at RUN level, not just per IP: a valid but
+    # too-wide CIDR line (an exact /16 paste error is inside the width floor)
+    # mass-caps perms, and per-IP warnings scattered through a busy log are
+    # exactly what nobody reads. Suffixed only when non-zero so the line every
+    # operator greps for keeps its shape on a normal run.
+    log_info "scan complete: ${SWATTER_RUN_WATCHED} over-watch, ${SWATTER_RUN_ACTED} acted (mode=${SWATTER_MODE}, cap=${MAX_BLOCKS_PER_RUN})$( (( ${SWATTER_RUN_SHARED_CAPS:-0} > 0 )) && printf ', %s shared-egress perm-capped' "${SWATTER_RUN_SHARED_CAPS}" )"
     swatter_metrics_write
 
     if (( _SW_TOTAL_BLOCKS >= MAX_BLOCKS_PER_RUN )); then

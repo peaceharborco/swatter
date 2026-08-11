@@ -29,6 +29,8 @@ swatter_metrics_emit() {
     printf 'swatter_scan_watched %s\n' "${SWATTER_RUN_WATCHED:-0}"
     printf '# HELP swatter_scan_acted Blocks issued last run.\n# TYPE swatter_scan_acted gauge\n'
     printf 'swatter_scan_acted %s\n' "${SWATTER_RUN_ACTED:-0}"
+    printf '# HELP swatter_scan_shared_caps Perms downgraded to a temp by the shared-egress policy last run.\n# TYPE swatter_scan_shared_caps gauge\n'
+    printf 'swatter_scan_shared_caps %s\n' "${SWATTER_RUN_SHARED_CAPS:-0}"
     printf '# HELP swatter_circuit_breaker_tripped 1 if the breaker tripped last run.\n# TYPE swatter_circuit_breaker_tripped gauge\n'
     printf 'swatter_circuit_breaker_tripped %s\n' "${SWATTER_RUN_BREAKER:-0}"
     printf '# HELP swatter_failclosed 1 if CSF denies are disabled (allowlist unhealthy).\n# TYPE swatter_failclosed gauge\n'

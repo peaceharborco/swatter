@@ -9,6 +9,9 @@ command -v sqlite3 >/dev/null 2>&1 || { echo "SKIP (no sqlite3)"; echo "Total: 0
 
 # Load real modules under test.
 source "${ROOT}/lib/store_sqlite.sh"
+# allowlist.sh for the CIDR primitives the shared-egress veto matches through
+# (_cidr_overlaps_file). swatter_is_never_block is stubbed below, after this.
+source "${ROOT}/lib/allowlist.sh"
 source "${ROOT}/lib/asn.sh"
 source "${ROOT}/lib/metrics.sh"
 source "${ROOT}/lib/score.sh"
@@ -251,6 +254,36 @@ if command -v jq >/dev/null 2>&1; then
         check audit-json-hostile-ip-valid "invalid" "valid"
     fi
 fi
+
+# 20) Shared-egress caps are RUN-scoped and visible. A too-wide-but-valid CIDR
+#     line mass-caps perms while emitting only per-IP warnings, so the count has
+#     to reach the scan-complete line — and it has to be reset like every other
+#     run counter, or a long-lived shell (tests, `swatter scan` twice) reports a
+#     stale total forever.
+SHARED_EGRESS_ENABLE="true"
+SHARED_EGRESS_CIDR_FILE="$STATE_DIR/se.cidr"
+SHARED_EGRESS_ASNS_FILE="$STATE_DIR/se-asns.txt"
+printf '104.28.0.0/16 # WARP\n' > "$SHARED_EGRESS_CIDR_FILE"; : > "$SHARED_EGRESS_ASNS_FILE"
+_SW_SHARED_CIDR_OK=""
+SWATTER_RUN_SHARED_CAPS=99          # stale value from a previous run
+LAST_CSF=""
+feed $'104.28.44.44\t100\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"honeypot","honeypot":1,"top_vhost":""}'
+# NOT $( ): swatter_scan sets the run counters, and a command substitution
+# would run it in a subshell where every one of them dies with the child.
+swatter_scan >/dev/null 2>"$STATE_DIR/scan1.log"; scanlog="$(cat "$STATE_DIR/scan1.log")"
+check shared-cap-counted "${SWATTER_RUN_SHARED_CAPS}" "1"
+check shared-cap-backend "${LAST_CSF%% *}" "temp"
+case "$scanlog" in *"scan complete:"*"1 shared-egress perm-capped"*) PASS=$((PASS+1));;
+  *) echo "FAIL shared-cap-in-scan-log: $(printf '%s\n' "$scanlog" | grep 'scan complete')"; FAIL=$((FAIL+1));; esac
+# A run with no cap resets to 0 and leaves the log line's normal shape alone.
+feed $'203.0.113.98\t100\t1\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"honeypot","honeypot":1,"top_vhost":""}'
+swatter_scan >/dev/null 2>"$STATE_DIR/scan2.log"; scanlog2="$(cat "$STATE_DIR/scan2.log")"
+check shared-cap-reset "${SWATTER_RUN_SHARED_CAPS}" "0"
+case "$scanlog2" in *"shared-egress perm-capped"*) echo "FAIL shared-cap-quiet-when-zero"; FAIL=$((FAIL+1));;
+  *) PASS=$((PASS+1));; esac
+# ...and the counter reaches the metrics exposition too.
+check shared-cap-metric "$(SWATTER_RUN_SHARED_CAPS=4 swatter_metrics_emit | grep '^swatter_scan_shared_caps ')" "swatter_scan_shared_caps 4"
+SHARED_EGRESS_ENABLE="false"
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
