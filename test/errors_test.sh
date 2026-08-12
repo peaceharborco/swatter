@@ -255,5 +255,119 @@ ERROR_FATAL_FANOUT_ACCOUNTS=4
 check fanout-default-common "$(grep -c '^ERROR_FATAL_FANOUT_ACCOUNTS=4$' "${ROOT}/lib/common.sh")" "1"
 check fanout-default-conf   "$(grep -c '^ERROR_FATAL_FANOUT_ACCOUNTS=4$' "${ROOT}/config/swatter.example.conf")" "1"
 
+# --- fan-out gate: breadth joins depth ---------------------------------------
+# One shared bug across N accounts is N raw signatures of count 1, so the depth
+# gate never fires on it. Breadth is what catches it.
+_mkfan() { # _mkfan <n_accounts> <root> <tag_override|-> <msg>
+  local n="$1" root="$2" tag="$3" msg="$4" i a
+  for i in $(seq -w 1 "$n"); do a="acct$i"
+    printf '[%s] [FATAL] [php/%s] %s in %s/%s/public_html/wp-content/plugins/v/r.php:88\n' \
+      "$TS" "$([[ "$tag" == "-" ]] && echo "$a" || echo "$tag")" "$msg" "$root" "$a"
+  done
+}
+FANMSG='PHP Fatal error: Uncaught Error: Call to undefined function shared_helper()'
+
+ERROR_FATAL_SCANNER_REPEATS=3; ERROR_FATAL_FANOUT_ACCOUNTS=4
+
+# the defect itself: 17 accounts x 1 fatal must be genuine, not scanner
+_mkfan 17 /home - "$FANMSG" > "$ERROR_DIGEST_LOG"; _run
+check fanout-defect-total   "$ERR_FATAL" "17"
+check fanout-defect-genuine "$ERR_FATAL_GENUINE" "17"
+check fanout-defect-scanner "$ERR_FATAL_SCANNER" "0"
+
+# multi-home cPanel roots must normalize too, or the account stays in the
+# signature and breadth never groups
+_mkfan 17 /home2 - "$FANMSG" > "$ERROR_DIGEST_LOG"; _run
+check fanout-home2 "$ERR_FATAL_GENUINE" "17"
+_mkfan 17 /home3 - "$FANMSG" > "$ERROR_DIGEST_LOG"; _run
+check fanout-home3 "$ERR_FATAL_GENUINE" "17"
+
+# the live collector's fallback tag is the literal shared string "unknown"
+# (lib/errors.sh:85) — it must NOT be treated as one account
+_mkfan 17 /home unknown "$FANMSG" > "$ERROR_DIGEST_LOG"; _run
+check fanout-unknown-sentinel "$ERR_FATAL_GENUINE" "17"
+_mkfan 17 /home2 unknown "$FANMSG" > "$ERROR_DIGEST_LOG"; _run
+check fanout-unknown-home2 "$ERR_FATAL_GENUINE" "17"
+
+# only the php collector emits a per-account tag; apache emits a vhost, fpm a
+# pool. Those must fall back to the account in the path.
+{ for i in $(seq -w 1 17); do
+    echo "[${TS}] [FATAL] [apache/site${i}.com] ${FANMSG} in /home/acct${i}/public_html/x.php:88"
+  done; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-apache-tag "$ERR_FATAL_GENUINE" "17"
+{ for i in $(seq -w 1 17); do
+    echo "[${TS}] [FATAL] [fpm/8.2:acct${i}] ${FANMSG} in /home/acct${i}/public_html/x.php:88"
+  done; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-fpm-tag "$ERR_FATAL_GENUINE" "17"
+
+# threshold behaviour
+_mkfan 3 /home - "$FANMSG" > "$ERROR_DIGEST_LOG"; _run
+check fanout-below-threshold "$ERR_FATAL_SCANNER" "3"
+_mkfan 4 /home - "$FANMSG" > "$ERROR_DIGEST_LOG"; _run
+check fanout-at-threshold "$ERR_FATAL_GENUINE" "4"
+ERROR_FATAL_FANOUT_ACCOUNTS=8
+_mkfan 4 /home - "$FANMSG" > "$ERROR_DIGEST_LOG"; _run
+check fanout-tunable-8 "$ERR_FATAL_SCANNER" "4"
+ERROR_FATAL_FANOUT_ACCOUNTS=0
+_mkfan 17 /home - "$FANMSG" > "$ERROR_DIGEST_LOG"; _run
+check fanout-disabled-zero "$ERR_FATAL_SCANNER" "17"
+ERROR_FATAL_FANOUT_ACCOUNTS=1
+_mkfan 1 /home - "$FANMSG" > "$ERROR_DIGEST_LOG"; _run
+check fanout-one-all-genuine "$ERR_FATAL_GENUINE" "1"
+ERROR_FATAL_FANOUT_ACCOUNTS=4
+
+# single-account behaviour must be bit-identical to before this change
+{ echo "[${TS}] [FATAL] [php/acct] ${SCAN1}"; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-parity-1x1 "$ERR_FATAL_SCANNER" "1"
+{ for _ in 1 2; do echo "[${TS}] [FATAL] [php/acct] ${SCAN1}"; done; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-parity-1x2 "$ERR_FATAL_SCANNER" "2"
+{ for _ in 1 2 3; do echo "[${TS}] [FATAL] [php/acct] ${SCAN1}"; done; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-parity-1x3 "$ERR_FATAL_GENUINE" "3"
+
+# a feed that forges distinct account tags INFLATES fan-out, which grades genuine
+# -> RED. That is the safe direction and must stay that way: an untrusted feed
+# must never be able to talk the classifier into hiding something.
+{ for i in $(seq -w 1 5); do
+    echo "[${TS}] [FATAL] [php/forged${i}] ${FANMSG} in /var/www/nohome/x.php:88"
+  done; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-feed-forged "$ERR_FATAL_GENUINE" "5"
+
+# a fatal with neither tag nor path is depth 1 / breadth 1 -> scanner, exactly as
+# today. Tier 3 (the per-line unique key) is a fail-direction backstop, not a
+# breadth driver: with no path to normalize, nsig differs exactly when the raw
+# signature differs, so such lines can only share an nsig by being identical — and
+# then depth already fires. There is deliberately no "many untagged fan out" case.
+{ echo "[${TS}] [FATAL] ${FANMSG}"; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-single-untagged "$ERR_FATAL_SCANNER" "1"
+{ for i in $(seq 1 17); do echo "[${TS}] [FATAL] ${FANMSG} at offset ${i}"; done; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-untagged-distinct "$ERR_FATAL_SCANNER" "17"
+
+# a feed that omits the source tag but keeps the path must still fan out, via the
+# path tier. This is the case tier 2 exists for.
+{ for i in $(seq -w 1 17); do
+    echo "[${TS}] [FATAL] ${FANMSG} in /home/acct${i}/public_html/x.php:88"
+  done; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-untagged-path "$ERR_FATAL_GENUINE" "17"
+
+# distinct messages across accounts are unrelated: breadth must not group them
+{ for i in $(seq -w 1 17); do
+    echo "[${TS}] [FATAL] [php/acct${i}] PHP Fatal error: Uncaught Error: Call to undefined function fn${i}() in /home/acct${i}/public_html/x.php:88"
+  done; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-distinct-sigs "$ERR_FATAL_SCANNER" "17"
+
+# the CLI veto still forces genuine, and wins over a scanner verdict
+{ for i in $(seq -w 1 2); do
+    echo "[${TS}] [FATAL] [php/acct${i}] PHP Fatal error: Uncaught Error: Undefined constant \"X\" in phar:///usr/local/bin/wp-cli.phar/x.php:9"
+  done; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-veto-still-genuine "$ERR_FATAL_GENUINE" "2"
+
+# a SUBSEP byte in the line must not merge two accounts' keys
+{ printf '[%s] [FATAL] [php/acctA] %s in /home/acctA/public_html/x.php:88\n' "$TS" "$FANMSG"
+  printf '[%s] [FATAL] [php/acctB] %s\034 in /home/acctB/public_html/x.php:88\n' "$TS" "$FANMSG"
+  printf '[%s] [FATAL] [php/acctC] %s in /home/acctC/public_html/x.php:88\n' "$TS" "$FANMSG"
+  printf '[%s] [FATAL] [php/acctD] %s in /home/acctD/public_html/x.php:88\n' "$TS" "$FANMSG"
+} > "$ERROR_DIGEST_LOG"; _run
+check fanout-subsep-no-merge "$ERR_FATAL_GENUINE" "4"
+
 echo "errors_test: PASS=${PASS} FAIL=${FAIL}"
 (( FAIL == 0 ))

@@ -316,18 +316,77 @@ swatter_errors_section() {
         marked="$(printf '%s\n' "$fatal" \
             | SWATTER_FS_RE="${ERROR_FATAL_SCANNER}" \
               SWATTER_FS_EX="${ERROR_FATAL_SCANNER_EXCLUDE}" \
-            awk -v reps="${ERROR_FATAL_SCANNER_REPEATS}" '
+            awk -v reps="${ERROR_FATAL_SCANNER_REPEATS}" \
+                -v fanmin="${ERROR_FATAL_FANOUT_ACCOUNTS}" '
                 { sig=$0; sub(/^\[[0-9-]+ [0-9:]+\] /,"",sig)
-                  line[NR]=$0; sigof[NR]=sig; cnt[sig]++ }
+                  # SUBSEP hygiene: the composite fan-out key below is
+                  # "nsig SUBSEP acct", so a \034 in the line could merge two
+                  # accounts into one key. A collision LOWERS fan-out, which is
+                  # the unsafe direction, so strip it before anything keys on it.
+                  gsub(/\034/,"",sig)
+                  line[NR]=$0; sigof[NR]=sig; cnt[sig]++
+
+                  # --- account identity, three tiers ---
+                  # 1. a php/<acct> source tag, which only _errors_collect_php
+                  #    emits. Reject the literal "unknown": that is the collector
+                  #    fallback (see _errors_collect_php) and is SHARED by every
+                  #    account whose path strip failed, so trusting it would
+                  #    collapse them all into one and hide the very fan-out we
+                  #    are counting.
+                  acct=""
+                  if (substr(sig,1,1)=="[") {
+                      p=index(sig,"] [")
+                      if (p>0) { rest=substr(sig,p+3); q=index(rest,"]")
+                                 if (q>0) { src=substr(rest,1,q-1); sl=index(src,"/")
+                                            if (sl>0 && substr(src,1,sl-1)=="php") acct=substr(src,sl+1) } }
+                  }
+                  # 2. the /home<N>/<acct>/ path. apache tags carry a vhost and
+                  #    fpm tags a pool, so those feeds land here.
+                  if (acct=="" || acct=="unknown") {
+                      acct=""
+                      if (match(sig, /\/home[0-9]*\/[^\/]+\//)) {
+                          seg=substr(sig,RSTART,RLENGTH)
+                          sub(/^\/home[0-9]*\//,"",seg); sub(/\/$/,"",seg)
+                          if (seg!="") acct=seg
+                      }
+                  }
+                  # 3. no identity at all -> a key unique to this line, so an
+                  #    unattributable fatal contributes to fan-out and can never
+                  #    suppress the gate. Unknown identity biases toward RED.
+                  key = (acct=="") ? ("\001" NR) : ("\002" acct)
+
+                  # --- account-normalized signature, for BREADTH only ---
+                  # /home[0-9]* not /home: cPanel uses /home2, /home3 as extra
+                  # mount roots, and ERROR_DIGEST_LOG is an external feed that can
+                  # carry any path. With /home alone the account stays embedded in
+                  # nsig, no two accounts ever share one, and breadth is inert.
+                  nsig=sig
+                  gsub(/\/home[0-9]*\/[^\/]+\//, "/home<N>/<A>/", nsig)
+                  sub(/^\[[A-Z]+\] \[[^]]+\]/, "[L] [<SRC>]", nsig)
+                  nsigof[NR]=nsig
+                  if (!((nsig SUBSEP key) in seen)) { seen[nsig SUBSEP key]=1; fan[nsig]++ }
+                }
                 END { re=ENVIRON["SWATTER_FS_RE"]; ex=ENVIRON["SWATTER_FS_EX"]
-                      for (i=1;i<=NR;i++)
-                          print ((sigof[i] ~ re && cnt[sigof[i]] < reps && sigof[i] !~ ex) ? "S" : "G") "\t" line[i] }')"
+                      for (i=1;i<=NR;i++) {
+                          # DEPTH is cnt on the RAW signature and re/ex match the
+                          # RAW signature; only BREADTH uses nsig. That split is
+                          # what makes this gate a strict narrowing of the old one
+                          # — every conjunct can only move a fatal toward genuine,
+                          # so this can never introduce a new false green. Do NOT
+                          # rekey cnt onto nsig.
+                          # fanmin <= 0 disables the breadth gate: fan is always
+                          # >= 1, so a bare `fan < fanmin` would be false for
+                          # every line and void the whole scanner class instead.
+                          s = (sigof[i] ~ re && cnt[sigof[i]] < reps && sigof[i] !~ ex \
+                               && (fanmin <= 0 || fan[nsigof[i]] < fanmin))
+                          print (s ? "S" : "G") "\t" fan[nsigof[i]] "\t" line[i]
+                      } }')"
         if [[ -z "$marked" ]]; then
             log_warn "errors: fatal classification failed; counting all fatals as genuine"
             fatal_genuine="$fatal"
         else
-            fatal_genuine="$(printf '%s\n' "$marked" | grep '^G' | cut -f2- || true)"
-            fatal_scanner="$(printf '%s\n' "$marked" | grep '^S' | cut -f2- || true)"
+            fatal_genuine="$(printf '%s\n' "$marked" | grep '^G' | cut -f3- || true)"
+            fatal_scanner="$(printf '%s\n' "$marked" | grep '^S' | cut -f3- || true)"
         fi
     fi
     ERR_FATAL_GENUINE=$(printf '%s\n' "$fatal_genuine" | grep -c . || true)
