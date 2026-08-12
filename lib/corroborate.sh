@@ -53,6 +53,24 @@ _corr_domains_for() {
     awk -v a="$acct" -F': *' '$1 != "*" && $2 == a { print $1 }' "$CORR_USERDOMAINS"
 }
 
+# _corr_day_keys <after> <before> — the Apache DAY prefixes ("25/Jun/2026") a window
+# touches. Used for the coverage guard, not for matching.
+_corr_day_keys() {
+    local a="$1" b="$2" t
+    for (( t = a - a % 86400; t <= b; t += 86400 )); do
+        date -u -d "@$t" '+%d/%b/%Y' 2>/dev/null || date -u -r "$t" '+%d/%b/%Y' 2>/dev/null
+    done
+}
+
+# _corr_month_tags <after> <before> — the "Mon-YYYY" tags cPanel names its monthly
+# archives with, for a window that may straddle a month boundary.
+_corr_month_tags() {
+    local a="$1" b="$2" t
+    for (( t = a; t <= b + 86400; t += 86400 )); do
+        date -u -d "@$t" '+%b-%Y' 2>/dev/null || date -u -r "$t" '+%b-%Y' 2>/dev/null
+    done | sort -u
+}
+
 # _corr_minute_keys <after> <before> — the Apache time prefixes ("25/Jun/2026:09:05")
 # covering a window, one per line. Matching by precomputed minute key keeps the
 # scan to a fixed-string grep and avoids mktime(), which BSD awk does not have and
@@ -86,25 +104,40 @@ swatter_corroborate() {
     # served a failure" exact, and it sidesteps parsing grep's filename prefix
     # back off every line — which is the kind of detail that silently misreads a
     # field and reclassifies traffic.
-    local acct dom f looked=0 out c k
+    local acct dom f looked=0 covered=0 out c k
     local oldifs="$IFS"
     while IFS= read -r acct; do
         [[ -n "$acct" ]] || continue
-        local -a logs=()
+        local -a logs=() gzlogs=()
         while read -r dom; do
             [[ -n "$dom" ]] || continue
             # Access logs only. -bytes_log is a byte-count ledger, not requests.
             for f in "${CORR_DOMLOG_DIR}/${dom}" "${CORR_DOMLOG_DIR}/${dom}-ssl_log"; do
                 [[ -r "$f" ]] && logs+=("$f")
             done
+            # cPanel rotates the live domlog into the account's own monthly
+            # archive. A digest that runs after rotation, or any look at an older
+            # window, finds the live file holding only today — so the archive is
+            # not an optimization, it is the difference between reading the
+            # window and quietly reporting nothing about it.
+            local tag
+            while read -r tag; do
+                [[ -n "$tag" ]] || continue
+                for f in "${CORR_HOME_ROOT}/${acct}/logs/${dom}-ssl_log-${tag}.gz" \
+                         "${CORR_HOME_ROOT}/${acct}/logs/${dom}-${tag}.gz"; do
+                    [[ -r "$f" ]] && gzlogs+=("$f")
+                done
+            done < <(_corr_month_tags "$(( after - pad ))" "$(( before + pad ))")
         done < <(_corr_domains_for "$acct")
-        (( ${#logs[@]} )) || continue
+        (( ${#logs[@]} + ${#gzlogs[@]} )) || continue
         looked=1
 
         # Everything below is data, never code: no eval, no expansion of a log
         # field, and a line that does not parse is skipped rather than guessed at.
-        out="$(printf '%s\n' "$keys" \
-            | LC_ALL=C grep -hF -f - -- "${logs[@]}" 2>/dev/null \
+        out="$( { (( ${#logs[@]} ))   && cat -- "${logs[@]}" 2>/dev/null
+                  (( ${#gzlogs[@]} )) && gzip -dc -- "${gzlogs[@]}" 2>/dev/null
+                  true; } \
+            | LC_ALL=C grep -hF -f <(printf '%s\n' "$keys") 2>/dev/null \
             | awk -v selfips="${SERVER_IPS:-} 127.0.0.1 ::1" -v banned="${CORR_BANNED_IPS:-}" '
                 BEGIN { n=split(selfips,s," "); for(i=1;i<=n;i++) self[s[i]]=1
                         n=split(banned,b," ");  for(i=1;i<=n;i++) ban[b[i]]=1 }
@@ -125,11 +158,21 @@ swatter_corroborate() {
                               if (pre>0) ua=substr(tail,pre+1,lq-pre-1) }
                   # Self before scanner before visitor. An unrecognized client
                   # falls through to visitor, which is the louder reading.
+                  #
+                  # The empty-UA arm is the one place this deliberately chooses
+                  # the QUIETER reading, so it needs its evidence stated: on the
+                  # reference host the only failures that reached this arm were
+                  # "GET /wp-admin/setup-config.php" 500 with UA "-", from two
+                  # IPs not in the ledger — a probe for an unconfigured
+                  # WordPress, landing mid-cluster and reading as a customer.
+                  # No browser omits a user-agent. A real outage still surfaces
+                  # here, because the humans hitting it do send one.
                   cls="visitor"
-                  if (ip in self)               cls="self"
-                  else if (ua ~ /WordPress\//)  cls="self"
+                  if (ip in self)                cls="self"
+                  else if (ua ~ /WordPress\//)   cls="self"
                   else if (req ~ /wp-cron\.php/) cls="self"
-                  else if (ip in ban)           cls="scanner"
+                  else if (ip in ban)            cls="scanner"
+                  else if (ua == "" || ua == "-") cls="scanner"
                   print cls
                 }' | sort | uniq -c)" || true
 
@@ -143,10 +186,25 @@ swatter_corroborate() {
             esac
         done <<< "$out"
         (( had )) && CORR_5XX_ACCTS=$(( CORR_5XX_ACCTS + 1 ))
+
+        # Coverage: did these sources contain ANY request on the days the window
+        # touches? A live domlog that has rotated is perfectly readable and holds
+        # only today, so without this check an old window reads as "looked, found
+        # no failures" when nothing covering it was ever opened. Silence from an
+        # unread log is the quiet direction, and quiet is the direction that
+        # loses an outage.
+        if (( ! covered )); then
+            { (( ${#logs[@]} ))   && cat -- "${logs[@]}" 2>/dev/null
+              (( ${#gzlogs[@]} )) && gzip -dc -- "${gzlogs[@]}" 2>/dev/null
+              true; } \
+            | LC_ALL=C grep -qF -f <(_corr_day_keys "$(( after - pad ))" "$(( before + pad ))") 2>/dev/null \
+            && covered=1
+        fi
     done < <(printf '%s\n' "$accts" | tr ',' '\n')   # trailing newline: read drops an unterminated last field
     IFS="$oldifs"
 
     (( looked )) || return 1
+    (( covered )) || return 1
     CORR_5XX_TOTAL=$(( CORR_5XX_VISITOR + CORR_5XX_SELF + CORR_5XX_SCANNER ))
 
     # A single outside client failing beside a hundred cron failures is still an

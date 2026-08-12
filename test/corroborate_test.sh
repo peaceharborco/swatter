@@ -86,6 +86,26 @@ check scanner-visitor "$CORR_5XX_VISITOR" "0"
 check scanner-verdict "$CORR_VERDICT"     "scanner"
 CORR_BANNED_IPS=""
 
+# --- an empty user-agent is a probe, not a customer --------------------------
+# Measured on the reference host: the ONLY failures reaching the visitor arm in a
+# real cluster were "GET /wp-admin/setup-config.php" 500 with UA "-", from IPs
+# not in the ledger. No browser omits a user-agent. This is the one arm that
+# deliberately chooses the quieter reading, so it is pinned explicitly.
+_reset
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.44 "25/Jun/2026:09:05:00" \
+     "GET /wp-admin/setup-config.php HTTP/2.0" 500 "-"
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"
+check emptyua-scanner "$CORR_5XX_SCANNER" "1"
+check emptyua-visitor "$CORR_5XX_VISITOR" "0"
+check emptyua-verdict "$CORR_VERDICT"     "scanner"
+# ...but a browser-shaped client on the same path is still a visitor: the UA is
+# the signal, not the path.
+_reset
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.44 "25/Jun/2026:09:05:00" \
+     "GET /wp-admin/setup-config.php HTTP/2.0" 500 "Mozilla/5.0 (Macintosh) Safari/605"
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"
+check browserua-visitor "$CORR_5XX_VISITOR" "1"
+
 # --- mixed: one real visitor among background noise escalates ----------------
 # The visitor arm is what 🔥 keys on, so a single outside client failing beside
 # ten cron failures must NOT be averaged away.
@@ -147,12 +167,44 @@ check no-map-verdict "$CORR_VERDICT" "unknown"
 CORR_USERDOMAINS="${WORK}/userdomains"
 swatter_corroborate "$W_AFTER" "$W_BEFORE" "ghostacct"; rc=$?
 check unknown-acct-rc "$rc" "1"
-# An account whose logs exist but hold nothing in the window: looked, found none.
+# A readable log that does not COVER the window is not evidence of absence. A
+# rotated domlog is perfectly readable and holds only today, so without this the
+# oldest windows would all read "looked, found no failures" having never seen a
+# line from that day.
 _reset
 : > "${CORR_DOMLOG_DIR}/alpha.example-ssl_log"
 swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"; rc=$?
-check empty-log-rc      "$rc" "0"
-check empty-log-verdict "$CORR_VERDICT" "none"
+check no-coverage-rc      "$rc" "1"
+check no-coverage-verdict "$CORR_VERDICT" "unknown"
+# Same, but the log holds only traffic from a different day.
+_reset
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "26/Jun/2026:09:05:00" "GET /a/ HTTP/2.0" 500
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"; rc=$?
+check wrong-day-rc "$rc" "1"
+# Whereas traffic IN the window with no failures is a real, reportable "none".
+_reset
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "25/Jun/2026:09:05:00" "GET /a/ HTTP/2.0" 200
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"; rc=$?
+check covered-none-rc      "$rc" "0"
+check covered-none-verdict "$CORR_VERDICT" "none"
+
+# --- the window is read out of the monthly archive once the domlog rotates ----
+# cPanel moves the live log into the account's own <domain>-ssl_log-Mon-YYYY.gz.
+# The nightly digest can run after that rotation, and every historical look does.
+_reset
+mkdir -p "${CORR_HOME_ROOT}/acctA/logs"
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "12/Aug/2026:00:01:00" "GET /today/ HTTP/2.0" 200
+_arch="${CORR_HOME_ROOT}/acctA/logs/alpha.example-ssl_log-Jun-2026"
+_log "$_arch" 198.51.100.7 "25/Jun/2026:09:05:00" "GET /rotated/ HTTP/2.0" 500
+_log "$_arch" 203.0.113.10 "25/Jun/2026:09:06:00" "GET /wp-cron.php HTTP/1.1" 503
+gzip -f "$_arch"
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"; rc=$?
+check archive-rc      "$rc" "0"
+check archive-total   "$CORR_5XX_TOTAL"   "2"
+check archive-visitor "$CORR_5XX_VISITOR" "1"
+check archive-self    "$CORR_5XX_SELF"    "1"
+check archive-verdict "$CORR_VERDICT"     "visitor"
+rm -rf "${CORR_HOME_ROOT}/acctA"
 
 # --- a hostile log line cannot break the reader ------------------------------
 # Log fields are attacker-influenced (UA, path). Nothing may be evaluated, and a
