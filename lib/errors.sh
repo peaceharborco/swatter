@@ -293,14 +293,27 @@ _errors_validate_fatal_scanner() {
 }
 _errors_validate_fatal_scanner
 
+# "YYYY-MM-DD HH:MM:SS" (UTC, the digest-feed stamp) -> epoch. GNU date and BSD
+# date parse it with different flags and the suite runs on both; a failure prints
+# nothing, which the caller treats as "no window".
+_errors_epoch_of() {
+    local h="$1"
+    date -u -d "$h" '+%s' 2>/dev/null \
+        || date -u -j -f '%Y-%m-%d %H:%M:%S' "$h" '+%s' 2>/dev/null \
+        || true
+}
+
 # Build the "Server errors" digest section on stdout, and set globals:
 #   ERR_TOTAL ERR_FATAL ERR_FATAL_GENUINE ERR_FATAL_SCANNER ERR_GENUINE ERR_NOISE
 #   ERR_FATAL_FANOUT_MAX
+#   ERR_CORR_AFTER ERR_CORR_BEFORE ERR_CORR_ACCTS — the span and accounts of the
+#     WIDEST genuine signature, for the corroboration lookup. 0/0/"" = no window.
 swatter_errors_section() {
     local window="$1" cutoff
     cutoff=$(( $(swatter_now) - $(_report_window_secs "$window") ))
     ERR_TOTAL=0 ERR_FATAL=0 ERR_FATAL_GENUINE=0 ERR_FATAL_SCANNER=0 ERR_GENUINE=0 ERR_NOISE=0
     ERR_FATAL_FANOUT_MAX=0
+    ERR_CORR_AFTER=0 ERR_CORR_BEFORE=0 ERR_CORR_ACCTS=""
 
     local stream; stream="$(_errors_consolidated "$cutoff")"
     [[ -n "$stream" ]] || { echo "Server errors: none in the last ${window}."; return 0; }
@@ -427,6 +440,17 @@ swatter_errors_section() {
                   if (atag=="" && apath=="") key = "\001" NR
                   else key = "\002" (atag=="" ? apath : atag) "\003" (apath=="" ? atag : apath)
 
+                  # The cPanel account NAME, for the corroboration lookup only --
+                  # never for keying. The /home path segment IS the account; a
+                  # php/<acct> tag is too. An apache vhost or an fpm pool is not,
+                  # so those contribute no name and the lookup just sees fewer
+                  # accounts than the fan-out counted. Deliberate: a name we
+                  # cannot resolve to a home directory would send the log reader
+                  # hunting for a path that does not exist.
+                  aname = apath
+                  if (aname=="" && substr(atag,1,4)=="php/") aname = substr(atag,5)
+                  anameof[NR] = aname
+
                   # --- account-normalized signature, for BREADTH only ---
                   # /home[0-9]* not /home: cPanel uses /home2, /home3 as extra
                   # mount roots, and ERROR_DIGEST_LOG is an external feed that can
@@ -454,7 +478,40 @@ swatter_errors_section() {
                           s = (sigof[i] ~ re && cnt[sigof[i]] < reps && sigof[i] !~ ex \
                                && (fanmin <= 0 || fan[nsigof[i]] < fanmin))
                           print (s ? "S" : "G") "\t" fan[nsigof[i]] "\t" line[i]
-                      } }')"
+
+                          # Corroboration window, GENUINE rows only. Tracked PER
+                          # SIGNATURE, never across the whole genuine set: two
+                          # unrelated fatals at 02:00 and 22:00 would otherwise
+                          # hand the log reader a 20-hour window, which any
+                          # ordinary days worth of 5xx corroborates. Measured
+                          # spans of real clusters here run 16-19 hours, so this
+                          # is the common case, not the corner.
+                          if (!s) {
+                              ts = substr(line[i],2,19)
+                              g = nsigof[i]
+                              if (!(g in gmin) || ts < gmin[g]) gmin[g] = ts
+                              if (!(g in gmax) || ts > gmax[g]) gmax[g] = ts
+                              an = anameof[i]
+                              if (an != "" && !((g SUBSEP an) in gseen)) {
+                                  gseen[g SUBSEP an] = 1
+                                  gacct[g] = (g in gacct) ? gacct[g] "," an : an
+                              }
+                          }
+                      }
+                      # The widest-fanout genuine signature is the cluster worth
+                      # corroborating. Ties break on the lexically smallest nsig
+                      # so the choice is reproducible run to run rather than
+                      # dependent on awk hash order.
+                      best=""; bestfan=-1
+                      for (g in gmin) {
+                          f = fan[g]
+                          if (f > bestfan || (f == bestfan && g < best)) { bestfan=f; best=g }
+                      }
+                      # "#" can never begin a marked row (those start S or G), so
+                      # the ^G / ^S consumers and cut -f3- below never see this.
+                      if (best != "")
+                          printf "#CORR\t%d\t%s\t%s\t%s\n", bestfan, gmin[best], gmax[best], (best in gacct ? gacct[best] : "")
+                    }')"
         if [[ -z "$marked" ]]; then
             log_warn "errors: fatal classification failed; counting all fatals as genuine"
             fatal_genuine="$fatal"
@@ -469,6 +526,24 @@ swatter_errors_section() {
             local _fmax
             _fmax="$(printf '%s\n' "$marked" | grep '^G' | cut -f2 | sort -rn | head -1)"
             [[ "$_fmax" =~ ^[0-9]+$ ]] && ERR_FATAL_FANOUT_MAX="$_fmax"
+
+            # Corroboration window for the widest genuine signature. Exported RAW
+            # (unpadded): these are observations, and the pad is policy belonging
+            # to whoever reads the access logs. Any parse failure leaves the
+            # globals at 0/empty, which every consumer must read as "no window" —
+            # never as "a window starting at the epoch".
+            local _corr; _corr="$(printf '%s\n' "$marked" | grep '^#CORR' | head -1 || true)"
+            if [[ -n "$_corr" ]]; then
+                local _cmin _cmax
+                _cmin="$(printf '%s' "$_corr" | cut -f3)"
+                _cmax="$(printf '%s' "$_corr" | cut -f4)"
+                ERR_CORR_ACCTS="$(printf '%s' "$_corr" | cut -f5)"
+                ERR_CORR_AFTER="$(_errors_epoch_of "$_cmin")"
+                ERR_CORR_BEFORE="$(_errors_epoch_of "$_cmax")"
+                if [[ ! "$ERR_CORR_AFTER" =~ ^[0-9]+$ || ! "$ERR_CORR_BEFORE" =~ ^[0-9]+$ ]]; then
+                    ERR_CORR_AFTER=0; ERR_CORR_BEFORE=0; ERR_CORR_ACCTS=""
+                fi
+            fi
         fi
     fi
     ERR_FATAL_GENUINE=$(printf '%s\n' "$fatal_genuine" | grep -c . || true)

@@ -490,6 +490,59 @@ check fanout-pair-no-inflate "$ERR_FATAL_SCANNER" "2"
   done; } > "$ERROR_DIGEST_LOG"; _run
 check fanout-etx-no-split "$ERR_FATAL_GENUINE" "6"
 
+# --- corroboration window: exported, and scoped to ONE signature -------------
+# The window handed to the log reader must be the span of the WIDEST genuine
+# signature, never the span of every genuine fatal in the digest. Two unrelated
+# events at opposite ends of the day would otherwise produce a 20-hour window
+# that an ordinary day's 5xx corroborates on baseline alone.
+ERROR_FATAL_SCANNER_REPEATS=3; ERROR_FATAL_FANOUT_ACCOUNTS=4
+_ep() { date -u -d "$1" '+%s' 2>/dev/null || date -u -j -f '%Y-%m-%d %H:%M:%S' "$1" '+%s' 2>/dev/null; }
+{ echo "[2026-06-25 09:00:00] [FATAL] [php/acct1] ${FANMSG} in /home/acct1/public_html/x.php:88"
+  echo "[2026-06-25 09:10:00] [FATAL] [php/acct2] ${FANMSG} in /home/acct2/public_html/x.php:88"
+  echo "[2026-06-25 09:20:00] [FATAL] [php/acct3] ${FANMSG} in /home/acct3/public_html/x.php:88"
+  echo "[2026-06-25 09:30:00] [FATAL] [php/acct4] ${FANMSG} in /home/acct4/public_html/x.php:88"
+} > "$ERROR_DIGEST_LOG"; _run
+check corr-after   "$ERR_CORR_AFTER"  "$(_ep '2026-06-25 09:00:00')"
+check corr-before  "$ERR_CORR_BEFORE" "$(_ep '2026-06-25 09:30:00')"
+check corr-accts   "$ERR_CORR_ACCTS"  "acct1,acct2,acct3,acct4"
+# A second, NARROWER genuine signature far away in time must not widen it. This
+# is the regression that matters: taking min/max over all genuine fatals spans
+# 00:05 -> 23:55 instead of the 30 minutes that actually clustered.
+{ echo "[2026-06-25 00:05:00] [FATAL] [php/other] ${REAL1}"
+  echo "[2026-06-25 09:00:00] [FATAL] [php/acct1] ${FANMSG} in /home/acct1/public_html/x.php:88"
+  echo "[2026-06-25 09:10:00] [FATAL] [php/acct2] ${FANMSG} in /home/acct2/public_html/x.php:88"
+  echo "[2026-06-25 09:20:00] [FATAL] [php/acct3] ${FANMSG} in /home/acct3/public_html/x.php:88"
+  echo "[2026-06-25 09:30:00] [FATAL] [php/acct4] ${FANMSG} in /home/acct4/public_html/x.php:88"
+  echo "[2026-06-25 11:55:00] [FATAL] [php/other] ${REAL1}"
+} > "$ERROR_DIGEST_LOG"; _run
+check corr-widest-after  "$ERR_CORR_AFTER"  "$(_ep '2026-06-25 09:00:00')"
+check corr-widest-before "$ERR_CORR_BEFORE" "$(_ep '2026-06-25 09:30:00')"
+check corr-widest-accts  "$ERR_CORR_ACCTS"  "acct1,acct2,acct3,acct4"
+# No genuine fatals -> no window at all. 0 must never read as "the epoch".
+{ echo "[${TS}] [FATAL] [php/acct] ${SCAN1}"; } > "$ERROR_DIGEST_LOG"; _run
+check corr-none-after "$ERR_CORR_AFTER" "0"
+check corr-none-accts "$ERR_CORR_ACCTS" ""
+# The marker row is machine plumbing and must never reach the operator's digest.
+{ echo "[${TS}] [FATAL] [php/acct1] ${FANMSG} in /home/acct1/public_html/x.php:88"
+  echo "[${TS}] [FATAL] [php/acct2] ${FANMSG} in /home/acct2/public_html/x.php:88"
+  echo "[${TS}] [FATAL] [php/acct3] ${FANMSG} in /home/acct3/public_html/x.php:88"
+  echo "[${TS}] [FATAL] [php/acct4] ${FANMSG} in /home/acct4/public_html/x.php:88"
+} > "$ERROR_DIGEST_LOG"; _run
+check corr-body-clean  "$(printf '%s' "$SECTION_OUT" | grep -c '#CORR')" "0"
+check corr-count-clean "$ERR_FATAL_GENUINE" "4"
+# A cluster whose identity came from vhost tags rather than /home paths yields a
+# WINDOW BUT NO ACCOUNT NAMES: an apache vhost is not a cPanel account, so there
+# is no home directory to read logs from. Fan-out still counts them (identity is
+# the tag), so a consumer must handle "window, zero accounts" — not assume that a
+# window implies something to read. Pinned so the gap is deliberate, not a
+# surprise at the call site.
+{ for i in 1 2 3 4; do
+    echo "[${TS}] [FATAL] [apache/vh${i}] ${FANMSG} in /opt/shared/app/x.php:88"
+  done; } > "$ERROR_DIGEST_LOG"; _run
+check corr-vhost-genuine "$ERR_FATAL_GENUINE" "4"
+check corr-vhost-window  "$([[ "$ERR_CORR_AFTER" -gt 0 ]] && echo set)" "set"
+check corr-vhost-accts   "$ERR_CORR_ACCTS" ""
+
 # --- the scanner default must stay byte-identical in all three copies --------
 # A silent split between the shipping default, the validation fallback and the
 # documented value is possible today because nothing compares them.
