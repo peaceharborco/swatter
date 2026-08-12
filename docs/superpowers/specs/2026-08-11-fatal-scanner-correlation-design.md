@@ -214,9 +214,20 @@ means bots again" misses the real outage.
 
 So breadth gets its own knob, `ERROR_FATAL_FANOUT_ACCOUNTS`, which also supplies the **escape hatch**
 rev 3 lacked: it can be raised without weakening single-account depth sensitivity. Validation follows
-the house pattern (`lib/errors.sh:256-260`): non-integer → built-in default with a `log_warn`. `0`
-and `1` disable the breadth gate only, leaving depth intact — the RED-safe direction is *low*, so
-never clamp upward.
+the house pattern (`lib/errors.sh:256-260`): non-integer → built-in default with a `log_warn`, and
+never clamp upward — the RED-safe direction is low.
+
+**Disable semantics need an explicit special case.** Fan-out is always ≥ 1, so `fan < fanmin` is false
+for any `fanmin ≤ 1`, which would void the **entire** scanner class rather than just the breadth gate.
+So the condition is written `(fanmin <= 0 || fan[nsig] < fanmin)`, giving:
+
+| Value | Meaning |
+|---|---|
+| `0` | breadth gate **off** — special-cased; depth behaviour exactly as today |
+| `1` | every pattern-matching fatal counts genuine (maximum sensitivity, RED-heavy) |
+| `≥ 2` | threshold as described |
+
+`0` is the operator's escape hatch; `1` is legal and RED-safe but blunt.
 
 **Default: 4, chosen from measurement (§0.1, §0.2).** On cds1's measured window, bot noise reaches
 **3** accounts and the one confirmed genuine fleet event reached **4**. The default sits exactly on
