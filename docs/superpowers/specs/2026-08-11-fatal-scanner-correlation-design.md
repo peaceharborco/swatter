@@ -35,23 +35,44 @@ Severity: `ERR_FATAL_GENUINE=0` drives the GREEN path (`lib/report.sh:422`, `:47
 `ALERT_SMS_GRADES="RED"` (`lib/common.sh:284`) means a false GREEN also **suppresses the operator's
 SMS** and prints "All Clear" (`lib/report.sh:484`).
 
-### 0.1 Open verification item — inspect cds1's feed
+### 0.1 Resolved on cds1 — measured 2026-08-12
 
-Raw PHP writes `PHP Fatal error:` with **two** spaces; the shipping pattern expects one. Verified on
-the same fixture:
+Raw PHP writes `PHP Fatal error:` with **two** spaces and the shipping pattern expects one, so the
+feed's whitespace handling decides whether the defect is reachable at all:
 
 | Fixture | Result |
 |---|---|
 | one space | `GENUINE=0 SCANNER=17` → GREEN |
 | two spaces | `GENUINE=17 SCANNER=0` → RED |
 
-If cds1's `ERROR_DIGEST_LOG` aggregator preserves the two-space form, the scanner class there is
-**inert today** and the false GREEN is unreachable on that host — putting the handoff's "live on
-cds1 today" (§1) in tension with its own whitespace note (§5). This has a direct consequence for
-sequencing (§5) and for the one unsettled default (§2.4).
+**cds1's feed (`/var/log/ph-errors/ph-errors.log`) carries the one-space form, 10/10 FATAL lines.**
+The aggregator normalizes. So:
 
-**Action:** inspect one real fatal line in cds1's `ERROR_DIGEST_LOG`, and count how often identical
-probe-shaped fatals span ≥3 accounts in a window. Both answers come from the same look.
+- **The defect is live on cds1.** The handoff's §1 was right; its §5 whitespace note does not
+  neutralize it on this host.
+- **The whitespace fix does not gate this change on cds1** (§5). It remains a real inconsistency for
+  any host whose aggregator does not normalize.
+- cds1 does not override `ERROR_FATAL_SCANNER_REPEATS` or `ERROR_PHP_HOME_GLOB`, so defaults 3 and
+  `/home` apply.
+
+Measured fan-out per **24h window** (the window the gate sees) over 2026-08-09 → 08-12, 10 FATAL
+lines total, 9 matching the default scanner pattern:
+
+| Day | Normalized signature | Accounts |
+|---|---|---|
+| 08-09 | `Call to undefined function get_locale()` in `wp-admin/…` | 2 |
+| 08-10 | same | 3 |
+| 08-11 | docket-cache `substr(): … array given` (does not match pattern) | 1 |
+| 08-11 | `Undefined constant Automattic\Jetpack\Connection\Error_Handler::…` | **4** |
+
+**Observed maximum fan-out in a 24h window: 4.** This is the evidence for §2.4's default.
+
+**A live instance of the defect, worth noting.** The 08-11 Jetpack signature spans **4 accounts, one
+fatal each, and grades GREEN today.** An undefined constant inside Jetpack's own `Error_Handler`
+across four accounts on one day is exactly as consistent with a Jetpack version/upgrade skew as with
+a bot executing a Jetpack file directly — which is §1's point restated in production data. It is
+currently hidden. Under rev 4 with a default at or below 4 it would surface. Worth an independent
+look at those four accounts regardless of this design.
 
 ## 1. Why the correlation direction was abandoned
 
@@ -173,10 +194,23 @@ the house pattern (`lib/errors.sh:256-260`): non-integer → built-in default wi
 and `1` disable the breadth gate only, leaving depth intact — the RED-safe direction is *low*, so
 never clamp upward.
 
-**Provisional default: 5.** This is the one number the repo cannot settle. It depends on how often
-cds1 actually sees identical probe-shaped fatals spanning ≥N accounts, which §0.1's inspection
-answers. Higher defaults reduce chronic RED but leave a smaller fleet bug hidden; the value must be
-chosen from that data, not from taste.
+**Default: 8, chosen from measurement (§0.1).** cds1's observed maximum fan-out in a 24h window is
+**4**, from ordinary bot sweeps. That measurement rules out the obvious candidates:
+
+| Default | Effect on the measured window |
+|---|---|
+| 3 | RED on 08-10 (3 accounts) **and** 08-11 (4) — chronic RED, two of four days |
+| 4 | RED on 08-11 — still triggered by routine sweeping |
+| 5 | No RED, but sits **one account** above the observed max — zero margin |
+| **8** | No RED; real headroom above routine sweeps, well below a 17-account fleet event |
+
+Rev 3's provisional 5 was set before this data and was too tight. 8 separates "routine sweep" from
+"fleet event" with margin at both ends.
+
+**Caveat on the sample:** four days and 10 fatal lines is thin. The value should be re-measured over
+a longer window before it is treated as settled, and re-checked after any change to the aggregator or
+the account count on the host. The knob exists partly so this can be tuned per host without touching
+depth (§2.4's escape-hatch role).
 
 ### 2.5 Prototype results
 
@@ -244,18 +278,23 @@ anchors only on the timestamp (`lib/errors.sh:25`). A buggy or hostile aggregato
 §2.2 path fallback mitigates deflation, since the real paths still carry account identity. Document
 the feed contract in `RUNBOOK.md`.
 
-## 5. Sequencing — whitespace must co-ship
+## 5. Sequencing — whitespace co-ships, but does not gate cds1
 
-**Not "whitespace first."** Rev 3 said that and it is dangerous. On a two-space feed the scanner
-pattern never matches, so the class is inert and the false GREEN is *unreachable*:
+**Not "whitespace first."** Rev 3 said that and it is dangerous *in general*. On a two-space feed the
+scanner pattern never matches, so the class is inert and the false GREEN is unreachable:
 
 - Whitespace fix **alone** makes the pattern match and **manufactures** the defect.
 - Fan-out **alone** leaves breadth dead on that feed, because eligibility fails earlier at
   `sig ~ re`.
 
-They land in **one commit**. The live emit collapses whitespace runs (`lib/errors.sh:39`); the
-pre-consolidated path (`:22-26`) does not. Fix the normalization there and add two-space fixtures
-pinning *both* pattern eligibility and normalized-signature collapse.
+So they land in **one commit** as a general rule. **cds1 specifically is unaffected by this hazard** —
+§0.1 measured its feed as one-space, so the mouth is already open there and the fan-out gate delivers
+on its own. The whitespace work is therefore correctness-consistency for other hosts and for the live
+path, not a gate on shipping the fix to cds1.
+
+The live emit collapses whitespace runs (`lib/errors.sh:39`); the pre-consolidated path (`:22-26`)
+does not. Fix the normalization there and add two-space fixtures pinning *both* pattern eligibility
+and normalized-signature collapse.
 
 Remaining items, correctly labelled — rev 3 called the first a blocker; it is copy accuracy:
 

@@ -178,3 +178,8 @@ Two rev-3 positions are withdrawn as a result:
 The one number that cannot be settled from the repo is the breadth default. It depends on how often
 cds1 actually sees identical probe-shaped fatals across ≥N accounts — which is exactly what §0.1's
 cds1 feed inspection would reveal. Proposed default 5, flagged as provisional pending that data.
+
+**Resolved 2026-08-12 (measured, see design §0.1).** cds1's feed is one-space (so the defect is live
+there), and its observed maximum fan-out in a 24h window is **4**, from ordinary bot sweeps. That
+makes defaults of 3 and 4 chronic-RED generators on real traffic and leaves 5 with zero margin. The
+default is **8**. MA-3's chronic-RED concern is confirmed by production data, not merely plausible.
