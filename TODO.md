@@ -1,19 +1,35 @@
 # Swatter — TODO / parked items
 
-## 🔴 OPEN DEFECT — the fatal classifier can grade a fleet-wide outage GREEN
+## ✅ CLOSED — the fatal classifier could grade a fleet-wide outage GREEN
 
-**Sitrep:** `docs/handoff-2026-08-11-fatal-classifier-false-green.md` ·
-**review:** `docs/proposals/2026-08-11-array-injection-classifier-arm-review-grok.md`
+**Fixed in v2.14.0, deployed to cds1 2026-08-12 14:36 UTC.** The gate now counts
+BREADTH — distinct accounts sharing one account-normalized signature, threshold
+`ERROR_FATAL_FANOUT_ACCOUNTS=4` — alongside the existing depth count, and account
+identity is the pair (source tag, `/home` path) so a wrong or constant tag cannot
+collapse the fleet onto one key. Depth and the pattern/veto still match the RAW
+signature, so the conjunct can only ever move a fatal toward genuine.
 
-Live in **v2.13.0 on cds1**. The scanner-induced repeat gate keys on a signature that retains the
-absolute `/home/<acct>/…` path, so one shared bug on N accounts becomes N signatures at count 1 —
-all under the threshold. **17 accounts × 1 identical fatal → `GENUINE=0` → GREEN.** Reproduced
-against shipping code; repro script is in the sitrep.
+**Spec:** `docs/superpowers/specs/2026-08-11-fatal-scanner-correlation-design.md`
+(rev 4, three adversarial rounds) · **plan:**
+`docs/superpowers/plans/2026-08-12-fatal-fanout-gate.md` · **pre-ship review:**
+`docs/superpowers/specs/2026-08-12-fatal-fanout-gate-pre-ship-review-grok.md`
+(two Blockers found and fixed before deploy) · **sitrep:**
+`docs/handoff-2026-08-11-fatal-classifier-false-green.md`.
 
-Latent rather than active *today*, because the shipping pattern only matches probe-shaped fatals.
-**It widens the moment anyone broadens `ERROR_FATAL_SCANNER` — so treat widening that pattern as
-gated on fixing this.** Chosen direction: correlate with IPs Swatter itself scored. Dead end already
-ruled out and recorded: path-normalized counting inverts the problem.
+Validated on cds1's real feed before the deploy: a 96h window holds two genuine
+clusters that v2.13.0 graded GREEN — `get_locale()` across **5** accounts and the
+Jetpack `ERROR_TYPE_REST` constant across **4** in 50 minutes. Both now grade RED.
+
+**Watch on the first nightly runs:** the `get_locale()` cluster puts exactly 4
+accounts inside a single 24h window — the threshold with no margin. A RED there is
+the gate working. If the rate is wrong for this host, raise the knob (`0` disables
+breadth); see "What a RED from cross-account fatals means" in `docs/RUNBOOK.md`.
+
+Two limitations carried forward deliberately: per-account variance outside
+`/home<N>/<acct>/` (a hostname in the message, a non-cPanel layout) keeps
+signatures split and leaves the gate inert on that cluster; and a bot sweep across
+4+ accounts grades RED, which is accepted — a sweep and a fleet bug are
+indistinguishable in the error log.
 
 ## ⏭️ NEXT PICKUP: gate D
 
