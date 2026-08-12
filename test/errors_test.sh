@@ -447,5 +447,21 @@ check twospace-fanout "$ERR_FATAL_GENUINE" "17"
 } > "$ERROR_DIGEST_LOG"; _run
 check twospace-collapse "$ERR_FATAL_GENUINE" "3"
 
+# --- the scanner default must stay byte-identical in all three copies --------
+# A silent split between the shipping default, the validation fallback and the
+# documented value is possible today because nothing compares them.
+_scan_common="$(sed -n "s/^ERROR_FATAL_SCANNER='\(.*\)'$/\1/p" "${ROOT}/lib/common.sh")"
+_scan_errors="$(sed -n "s/^_ERR_FATAL_SCANNER_DEFAULT='\(.*\)'$/\1/p" "${ROOT}/lib/errors.sh")"
+_scan_conf="$(sed -n "s/^ERROR_FATAL_SCANNER='\(.*\)'$/\1/p" "${ROOT}/config/swatter.example.conf")"
+check threecopy-nonempty "$([[ -n "$_scan_common" ]] && echo ok)" "ok"
+check threecopy-errors   "$_scan_errors" "$_scan_common"
+check threecopy-conf     "$_scan_conf"   "$_scan_common"
+
+# --- the digest must not claim these came from direct file execution ---------
+ERROR_FATAL_SCANNER_REPEATS=3; ERROR_FATAL_FANOUT_ACCOUNTS=4
+{ echo "[${TS}] [FATAL] [php/acct] ${SCAN1}"; } > "$ERROR_DIGEST_LOG"; _run
+check copy-no-direct-exec "$(printf '%s' "$SECTION_OUT" | grep -c 'executing PHP files directly')" "0"
+check copy-has-heading    "$(printf '%s' "$SECTION_OUT" | grep -c 'Scanner-induced FATALs')" "1"
+
 echo "errors_test: PASS=${PASS} FAIL=${FAIL}"
 (( FAIL == 0 ))

@@ -185,7 +185,7 @@ _setgrade_cls() { ERR_FATAL="$1" ERR_FATAL_GENUINE="$2" ERR_FATAL_SCANNER="$3" E
 # Scanner-only fatals never trip RED; the sub-text says why the Fatal count isn't zero.
 _setgrade_cls 3 0 3 5 165
 check scanner-only-green   "$RPT_GRADE" "GREEN"
-check scanner-only-sub     "$(printf '%s' "$RPT_GRADE_SUB" | grep -c 'scanner-induced')" "1"
+check scanner-only-sub     "$(printf '%s' "$RPT_GRADE_SUB" | grep -c 'isolated one-off crash')" "1"
 check scanner-only-nofalse "$(printf '%s' "$RPT_GRADE_SUB" | grep -c 'No fatal errors')" "0"
 # One genuine fatal among scanner ones is still RED, counted as 1.
 _setgrade_cls 3 1 2 5 0

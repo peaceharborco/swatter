@@ -271,8 +271,9 @@ REPORT_LOGO_ALT=""
 # ("Review the sections below") so the public default suggests nothing bespoke.
 REPORT_TRIAGE_HINT=""
 # Status thresholds (traffic light GREEN/YELLOW/RED). Tunable per host. RED = any
-# GENUINE fatal error — fatals classified scanner-induced by ERROR_FATAL_SCANNER
-# (below) don't trip it. Only ELEVATED non-fatal error volume turns the status
+# GENUINE fatal error — fatals filed scanner-induced by the errors plane (pattern
+# ERROR_FATAL_SCANNER, depth ERROR_FATAL_SCANNER_REPEATS, breadth
+# ERROR_FATAL_FANOUT_ACCOUNTS, all below) don't trip it. Only ELEVATED non-fatal error volume turns the status
 # YELLOW — routine noise and a high block count stay GREEN (blocks mean Swatter
 # is doing its job, not a problem). The two thresholds keep their historical names.
 REPORT_GRADE_D_ERRORS=300         # >= this many non-fatal errors -> YELLOW "act now" wording (error flood)

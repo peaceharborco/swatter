@@ -417,7 +417,7 @@ _report_send() {
 # Factual one-line summary for the email subject: "LEVEL<TAB>SUMMARY". The status
 # Fatal count the grade/verdict/summary key on: the genuine count when the
 # errors plane has classified this window's fatals (ERR_FATAL_GENUINE set —
-# scanner-induced fatals, bots executing PHP files directly, are not outages),
+# scanner-induced fatals, isolated one-off crashes, are not outages),
 # else the raw total — an unclassified fatal fails toward RED, never green.
 _report_fatal_effective() { printf '%s' "${ERR_FATAL_GENUINE:-${ERR_FATAL:-0}}"; }
 
@@ -447,8 +447,10 @@ _report_verdict() {
 #            Swatter working, not a problem, so they never leave GREEN.
 #   YELLOW — elevated non-fatal error volume worth a look (was C/D).
 #   RED    — a GENUINE fatal error: a service or app may be down (was F).
-#            Scanner-induced fatals (classified by the errors plane via
-#            ERROR_FATAL_SCANNER) never trip RED; unclassified fatals do.
+#            Scanner-induced fatals (classified by the errors plane on the
+#            ERROR_FATAL_SCANNER pattern, ERROR_FATAL_SCANNER_REPEATS depth and
+#            ERROR_FATAL_FANOUT_ACCOUNTS breadth) never trip RED; unclassified
+#            fatals do.
 #
 # REPORT_GRADE_FORCE=green|yellow|red overrides the computed tier so an operator
 # can force a status for a `--test` preview — run it once per status
@@ -496,7 +498,7 @@ _report_grade() {
     # otherwise say what the body's Fatal count actually is, so a green/yellow
     # status never contradicts a non-zero Fatal line below it.
     local nofatal="No fatal errors"
-    (( fsc > 0 )) && nofatal="No genuine fatals — ${fsc} scanner-induced (bots executing PHP files directly, not an outage)"
+    (( fsc > 0 )) && nofatal="No genuine fatals — ${fsc} isolated one-off crash(es), not an outage"
     # Shared tier predicates, computed once so the headline and recommendation
     # switches below key on the same conditions and can't drift apart.
     local quiet=0; (( f == 0 && fsc == 0 && e == 0 && b == 0 && ol == 0 )) && quiet=1
@@ -651,9 +653,9 @@ _report_summary_errors() {
         local enf=$(( e - fsc )); (( enf < 0 )) && enf=0
         local fscs; fscs="$( (( fsc == 1 )) || echo s )"
         if (( enf >= ${REPORT_GRADE_C_ERRORS:-100} )); then
-            echo "${fsc} scanner-induced fatal${fscs} (bots executing PHP files directly — not an outage), plus ${enf} non-fatal errors — volume above routine, worth a look."
+            echo "${fsc} scanner-induced fatal${fscs} (isolated one-off crashes — not an outage), plus ${enf} non-fatal errors — volume above routine, worth a look."
         else
-            echo "${fsc} scanner-induced fatal${fscs} — bots executing PHP files directly, not a crash or outage. The rest handled cleanly."
+            echo "${fsc} scanner-induced fatal${fscs} — isolated one-off crashes, not an outage. The rest handled cleanly."
         fi
     elif (( e > 0 )); then
         echo "Mostly scanner-induced proxy noise and rejected probes the server handled cleanly. No crashes or outages."

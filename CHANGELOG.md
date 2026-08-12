@@ -5,6 +5,43 @@ All notable changes to Swatter are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.0] - 2026-08-12
+
+### Added
+- `ERROR_FATAL_FANOUT_ACCOUNTS` (default `4`): how many distinct accounts must
+  share one fatal signature before it stops being filed scanner-induced. Raise it
+  if routine sweeping on your host is wider than that — it does not weaken
+  single-account detection, which `ERROR_FATAL_SCANNER_REPEATS` still governs on
+  its own; `0` turns the breadth gate off. Invalid values fall back to 4 with a
+  warning, and the threshold is never clamped upward (RED-safe direction).
+- The digest body labels a cross-account cluster ("one signature spans across N
+  accounts"), and the errors plane exports `ERR_FATAL_FANOUT_MAX`.
+
+### Changed
+- **The fatal classifier now counts breadth as well as depth, so windows that
+  previously graded GREEN can grade RED — and the RED SMS fires with them.** The
+  signature keeps each account's own `/home/<acct>` path, so one shared bug across
+  N accounts produced N distinct signatures of count 1, every one of them slipped
+  under the repeat threshold, and a fleet-wide outage graded green with the alert
+  suppressed. A fatal is filed scanner-induced only when it matches
+  `ERROR_FATAL_SCANNER` **and** stays under both thresholds. Adding a conjunct can
+  only shrink the scanner class, so the change only ever moves fatals toward RED.
+  A bot sweep spanning four or more accounts will now be reported too: a sweep and
+  a fleet bug are indistinguishable in the error log, and the false RED is the
+  recoverable direction. See "What a RED from cross-account fatals means" in
+  `docs/RUNBOOK.md`.
+- Digest copy no longer claims these fatals are "bots executing PHP files
+  directly". That was already wrong for the case that prompted this work — a
+  bootstrapped plugin file — and does not describe what the gate measures; the
+  wording is now "isolated one-off crashes".
+
+### Fixed
+- The pre-consolidated feed (`ERROR_DIGEST_LOG`) did not collapse runs of
+  whitespace, though the live path always has. Raw PHP writes `PHP Fatal error:`
+  with two spaces, so the same error arriving on the two feeds produced two
+  different signatures: on this one it matched no pattern, and depth/breadth
+  counting could not collapse the forms together.
+
 ## [2.13.0] - 2026-08-11
 
 ### Added

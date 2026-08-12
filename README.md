@@ -693,8 +693,9 @@ report (verdict line → stat tiles → per-plane tables). Each report leads wit
 **traffic-light status** — 🟢 GREEN (all clear: blocks and origin-lock drops
 live here, that's Swatter working), 🟡 YELLOW (elevated non-fatal error volume,
 worth a look), 🔴 RED (a genuine fatal error — a service or app may be down;
-one-off fatals from bots executing PHP files directly are classified
-scanner-induced and stay off the RED trigger, see `ERROR_FATAL_SCANNER`;
+isolated one-off fatals are classified scanner-induced and stay off the RED
+trigger — a fatal signature spanning `ERROR_FATAL_FANOUT_ACCOUNTS` or more
+accounts is never one of them, see `ERROR_FATAL_SCANNER`;
 `ERROR_FATAL_SCANNER_EXCLUDE` vetoes that classification for your own CLI
 entrypoints, so a broken `wp` maintenance script still turns the light RED —
 the veto only ever moves a fatal *toward* genuine, never away) —

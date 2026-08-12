@@ -194,7 +194,10 @@ _errors_validate_noise
 # ERROR_NOISE: an empty pattern would match every line and classify every fatal
 # as scanner-induced (a real outage graded green). Empty or invalid falls back
 # to the built-in default; to disable the classifier entirely, set
-# ERROR_FATAL_SCANNER_REPEATS=1 (every matching fatal then counts as genuine).
+# ERROR_FATAL_SCANNER_REPEATS to 0 or 1 — no signature count is below either, so
+# every matching fatal then counts as genuine. Both are kept as the RED-safe
+# direction and are never clamped upward. Note REPEATS governs DEPTH only;
+# ERROR_FATAL_FANOUT_ACCOUNTS governs breadth across accounts.
 _ERR_FATAL_SCANNER_DEFAULT='PHP Fatal error: Uncaught Error: (Call to undefined function|Undefined constant)'
 # Veto on top of the classifier: a fatal whose message matches
 # ERROR_FATAL_SCANNER_EXCLUDE can never be scanner-induced, however few times it
@@ -487,7 +490,7 @@ swatter_errors_section() {
             echo
         fi
         if (( ERR_FATAL_SCANNER > 0 )); then
-            echo "Scanner-induced FATALs (bots executing PHP files directly — no outage):"
+            echo "Scanner-induced FATALs (isolated one-off crashes, no outage signal):"
             printf '%s\n' "$fatal_scanner" | head -25 | sed 's/^/  /'
             echo
         fi

@@ -526,6 +526,37 @@ unfreezing publication.** A capped IP that never had a legacy perm is unaffected
 
 ---
 
+## What a RED from cross-account fatals means
+
+A fatal signature appearing on `ERROR_FATAL_FANOUT_ACCOUNTS` or more accounts in
+one window is always reported, and the digest body says so ("one signature spans
+across N accounts"). It is reported whether a bot swept your sites or a deploy
+broke them, because **those two are indistinguishable in the error log** — the log
+records that a request fataled, never whether a healthy application would have
+served it. The digest surfaces the cluster and leaves the judgement to you.
+
+Expect some windows that used to grade GREEN to grade RED. That is the fix
+working: before it, one shared bug across N accounts produced N signatures of
+count 1, slipped under the repeat threshold, and graded GREEN with the RED SMS
+suppressed.
+
+**Triage:** open the body and read the verbatim fatals. Identical `file:line`
+across accounts with a plugin or theme path points at a deploy or an auto-update;
+paths under `wp-admin/` or a vendored library executed head-on point at a bot.
+
+**If the rate is too high on this host,** raise `ERROR_FATAL_FANOUT_ACCOUNTS`. It
+does not weaken single-account detection, which `ERROR_FATAL_SCANNER_REPEATS`
+still governs on its own. `0` turns the breadth gate off entirely.
+
+**Feed contract.** When `ERROR_DIGEST_LOG` is set, the account in each line's
+`[php/<acct>]` tag is now a grading input, not just a label. The window filter
+only checks the timestamp, so a malformed or wrong account field skews the
+account count — inflating it grades RED (safe), collapsing it grades GREEN. The
+classifier falls back to the `/home<N>/<acct>/` path when the tag is unusable,
+which covers the common cases.
+
+---
+
 ## Command reference used above
 
 | Command | Purpose |
