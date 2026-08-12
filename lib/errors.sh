@@ -319,12 +319,50 @@ swatter_errors_section() {
             awk -v reps="${ERROR_FATAL_SCANNER_REPEATS}" \
                 -v fanmin="${ERROR_FATAL_FANOUT_ACCOUNTS}" '
                 { sig=$0; sub(/^\[[0-9-]+ [0-9:]+\] /,"",sig)
-                  # SUBSEP hygiene: the composite fan-out key below is
-                  # "nsig SUBSEP acct", so a \034 in the line could merge two
-                  # accounts into one key. A collision LOWERS fan-out, which is
-                  # the unsafe direction, so strip it before anything keys on it.
-                  gsub(/\034/,"",sig)
                   line[NR]=$0; sigof[NR]=sig; cnt[sig]++
+
+                  # Sanitized copy for KEY MATERIAL ONLY: account identity and
+                  # the normalized signature below. sig itself (already used
+                  # above for depth via cnt[], and used below in END for
+                  # re/ex) stays exactly what the operator log line produced.
+                  # That split is what keeps this gate a strict narrowing of
+                  # the pre-fanout one -- mutating sig before cnt/re/ex would
+                  # let a stray byte flip a line that never matched the
+                  # scanner pattern into one that does, moving it toward
+                  # scanner instead of only ever away from it.
+                  ksig=sig
+
+                  # \034 (SUBSEP) hygiene: the composite fan-out key below is
+                  # "nsig SUBSEP key". A literal \034 byte surviving into nsig
+                  # or key injects an extra separator into that composite, and
+                  # since neither side is length-prefixed, that extra byte can
+                  # slice one logical (nsig,key) pair away from the bucket its
+                  # sibling rows land in -- fragmenting one account group into
+                  # two fan[] entries (verified by fanout-subsep-no-merge; it
+                  # is not, as the mechanism was once described, two accounts
+                  # merging into one key). Either direction only LOWERS
+                  # fan-out, the unsafe direction for the scanner conjunct, so
+                  # strip it before anything keys on it. Stripping only ksig --
+                  # never sig -- means neither nsig nor key can contain \034
+                  # afterward, so "nsig SUBSEP key" carries exactly one SUBSEP
+                  # byte and the composite mapping stays injective.
+                  gsub(/\034/,"",ksig)
+
+                  # cPanel virtfs jails re-nest a normal /home[0-9]*/<acct>/...
+                  # path one level down, as
+                  # /home[0-9]*/virtfs/<acct>/home[0-9]*/<acct>/.... Left
+                  # alone this defeats the gate two ways at once: tier 2 below
+                  # would read the literal shared string "virtfs" as the
+                  # account -- the same collapse "unknown" is rejected for --
+                  # and the nsig gsub further down scans left-to-right and
+                  # non-overlapping, so it consumes the virtfs wrapper and
+                  # resumes past it, leaving the inner /home/<acct>/ segment
+                  # un-normalized. That second failure hits even a line with a
+                  # correct [php/<acct>] tag, since nsig normalization does
+                  # not depend on which tier supplied acct. Unwrap the jail
+                  # before either tier 2 or nsig sees the path; a no-op on
+                  # non-virtfs lines.
+                  gsub(/\/home[0-9]*\/virtfs\/[^\/]+/, "", ksig)
 
                   # --- account identity, three tiers ---
                   # 1. a php/<acct> source tag, which only _errors_collect_php
@@ -334,18 +372,19 @@ swatter_errors_section() {
                   #    collapse them all into one and hide the very fan-out we
                   #    are counting.
                   acct=""
-                  if (substr(sig,1,1)=="[") {
-                      p=index(sig,"] [")
-                      if (p>0) { rest=substr(sig,p+3); q=index(rest,"]")
+                  if (substr(ksig,1,1)=="[") {
+                      p=index(ksig,"] [")
+                      if (p>0) { rest=substr(ksig,p+3); q=index(rest,"]")
                                  if (q>0) { src=substr(rest,1,q-1); sl=index(src,"/")
                                             if (sl>0 && substr(src,1,sl-1)=="php") acct=substr(src,sl+1) } }
                   }
-                  # 2. the /home<N>/<acct>/ path. apache tags carry a vhost and
-                  #    fpm tags a pool, so those feeds land here.
+                  # 2. the /home<N>/<acct>/ path (virtfs wrapper already
+                  #    stripped above). apache tags carry a vhost and fpm tags
+                  #    a pool, so those feeds land here.
                   if (acct=="" || acct=="unknown") {
                       acct=""
-                      if (match(sig, /\/home[0-9]*\/[^\/]+\//)) {
-                          seg=substr(sig,RSTART,RLENGTH)
+                      if (match(ksig, /\/home[0-9]*\/[^\/]+\//)) {
+                          seg=substr(ksig,RSTART,RLENGTH)
                           sub(/^\/home[0-9]*\//,"",seg); sub(/\/$/,"",seg)
                           if (seg!="") acct=seg
                       }
@@ -360,7 +399,7 @@ swatter_errors_section() {
                   # mount roots, and ERROR_DIGEST_LOG is an external feed that can
                   # carry any path. With /home alone the account stays embedded in
                   # nsig, no two accounts ever share one, and breadth is inert.
-                  nsig=sig
+                  nsig=ksig
                   gsub(/\/home[0-9]*\/[^\/]+\//, "/home<N>/<A>/", nsig)
                   sub(/^\[[A-Z]+\] \[[^]]+\]/, "[L] [<SRC>]", nsig)
                   nsigof[NR]=nsig
@@ -369,11 +408,13 @@ swatter_errors_section() {
                 END { re=ENVIRON["SWATTER_FS_RE"]; ex=ENVIRON["SWATTER_FS_EX"]
                       for (i=1;i<=NR;i++) {
                           # DEPTH is cnt on the RAW signature and re/ex match the
-                          # RAW signature; only BREADTH uses nsig. That split is
-                          # what makes this gate a strict narrowing of the old one
-                          # — every conjunct can only move a fatal toward genuine,
-                          # so this can never introduce a new false green. Do NOT
-                          # rekey cnt onto nsig.
+                          # RAW signature; only BREADTH uses the sanitized,
+                          # account-normalized nsig. That split is what makes
+                          # this gate a strict narrowing of the old one --
+                          # every conjunct can only move a fatal toward
+                          # genuine, so this can never introduce a new false
+                          # green. Do NOT rekey cnt onto nsig, and do NOT feed
+                          # ksig/nsig into cnt, re, or ex above.
                           # fanmin <= 0 disables the breadth gate: fan is always
                           # >= 1, so a bare `fan < fanmin` would be false for
                           # every line and void the whole scanner class instead.

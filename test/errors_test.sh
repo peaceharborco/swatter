@@ -274,6 +274,13 @@ _mkfan 17 /home - "$FANMSG" > "$ERROR_DIGEST_LOG"; _run
 check fanout-defect-total   "$ERR_FATAL" "17"
 check fanout-defect-genuine "$ERR_FATAL_GENUINE" "17"
 check fanout-defect-scanner "$ERR_FATAL_SCANNER" "0"
+# a regression to cut -f2- would splice the fan-out count into the digest
+# body, where no other assertion here would notice it: SECTION_OUT checks are
+# unanchored substring greps and ERR_FATAL_GENUINE is a line count, so a
+# leading "4<TAB>" on a FATAL entry changes nothing they inspect. Pin the
+# field offset directly: a printed FATAL line must never start with
+# "<indent><digits><tab>".
+check fanout-body-no-fan "$(printf '%s' "$SECTION_OUT" | grep -cE '^ +[0-9]+'$'\t')" "0"
 
 # multi-home cPanel roots must normalize too, or the account stays in the
 # signature and breadth never groups
@@ -288,6 +295,20 @@ _mkfan 17 /home unknown "$FANMSG" > "$ERROR_DIGEST_LOG"; _run
 check fanout-unknown-sentinel "$ERR_FATAL_GENUINE" "17"
 _mkfan 17 /home2 unknown "$FANMSG" > "$ERROR_DIGEST_LOG"; _run
 check fanout-unknown-home2 "$ERR_FATAL_GENUINE" "17"
+
+# cPanel virtfs jails re-nest a normal /home[0-9]*/<acct>/... path one level
+# down as /home[0-9]*/virtfs/<acct>/home[0-9]*/<acct>/.... Left unwrapped, tier
+# 2 misreads the literal shared string "virtfs" as the account, and even where
+# a correct [php/<acct>] tag supplies acct, nsig normalization is untouched by
+# which tier won and stays broken on its own. Both shapes must fan out.
+{ for i in $(seq -w 1 10); do
+    echo "[${TS}] [FATAL] ${FANMSG} in /home/virtfs/acct${i}/home/acct${i}/public_html/x.php:88"
+  done; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-virtfs-untagged "$ERR_FATAL_GENUINE" "10"
+{ for i in $(seq -w 1 5); do
+    echo "[${TS}] [FATAL] [php/acct${i}] ${FANMSG} in /home/virtfs/acct${i}/home/acct${i}/public_html/x.php:88"
+  done; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-virtfs-tagged "$ERR_FATAL_GENUINE" "5"
 
 # only the php collector emits a per-account tag; apache emits a vhost, fpm a
 # pool. Those must fall back to the account in the path.
@@ -368,6 +389,18 @@ check fanout-veto-still-genuine "$ERR_FATAL_GENUINE" "2"
   printf '[%s] [FATAL] [php/acctD] %s in /home/acctD/public_html/x.php:88\n' "$TS" "$FANMSG"
 } > "$ERROR_DIGEST_LOG"; _run
 check fanout-subsep-no-merge "$ERR_FATAL_GENUINE" "4"
+
+# a \034 byte inside the matched pattern span must not touch depth or re/ex:
+# the SUBSEP strip is for account-identity/nsig key material only, never for
+# the raw signature. Splitting "Error:" with an injected byte breaks the
+# literal substring SWATTER_FS_RE expects, so this must stay unmatched (and
+# thus genuine) regardless of how low its depth or breadth are — a strip that
+# leaked into the raw signature would repair the substring and flip this to
+# scanner.
+FS_BYTE=$'\x1c'
+{ printf '[%s] [FATAL] [php/acct] PHP Fatal error: Uncaught Erro%sr: Call to undefined function boom() in /home/acct/public_html/x.php:88\n' \
+    "$TS" "$FS_BYTE"; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-raw-sig-untouched "$ERR_FATAL_GENUINE" "1"
 
 echo "errors_test: PASS=${PASS} FAIL=${FAIL}"
 (( FAIL == 0 ))
