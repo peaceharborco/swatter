@@ -58,21 +58,45 @@ The aggregator normalizes. So:
 Measured fan-out per **24h window** (the window the gate sees) over 2026-08-09 → 08-12, 10 FATAL
 lines total, 9 matching the default scanner pattern:
 
-| Day | Normalized signature | Accounts |
-|---|---|---|
-| 08-09 | `Call to undefined function get_locale()` in `wp-admin/…` | 2 |
-| 08-10 | same | 3 |
-| 08-11 | docket-cache `substr(): … array given` (does not match pattern) | 1 |
-| 08-11 | `Undefined constant Automattic\Jetpack\Connection\Error_Handler::…` | **4** |
+| Day | Normalized signature | Accounts | What it actually was |
+|---|---|---|---|
+| 08-09 | `Call to undefined function get_locale()` in `wp-admin/…` | 2 | bot noise |
+| 08-10 | same | 3 | bot noise |
+| 08-11 | docket-cache `substr(): … array given` | 1 | probe; does not match pattern |
+| 08-11 | `Undefined constant …Jetpack\Connection\Error_Handler::ERROR_TYPE_REST` | **4** | **genuine fleet bug** |
 
-**Observed maximum fan-out in a 24h window: 4.** This is the evidence for §2.4's default.
+The last row was investigated rather than assumed (§0.2). It is the discriminating fact for §2.4:
 
-**A live instance of the defect, worth noting.** The 08-11 Jetpack signature spans **4 accounts, one
-fatal each, and grades GREEN today.** An undefined constant inside Jetpack's own `Error_Handler`
-across four accounts on one day is exactly as consistent with a Jetpack version/upgrade skew as with
-a bot executing a Jetpack file directly — which is §1's point restated in production data. It is
-currently hidden. Under rev 4 with a default at or below 4 it would surface. Worth an independent
-look at those four accounts regardless of this design.
+- **Maximum fan-out from bot noise: 3.**
+- **The one confirmed real fleet event had fan-out 4.**
+
+### 0.2 The 08-11 Jetpack event — investigated, and it was real
+
+Accounts `kpsd`, `condodelsol`, `cbcsherman`, `idahomining`, one fatal each between 05:44 and 06:34,
+identical signature and identical file:line —
+`jetpack/jetpack_vendor/automattic/jetpack-connection/src/class-client.php:57`.
+
+Evidence it was a genuine bug, not a bot executing a file directly:
+
+1. The class **resolved** and only the *constant* was undefined. A bot running a vendored library file
+   outside the bootstrap would fail earlier, on the class.
+2. `class-client.php` today carries a comment at line 54 stating the constants "must not be referenced
+   from this class: during a plugin update, a stale `Error_Handler` that predates them can already be
+   loaded, and resolving them against it would fatal the request." That is a description of this exact
+   failure, written as its fix — the code now uses literal strings.
+3. Timing is a ~50-minute spread with irregular gaps, not a sweep.
+4. `idahomining` carries **four** copies of `jetpack-connection` (Jetpack plus WooCommerce, WC
+   Payments, WC Services), and only Jetpack's own defines `ERROR_TYPE_REST` — the autoloader skew that
+   lets a stale `Error_Handler` win.
+
+**Resolution:** cds1 picked up the upstream fix in the Jetpack update at 2026-08-12 00:44–01:19, and
+there are zero Jetpack fatals after that window (log runs to 08-12 03:00). No action needed on the
+four accounts. The mechanism — one plugin's newer vendored code referencing a constant a
+sibling-plugin's older copy lacks — remains a live class of risk on multi-copy installs like
+`idahomining`, and will recur whenever a new constant is introduced.
+
+**This is the defect doing real harm, in production, today:** four accounts, real requests fataling,
+graded GREEN and SMS suppressed.
 
 ## 1. Why the correlation direction was abandoned
 
@@ -194,23 +218,34 @@ the house pattern (`lib/errors.sh:256-260`): non-integer → built-in default wi
 and `1` disable the breadth gate only, leaving depth intact — the RED-safe direction is *low*, so
 never clamp upward.
 
-**Default: 8, chosen from measurement (§0.1).** cds1's observed maximum fan-out in a 24h window is
-**4**, from ordinary bot sweeps. That measurement rules out the obvious candidates:
+**Default: 4, chosen from measurement (§0.1, §0.2).** On cds1's measured window, bot noise reaches
+**3** accounts and the one confirmed genuine fleet event reached **4**. The default sits exactly on
+that boundary:
 
 | Default | Effect on the measured window |
 |---|---|
-| 3 | RED on 08-10 (3 accounts) **and** 08-11 (4) — chronic RED, two of four days |
-| 4 | RED on 08-11 — still triggered by routine sweeping |
-| 5 | No RED, but sits **one account** above the observed max — zero margin |
-| **8** | No RED; real headroom above routine sweeps, well below a 17-account fleet event |
+| 3 | RED on 08-10's 3-account bot sweep — chronic RED from noise |
+| **4** | Bot sweeps (2, 3) stay scanner; the **real Jetpack event surfaces** ✓ |
+| 5 | Everything stays scanner — the real event stays hidden |
+| 8 | Same, with more margin for hiding real events |
 
-Rev 3's provisional 5 was set before this data and was too tight. 8 separates "routine sweep" from
-"fleet event" with margin at both ends.
+**A correction worth recording.** An earlier pass set this to 8 by treating the 4-account Jetpack
+signature as routine sweeping when computing "maximum fan-out from bot noise." Investigating it
+(§0.2) showed it was the genuine article, which moves the bot-noise maximum to 3 and the real-event
+observation to 4. **Defaults of 5 and 8 would both have hidden the one real fleet bug in the sample —
+the very event cited as justification for the design.** The lesson generalizes: the breadth default
+cannot be set from fan-out counts alone. Each cluster has to be classified before it can calibrate
+the threshold.
 
-**Caveat on the sample:** four days and 10 fatal lines is thin. The value should be re-measured over
-a longer window before it is treated as settled, and re-checked after any change to the aggregator or
-the account count on the host. The knob exists partly so this can be tuned per host without touching
-depth (§2.4's escape-hatch role).
+**Margin is thin, deliberately.** Bot noise at 3 and a real event at 4 are adjacent, so a bot sweep
+touching 4+ accounts will grade RED. That is §2.6's accepted cost, and it is the correct direction:
+the failure mode is a false RED, which is visible and recoverable, not a hidden outage.
+
+**Caveat on the sample:** four days, 10 fatal lines, and exactly **one** confirmed real event is a
+thin basis for a boundary this tight. Re-measure over a longer window — classifying each cluster, not
+just counting it — before treating 4 as settled, and re-check after any change to the aggregator or
+the host's account count. The knob exists partly so this is tunable per host without touching depth
+(its escape-hatch role above).
 
 ### 2.5 Prototype results
 

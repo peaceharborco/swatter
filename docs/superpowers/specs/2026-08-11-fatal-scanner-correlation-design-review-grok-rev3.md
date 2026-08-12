@@ -179,7 +179,14 @@ The one number that cannot be settled from the repo is the breadth default. It d
 cds1 actually sees identical probe-shaped fatals across ≥N accounts — which is exactly what §0.1's
 cds1 feed inspection would reveal. Proposed default 5, flagged as provisional pending that data.
 
-**Resolved 2026-08-12 (measured, see design §0.1).** cds1's feed is one-space (so the defect is live
-there), and its observed maximum fan-out in a 24h window is **4**, from ordinary bot sweeps. That
-makes defaults of 3 and 4 chronic-RED generators on real traffic and leaves 5 with zero margin. The
-default is **8**. MA-3's chronic-RED concern is confirmed by production data, not merely plausible.
+**Resolved 2026-08-12 (measured, see design §0.1 / §0.2).** cds1's feed is one-space, so the defect is
+live there. Fan-out per 24h window: bot noise reached 2 and 3 accounts; one cluster reached 4.
+
+A first pass counted that 4-account cluster as bot noise and set the default to **8**. Investigating
+it showed it was a **genuine Jetpack fleet bug** (§0.2), which moves the bot-noise maximum to 3 and
+the real-event observation to 4 — so 5 and 8 would both have hidden the only real event in the
+sample. **The default is 4.**
+
+Both halves of MA-3 survive, in a sharper form: chronic RED from a default of 3 is confirmed by
+production traffic, and the breadth threshold cannot be calibrated from fan-out counts alone —
+clusters must be classified first, or the calibration hides exactly what it was built to reveal.
