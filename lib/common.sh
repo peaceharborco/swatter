@@ -311,13 +311,14 @@ ERROR_MYSQL_GLOB="/var/lib/mysql/*.err"
 ERROR_PHP_HOME_GLOB="/home"
 ERROR_NOISE="prefetch request body failed|error reading status line from remote server|invalid URI path|Invalid method in request|no compatible SSL setup for policy|client denied by server configuration|Error dispatching request to"
 
-# Fatals matching this pattern that repeat fewer than REPEATS times in the
-# window are scanner-induced (a bot executing a PHP file directly, outside the
-# app bootstrap) and do not trip RED — real breakage of the same shape repeats
-# on every page view and crosses the threshold. TRADE-OFF: a genuine one-off
-# fatal of this shape on a near-zero-traffic site rides below the threshold
-# until it repeats; set REPEATS=1 to disable the classifier if that trade is
-# wrong for the box.
+# Fatals matching this pattern that repeat fewer than REPEATS times in the window
+# AND stay under ERROR_FATAL_FANOUT_ACCOUNTS accounts (below) are filed
+# scanner-induced — an isolated one-off crash — and do not trip RED. The pattern
+# alone never decides the class: real breakage of the same shape repeats on every
+# page view, or spans accounts, and crosses one of the two thresholds. TRADE-OFF:
+# a genuine one-off fatal of this shape on a near-zero-traffic single site rides
+# below both until it repeats; set REPEATS to 0 or 1 to disable the classifier if
+# that trade is wrong for the box.
 ERROR_FATAL_SCANNER='PHP Fatal error: Uncaught Error: (Call to undefined function|Undefined constant)'
 ERROR_FATAL_SCANNER_REPEATS=3
 
@@ -332,8 +333,8 @@ ERROR_FATAL_SCANNER_REPEATS=3
 ERROR_FATAL_FANOUT_ACCOUNTS=4
 
 # Veto: a fatal matching this can never be classified scanner-induced, however
-# few times it repeats. The classifier assumes a bot executing a PHP file over
-# HTTP, so a known local CLI entrypoint disproves it — that is our own tooling
+# few times it repeats. The scanner class means "an isolated crash we can ignore";
+# a known local CLI entrypoint disproves that outright — that is our own tooling
 # breaking, and it belongs in the genuine count where we see it. Set to '^$' to
 # disable the veto. Patterns are validated against grep -E AND awk.
 ERROR_FATAL_SCANNER_EXCLUDE='phar:///usr/local/bin/|/usr/local/bin/wp-cli|wp-cli\.phar'

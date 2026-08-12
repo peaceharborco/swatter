@@ -546,14 +546,22 @@ paths under `wp-admin/` or a vendored library executed head-on point at a bot.
 
 **If the rate is too high on this host,** raise `ERROR_FATAL_FANOUT_ACCOUNTS`. It
 does not weaken single-account detection, which `ERROR_FATAL_SCANNER_REPEATS`
-still governs on its own. `0` turns the breadth gate off entirely.
+still governs on its own. `0` turns the breadth gate off entirely. That edit is
+also the rollback: if this misfires at 04:00 and floods you with REDs, set the
+knob in `/etc/swatter/swatter.conf` — no redeploy, no package downgrade, and the
+next run picks it up (§9 covers deploys generally, but you do not need one here).
 
-**Feed contract.** When `ERROR_DIGEST_LOG` is set, the account in each line's
-`[php/<acct>]` tag is now a grading input, not just a label. The window filter
-only checks the timestamp, so a malformed or wrong account field skews the
-account count — inflating it grades RED (safe), collapsing it grades GREEN. The
-classifier falls back to the `/home<N>/<acct>/` path when the tag is unusable,
-which covers the common cases.
+**Feed contract.** When `ERROR_DIGEST_LOG` is set, the source tag and the
+`/home<N>/<acct>/` path in each line are grading inputs, not just labels. The
+window filter only checks the timestamp, so a wrong account field skews the
+count — inflating it grades RED (safe), collapsing it grades GREEN (dangerous).
+Account identity is therefore the **pair**: two lines count as the same account
+only when their source tag and their `/home` path agree, so a feed that stamps a
+constant or wrong tag still spreads across accounts by path, and a shared path
+that appears in the message still spreads by tag. Deflating the count takes
+control of both at once. What defeats it is neither: a fatal whose message
+carries no `/home<N>/<acct>/` path and no per-site tag — those land on a
+per-line identity that inflates rather than collapses, which is the safe end.
 
 ---
 

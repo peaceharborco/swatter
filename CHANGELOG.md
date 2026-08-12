@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warning, and the threshold is never clamped upward (RED-safe direction).
 - The digest body labels a cross-account cluster ("one signature spans across N
   accounts"), and the errors plane exports `ERR_FATAL_FANOUT_MAX`.
+- Account identity for the breadth count is the **pair** (source tag, `/home`
+  path): two fatals count as one account only when both agree. A feed that stamps
+  a constant or wrong account tag on every line therefore no longer collapses the
+  whole fleet onto one identity, and neither does a `/home/<name>/` string sitting
+  in the message ahead of the real path. Disagreement can only add distinct
+  accounts, which is the RED-safe direction.
 
 ### Changed
 - **The fatal classifier now counts breadth as well as depth, so windows that
@@ -40,7 +46,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whitespace, though the live path always has. Raw PHP writes `PHP Fatal error:`
   with two spaces, so the same error arriving on the two feeds produced two
   different signatures: on this one it matched no pattern, and depth/breadth
-  counting could not collapse the forms together.
+  counting could not collapse the forms together. **If your `ERROR_DIGEST_LOG`
+  carries raw two-space PHP fatals, this also grades in the other direction:** the
+  scanner class was inert on such a feed, so isolated one-off crashes that graded
+  RED will now grade GREEN once they fall under both thresholds. That is the
+  classifier finally reaching a feed it never matched, not a weakened gate — the
+  breadth gate ships first precisely so it is in place when the pattern starts
+  matching. Feeds that were already single-space (the reference host) see no
+  change from this.
 
 ## [2.13.0] - 2026-08-11
 

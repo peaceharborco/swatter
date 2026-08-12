@@ -250,6 +250,16 @@ ERROR_FATAL_FANOUT_ACCOUNTS=1; _errors_validate_fatal_scanner
 check fanout-knob-one-ok   "$ERROR_FATAL_FANOUT_ACCOUNTS" "1"
 ERROR_FATAL_FANOUT_ACCOUNTS=12; _errors_validate_fatal_scanner
 check fanout-knob-passthru "$ERROR_FATAL_FANOUT_ACCOUNTS" "12"
+# A threshold no account count can ever reach is "gate off" wearing the costume
+# of a configured value, and it fails silent-and-green. Bound the width so a typo
+# or a pasted digit run lands on the default with a warning instead.
+ERROR_FATAL_FANOUT_ACCOUNTS="9999999999999999999999999"; _errors_validate_fatal_scanner
+check fanout-knob-huge     "$ERROR_FATAL_FANOUT_ACCOUNTS" "$_fanout_default"
+ERROR_FATAL_FANOUT_ACCOUNTS="99999"; _errors_validate_fatal_scanner
+check fanout-knob-maxwidth "$ERROR_FATAL_FANOUT_ACCOUNTS" "99999"
+ERROR_FATAL_SCANNER_REPEATS="1234567"; _errors_validate_fatal_scanner
+check repeats-knob-huge    "$ERROR_FATAL_SCANNER_REPEATS" "3"
+ERROR_FATAL_SCANNER_REPEATS=3
 ERROR_FATAL_FANOUT_ACCOUNTS=4
 # the shipped default must match the validation fallback and the example conf
 check fanout-default-common "$(grep -c '^ERROR_FATAL_FANOUT_ACCOUNTS=4$' "${ROOT}/lib/common.sh")" "1"
@@ -446,6 +456,39 @@ check twospace-fanout "$ERR_FATAL_GENUINE" "17"
   echo "[${TS}] [FATAL] [php/acct] ${TWOSP} in /home/acct/public_html/x.php:88"
 } > "$ERROR_DIGEST_LOG"; _run
 check twospace-collapse "$ERR_FATAL_GENUINE" "3"
+
+# --- a wrong-but-non-empty tag must not collapse the fleet onto one account --
+# Account identity is the PAIR (source tag, /home path), so two rows share an
+# account only when both agree. A feed that stamps a CONSTANT account on every
+# line used to win outright — the path was consulted only for an empty or
+# "unknown" tag — and six accounts collapsed to fan=1, which is the original
+# false GREEN this whole gate exists to close.
+ERROR_FATAL_SCANNER_REPEATS=3; ERROR_FATAL_FANOUT_ACCOUNTS=4
+{ for i in 1 2 3 4 5 6; do
+    echo "[${TS}] [FATAL] [php/webuser] ${FANMSG} in /home/acct${i}/public_html/x.php:88"
+  done; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-constant-tag "$ERR_FATAL_GENUINE" "6"
+# Same shape, but the deflation comes from the path side: a non-php tag (so the
+# path tier is live) plus a shared /home segment earlier in the message than the
+# real one. match() takes the FIRST /home, so every row read "fake" as its
+# account; the per-row source tag is what keeps them apart.
+{ for i in 1 2 3 4 5 6; do
+    echo "[${TS}] [FATAL] [apache/s${i}.example] ${FANMSG} referer: /home/fake/x.php in /home/acct${i}/public_html/x.php:88"
+  done; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-injected-path "$ERR_FATAL_GENUINE" "6"
+# The pair must not INFLATE: one account repeating on one path is still one
+# account, however many rows it emits.
+{ for i in 1 2; do
+    echo "[${TS}] [FATAL] [php/acct1] ${FANMSG} in /home/acct1/public_html/x.php:88"
+  done; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-pair-no-inflate "$ERR_FATAL_SCANNER" "2"
+# \003 is the pair separator, so it gets the same key-only hygiene as \034: a
+# literal one in the message must not slice a row out of its account bucket.
+{ for i in 1 2 3 4 5 6; do
+    printf '[%s] [FATAL] [php/acct%s] %s in /home/acct%s/public_html/x\003y.php:88\n' \
+      "${TS}" "$i" "${FANMSG}" "$i"
+  done; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-etx-no-split "$ERR_FATAL_GENUINE" "6"
 
 # --- the scanner default must stay byte-identical in all three copies --------
 # A silent split between the shipping default, the validation fallback and the

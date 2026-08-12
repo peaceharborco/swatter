@@ -185,11 +185,12 @@ _errors_validate_noise() {
 }
 _errors_validate_noise
 
-# Fatal classifier: a fatal whose message matches ERROR_FATAL_SCANNER and whose
+# Fatal classifier: a fatal whose message matches ERROR_FATAL_SCANNER, whose
 # signature repeats fewer than ERROR_FATAL_SCANNER_REPEATS times in the window
-# is scanner-induced — a bot executing a PHP file directly, outside the app
-# bootstrap — not an outage. Real breakage of the same shape (a broken plugin,
-# a half-deployed theme) repeats on every page view and crosses the threshold.
+# and which spans fewer than ERROR_FATAL_FANOUT_ACCOUNTS accounts is
+# scanner-induced — an isolated one-off crash — not an outage. Real breakage of
+# the same shape (a broken plugin, a half-deployed theme) repeats on every page
+# view, or lands on every account at once, and crosses one of the thresholds.
 # This is a match-POSITIVE classifier, so the failure modes invert relative to
 # ERROR_NOISE: an empty pattern would match every line and classify every fatal
 # as scanner-induced (a real outage graded green). Empty or invalid falls back
@@ -265,10 +266,14 @@ _errors_validate_fatal_scanner() {
         ERROR_FATAL_SCANNER_EXCLUDE="$_ERR_FATAL_SCANNER_EXCLUDE_DEFAULT"
     fi
     # 0 and 1 both disable the classifier (no signature count is < them), which
-    # is the RED-safe direction — never clamp them upward.
+    # is the RED-safe direction — never clamp them upward. The width bound is not
+    # cosmetic: a value too large to ever be reached reads as "configured" but
+    # behaves as "gate off", silently, in the direction that hides an outage. Six
+    # digits is far past any real window on one host, so anything wider is a typo
+    # or a paste accident and falls back to the default WITH a warning.
     case "${ERROR_FATAL_SCANNER_REPEATS:-}" in
-        *[!0-9]*|'')
-            log_warn "errors: ERROR_FATAL_SCANNER_REPEATS='${ERROR_FATAL_SCANNER_REPEATS:-}' is not a non-negative integer; using 3"
+        *[!0-9]*|''|??????*)
+            log_warn "errors: ERROR_FATAL_SCANNER_REPEATS='${ERROR_FATAL_SCANNER_REPEATS:-}' is not an integer of 0-99999; using 3"
             ERROR_FATAL_SCANNER_REPEATS=3 ;;
     esac
     # Same discipline as REPEATS: a non-negative integer or the built-in default,
@@ -276,9 +281,13 @@ _errors_validate_fatal_scanner() {
     # `fan < fanmin` false for every line and void the WHOLE scanner class rather
     # than just this gate — the apply site special-cases 0 as "breadth gate off"
     # instead. 1 is legal and means every matching fatal counts genuine.
+    # Same width bound as REPEATS, and it bites harder here: a 25-digit threshold
+    # is never reached by any account count, so the breadth gate is off and every
+    # cross-account cluster grades green again — the exact defect this gate exists
+    # to close, re-opened by a config typo that today passes validation silently.
     case "${ERROR_FATAL_FANOUT_ACCOUNTS:-}" in
-        *[!0-9]*|'')
-            log_warn "errors: ERROR_FATAL_FANOUT_ACCOUNTS='${ERROR_FATAL_FANOUT_ACCOUNTS:-}' is not a non-negative integer; using 4"
+        *[!0-9]*|''|??????*)
+            log_warn "errors: ERROR_FATAL_FANOUT_ACCOUNTS='${ERROR_FATAL_FANOUT_ACCOUNTS:-}' is not an integer of 0-99999; using 4"
             ERROR_FATAL_FANOUT_ACCOUNTS=4 ;;
     esac
 }
@@ -331,8 +340,8 @@ swatter_errors_section() {
         marked="$(printf '%s\n' "$fatal" \
             | SWATTER_FS_RE="${ERROR_FATAL_SCANNER}" \
               SWATTER_FS_EX="${ERROR_FATAL_SCANNER_EXCLUDE}" \
-            awk -v reps="${ERROR_FATAL_SCANNER_REPEATS}" \
-                -v fanmin="${ERROR_FATAL_FANOUT_ACCOUNTS}" '
+            awk -v reps="${ERROR_FATAL_SCANNER_REPEATS:-3}" \
+                -v fanmin="${ERROR_FATAL_FANOUT_ACCOUNTS:-4}" '
                 { sig=$0; sub(/^\[[0-9-]+ [0-9:]+\] /,"",sig)
                   line[NR]=$0; sigof[NR]=sig; cnt[sig]++
 
@@ -361,7 +370,7 @@ swatter_errors_section() {
                   # never sig -- means neither nsig nor key can contain \034
                   # afterward, so "nsig SUBSEP key" carries exactly one SUBSEP
                   # byte and the composite mapping stays injective.
-                  gsub(/\034/,"",ksig)
+                  gsub(/\034/,"",ksig); gsub(/\003/,"",ksig)
 
                   # cPanel virtfs jails re-nest a normal /home[0-9]*/<acct>/...
                   # path one level down, as
@@ -386,28 +395,37 @@ swatter_errors_section() {
                   #    account whose path strip failed, so trusting it would
                   #    collapse them all into one and hide the very fan-out we
                   #    are counting.
-                  acct=""
+                  #    The whole src field is kept, not just the account after
+                  #    "php/": a feed that stamps a CONSTANT or wrong account
+                  #    (php/webuser on every line) would otherwise collapse the
+                  #    whole fleet onto one key. Non-php tags (apache vhost, fpm
+                  #    pool) are per-site too, so they carry identity as well.
+                  atag=""
                   if (substr(ksig,1,1)=="[") {
                       p=index(ksig,"] [")
                       if (p>0) { rest=substr(ksig,p+3); q=index(rest,"]")
                                  if (q>0) { src=substr(rest,1,q-1); sl=index(src,"/")
-                                            if (sl>0 && substr(src,1,sl-1)=="php") acct=substr(src,sl+1) } }
+                                            if (!(sl>0 && substr(src,sl+1)=="unknown")) atag=src } }
                   }
                   # 2. the /home<N>/<acct>/ path (virtfs wrapper already
-                  #    stripped above). apache tags carry a vhost and fpm tags
-                  #    a pool, so those feeds land here.
-                  if (acct=="" || acct=="unknown") {
-                      acct=""
-                      if (match(ksig, /\/home[0-9]*\/[^\/]+\//)) {
-                          seg=substr(ksig,RSTART,RLENGTH)
-                          sub(/^\/home[0-9]*\//,"",seg); sub(/\/$/,"",seg)
-                          if (seg!="") acct=seg
-                      }
+                  #    stripped above), read INDEPENDENTLY of the tag rather than
+                  #    as a fallback for it.
+                  apath=""
+                  if (match(ksig, /\/home[0-9]*\/[^\/]+\//)) {
+                      seg=substr(ksig,RSTART,RLENGTH)
+                      sub(/^\/home[0-9]*\//,"",seg); sub(/\/$/,"",seg)
+                      if (seg!="") apath=seg
                   }
-                  # 3. no identity at all -> a key unique to this line, so an
-                  #    unattributable fatal contributes to fan-out and can never
-                  #    suppress the gate. Unknown identity biases toward RED.
-                  key = (acct=="") ? ("\001" NR) : ("\002" acct)
+                  # 3. Identity is the PAIR, so two rows share an account only
+                  #    when tag AND path agree. Deflating fan-out then takes
+                  #    control of both, and disagreement can only ADD distinct
+                  #    accounts -- the RED-safe direction. An empty component
+                  #    borrows the other so rows from one feed do not split off
+                  #    from another feed for the same account. Neither -> a key
+                  #    unique to this line: an unattributable fatal contributes
+                  #    to fan-out and can never suppress the gate.
+                  if (atag=="" && apath=="") key = "\001" NR
+                  else key = "\002" (atag=="" ? apath : atag) "\003" (apath=="" ? atag : apath)
 
                   # --- account-normalized signature, for BREADTH only ---
                   # /home[0-9]* not /home: cPanel uses /home2, /home3 as extra
@@ -490,7 +508,7 @@ swatter_errors_section() {
             echo
         fi
         if (( ERR_FATAL_SCANNER > 0 )); then
-            echo "Scanner-induced FATALs (isolated one-off crashes, no outage signal):"
+            echo "Scanner-induced FATALs (under both the repeat and account-spread gates — no outage signal):"
             printf '%s\n' "$fatal_scanner" | head -25 | sed 's/^/  /'
             echo
         fi
