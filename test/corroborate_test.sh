@@ -240,14 +240,24 @@ _log "${CORR_DOMLOG_DIR}/beta.example-ssl_log"  198.51.100.8 "25/Jun/2026:09:10:
 swatter_errors_section 24h > "${WORK}/sec.out"; SECTION="$(cat "${WORK}/sec.out")"
 check e2e-genuine  "$ERR_FATAL_GENUINE" "4"
 check e2e-verdict  "$ERR_CORR_VERDICT"  "visitor"
-check e2e-note     "$(printf '%s' "$SECTION" | grep -c 'went to outside clients')" "1"
+check e2e-note     "$(printf '%s' "$SECTION" | grep -c 'to outside clients')" "1"
+# The note must report the actual SPLIT, never summarise the winning arm as
+# "all N" — that was wrong the first time it met real data (4 loopback failures
+# plus 1 bot probe reported "all 5 went to the server itself").
+check e2e-note-split "$(printf '%s' "$SECTION" | grep -c '2 to outside clients, 0 to the server itself')" "1"
 # ...and the same cluster with only loopback failures does NOT read as visitor.
 _reset
 _log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 203.0.113.10 "25/Jun/2026:09:00:05" \
      "GET /wp-cron.php HTTP/1.1" 503 "WordPress/6.5"
 swatter_errors_section 24h > "${WORK}/sec.out"; SECTION="$(cat "${WORK}/sec.out")"
 check e2e-self-verdict "$ERR_CORR_VERDICT" "self"
-check e2e-self-note    "$(printf '%s' "$SECTION" | grep -c 'went to the server itself')" "1"
+check e2e-self-note    "$(printf '%s' "$SECTION" | grep -c 'No outside client saw one')" "1"
+# A mixed cluster reports both arms honestly rather than claiming "all".
+_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log" 198.51.100.90 "25/Jun/2026:09:10:05" \
+     "GET /wp-admin/setup-config.php HTTP/2.0" 500 "-"
+swatter_errors_section 24h > "${WORK}/sec.out"; SECTION="$(cat "${WORK}/sec.out")"
+check e2e-mixed-verdict "$ERR_CORR_VERDICT" "self"
+check e2e-mixed-split   "$(printf '%s' "$SECTION" | grep -c '1 to the server itself (wp-cron or a loopback call), 1 to bots')" "1"
 # A signature sprawling past the span cap declines to correlate at all.
 { echo "[2026-06-25 00:05:00] [FATAL] [php/acctA] ${FAN} in /home/acctA/public_html/x.php:8"
   echo "[2026-06-25 03:05:00] [FATAL] [php/acctB] ${FAN} in /home/acctB/public_html/x.php:8"

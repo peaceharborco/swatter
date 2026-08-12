@@ -356,12 +356,16 @@ _errors_corroborate() {
         ERR_CORR_VERDICT=""; [[ -n "$_banf" ]] && { rm -f "$_banf"; CORR_BANNED_FILE=""; }; return 0; }
     [[ -n "$_banf" ]] && { rm -f "$_banf"; CORR_BANNED_FILE=""; }
     ERR_CORR_VERDICT="$CORR_VERDICT"
+    # Always state the actual split. An earlier version summarised the winning
+    # arm as "all N", which was wrong the first time it met real data: a cluster
+    # of 4 loopback failures plus 1 bot probe reported "all 5 went to the server
+    # itself". Counts cannot be wrong the way a summary can.
     local n="${CORR_5XX_TOTAL:-0}"
+    local split="${n} served failure(s) here: ${CORR_5XX_VISITOR:-0} to outside clients, ${CORR_5XX_SELF:-0} to the server itself (wp-cron or a loopback call), ${CORR_5XX_SCANNER:-0} to bots"
     case "$ERR_CORR_VERDICT" in
-        visitor) ERR_CORR_NOTE="(${CORR_5XX_VISITOR} of ${n} failed response(s) in this window went to outside clients — someone saw this.)" ;;
-        self)    ERR_CORR_NOTE="(all ${n} failed response(s) in this window went to the server itself — wp-cron or a loopback call, not a waiting visitor.)" ;;
-        scanner) ERR_CORR_NOTE="(all ${n} failed response(s) in this window went to bots already blocked or sending no user agent.)" ;;
-        none)    ERR_CORR_NOTE="(these accounts' logs cover the window and show no failed response — the crash may never have reached a request.)" ;;
+        visitor) ERR_CORR_NOTE="(${split}. Someone outside saw this.)" ;;
+        self|scanner) ERR_CORR_NOTE="(${split}. No outside client saw one.)" ;;
+        none)    ERR_CORR_NOTE="(these accounts' logs cover the window and show no served failure at all — the crash may never have reached a request.)" ;;
     esac
     return 0
 }
