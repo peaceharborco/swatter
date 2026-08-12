@@ -401,16 +401,20 @@ Expected: no `FAIL` lines.
 
 The classifier must not depend on which awk is installed (`lib/errors.sh:217-232`).
 
-Run:
+Run the suite twice — once with the system `awk`, once with `gawk` shimmed ahead of it on `PATH`:
+
 ```bash
+# 1. system awk (BSD awk on macOS)
+awk --version 2>/dev/null | head -1 || echo "BSD awk"
 bash test/errors_test.sh 2>&1 | tail -3
-PATH="$(dirname "$(command -v gawk)"):$PATH" awk() { gawk "$@"; }; bash test/errors_test.sh 2>&1 | tail -3
+
+# 2. gawk, via a PATH shim in a subshell
+( d="$(mktemp -d)"; ln -s "$(command -v gawk)" "$d/awk"; \
+  PATH="$d:$PATH" awk --version | head -1; \
+  PATH="$d:$PATH" bash test/errors_test.sh 2>&1 | tail -3; rm -rf "$d" )
 ```
-If the shell function does not propagate, instead run the suite on a box with each awk, or temporarily symlink `gawk` ahead of `awk` on `PATH` in a subshell:
-```bash
-( d="$(mktemp -d)"; ln -s "$(command -v gawk)" "$d/awk"; PATH="$d:$PATH" bash test/errors_test.sh 2>&1 | tail -3 )
-```
-Expected: identical pass counts and zero `FAIL` under both.
+
+Expected: the two `awk --version` lines differ (proving both dialects actually ran), and both suite runs report identical pass counts with zero `FAIL`. If only one awk is installed, say so in the report rather than claiming both were verified.
 
 - [ ] **Step 6: Run the full suite**
 
@@ -612,14 +616,22 @@ In `lib/errors.sh`, replace the `ERROR_DIGEST_LOG` branch (`:22-27`) with:
         awk -v c="$cut_human" '/^\[[0-9-]{10} [0-9:]{8}\]/ {
                 if (substr($0,2,19) < c) next
                 head=substr($0,1,21); msg=substr($0,22)
-                gsub(/[ \t\r]+/," ",msg); sub(/^ /,"",msg); sub(/ $/,"",msg)
+                gsub(/[ \t\r]+/," ",msg); sub(/ $/,"",msg)
                 print head msg
             }' "${ERROR_DIGEST_LOG}"
         return 0
     fi
 ```
 
-`head` is the fixed-width `[YYYY-MM-DD HH:MM:SS] ` prefix — 21 characters including the trailing space — so the timestamp is preserved byte-for-byte and only the remainder is normalized.
+`head` is `substr($0,1,21)` — `[` plus the 19-character timestamp plus `]`, stopping *before* the separating space. `msg` therefore begins with that space, and the `gsub` collapses it to exactly one, which reassembles `[ts] [LEVEL] …` correctly.
+
+**Do not add `sub(/^ /,"",msg)` here.** The live `emit()` does strip a leading space, but there `head` is `printf`-ed with its own explicit spacing. Here it would produce `[ts][FATAL]`, which fails the `grep -E '\] \[(FATAL|ERROR)\]'` filter at `lib/errors.sh:276` — `ERR_TOTAL` would silently become 0 and the whole errors plane would report nothing. Verify with:
+
+```bash
+printf '[2026-06-25 10:00:00] [FATAL] [php/a] PHP Fatal error:  Uncaught Error: x\n' \
+  | awk '{h=substr($0,1,21); m=substr($0,22); gsub(/[ \t\r]+/," ",m); sub(/ $/,"",m); print h m}'
+```
+Expected: `[2026-06-25 10:00:00] [FATAL] [php/a] PHP Fatal error: Uncaught Error: x` — one space after `]`, one after `error:`.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -776,10 +788,10 @@ which covers the common cases.
 
 - [ ] **Step 6: Add the CHANGELOG entry and bump the version**
 
-Read the top of `CHANGELOG.md` and the current version to match the file's format exactly:
+Read the top of `CHANGELOG.md` to match the file's format exactly:
 
 ```bash
-head -30 CHANGELOG.md; grep -rn "2\.13\.0" lib/common.sh bin/swatter | head
+head -30 CHANGELOG.md
 ```
 
 Add a new entry above the previous release, in that file's established style, covering:
@@ -789,17 +801,23 @@ Add a new entry above the previous release, in that file's established style, co
 - the pre-consolidated feed now collapses whitespace like the live path;
 - corrected digest copy.
 
-Bump the version to `2.14.0` wherever `2.13.0` appears in `lib/common.sh` / `bin/swatter` (a behaviour change with a new config key, not a patch).
+Then bump the version. It lives in exactly one place — `bin/swatter:45`:
+
+```bash
+SWATTER_VERSION="2.14.0"
+```
+
+A minor bump, not a patch: this changes grading behaviour and adds a config key.
 
 - [ ] **Step 7: Run the full suite**
 
 Run: `make test`
 Expected: exit 0, no `FAIL` lines.
 
-- [ ] **Step 8: Verify the version bump is consistent**
+- [ ] **Step 8: Verify the version bump**
 
-Run: `grep -rn "2\.14\.0" lib/common.sh bin/swatter CHANGELOG.md | head`
-Expected: the new version appears in every place the old one did, and `grep -rn "2\.13\.0" lib/ bin/` returns only historical CHANGELOG references.
+Run: `grep -rn "SWATTER_VERSION=" bin/swatter && grep -rn "2\.13\.0" lib/ bin/ | grep -v CHANGELOG`
+Expected: `SWATTER_VERSION="2.14.0"`, and the second grep returns nothing — no stale `2.13.0` left in `lib/` or `bin/`.
 
 - [ ] **Step 9: Commit**
 
