@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# test/corroborate_test.sh — outage corroboration: read the affected accounts' own
+# access logs for the fatal window and classify WHO received each failure.
+set -uo pipefail
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd -- "${HERE}/.." && pwd)"
+source "${ROOT}/lib/common.sh"
+source "${ROOT}/lib/corroborate.sh"
+PASS=0; FAIL=0
+check() { local name="$1" got="$2" want="$3"
+  if [[ "$got" == "$want" ]]; then PASS=$((PASS+1));
+  else echo "FAIL ${name}: want='${want}' got='${got}'"; FAIL=$((FAIL+1)); fi; }
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/swatter-corrt.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT
+
+# A fake cPanel layout: userdomains maps domain -> account, and each account's
+# logs live under the domlogs dir by DOMAIN name.
+CORR_USERDOMAINS="${WORK}/userdomains"
+CORR_DOMLOG_DIR="${WORK}/domlogs"
+CORR_HOME_ROOT="${WORK}/home"
+mkdir -p "$CORR_DOMLOG_DIR" "$CORR_HOME_ROOT"
+cat > "$CORR_USERDOMAINS" <<'EOF'
+*: nobody
+alpha.example: acctA
+alpha-extra.example: acctA
+beta.example: acctB
+gamma.example: acctC
+EOF
+SERVER_IPS="203.0.113.10"
+
+# Window: 2026-06-25 09:00:00 .. 09:30:00 UTC, as the classifier exports it.
+W_AFTER="$(date -u -d '2026-06-25 09:00:00' '+%s' 2>/dev/null || date -u -j -f '%Y-%m-%d %H:%M:%S' '2026-06-25 09:00:00' '+%s')"
+W_BEFORE="$(date -u -d '2026-06-25 09:30:00' '+%s' 2>/dev/null || date -u -j -f '%Y-%m-%d %H:%M:%S' '2026-06-25 09:30:00' '+%s')"
+
+# Log line helper: <file> <ip> <time> <request> <status> [ua]
+_log() { local f="$1" ip="$2" t="$3" req="$4" st="$5" ua="${6:-Mozilla/5.0 (X11; Linux x86_64) Chrome/120}"
+  printf '%s - - [%s +0000] "%s" %s 512 "-" "%s"\n' "$ip" "$t" "$req" "$st" "$ua" >> "$f"; }
+
+_reset() { rm -f "${CORR_DOMLOG_DIR}"/* 2>/dev/null; : ; }
+
+# --- a visitor-shaped failure: remote client, browser UA, ordinary page -------
+_reset
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "25/Jun/2026:09:05:00" "GET /about-us/ HTTP/2.0" 500
+_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log"  198.51.100.8 "25/Jun/2026:09:06:00" "GET /shop/ HTTP/2.0" 503
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA,acctB"
+check visitor-total    "$CORR_5XX_TOTAL"   "2"
+check visitor-count    "$CORR_5XX_VISITOR" "2"
+check visitor-self     "$CORR_5XX_SELF"    "0"
+check visitor-scanner  "$CORR_5XX_SCANNER" "0"
+check visitor-accts    "$CORR_5XX_ACCTS"   "2"
+check visitor-verdict  "$CORR_VERDICT"     "visitor"
+
+# --- the Jetpack shape: WordPress talking to itself --------------------------
+# This is the real cds1 cluster: wp-cron -> loopback -> jetpack sync -> 503.
+# It is a served failure, but no outside client ever saw it.
+_reset
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 203.0.113.10 "25/Jun/2026:09:05:00" \
+     "POST /wp-json/jetpack/v4/sync/spawn-sync HTTP/1.1" 503 "WordPress/6.5; https://alpha.example"
+_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log"  127.0.0.1    "25/Jun/2026:09:06:00" \
+     "GET /wp-cron.php?doing_wp_cron HTTP/1.1" 503 "WordPress/6.5; https://beta.example"
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA,acctB"
+check self-total     "$CORR_5XX_TOTAL"   "2"
+check self-count     "$CORR_5XX_SELF"    "2"
+check self-visitor   "$CORR_5XX_VISITOR" "0"
+check self-verdict   "$CORR_VERDICT"     "self"
+
+# A remote IP can still be self-shaped: a loopback UA or a cron path is the
+# signal, not just the address (some hosts route wp-cron through the edge).
+_reset
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.9 "25/Jun/2026:09:05:00" \
+     "GET /wp-cron.php?doing_wp_cron=1 HTTP/1.1" 500 "WordPress/6.5; https://alpha.example"
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"
+check self-remote-ua "$CORR_5XX_SELF" "1"
+
+# --- a scanner: an IP swatter already blocked --------------------------------
+_reset
+CORR_BANNED_IPS="198.51.100.66 198.51.100.67"
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.66 "25/Jun/2026:09:05:00" \
+     "GET /wp-admin/includes/admin.php HTTP/1.1" 500 "curl/8.4.0"
+_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log"  198.51.100.67 "25/Jun/2026:09:06:00" \
+     "GET /.env HTTP/1.1" 500 "python-requests/2.31"
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA,acctB"
+check scanner-count   "$CORR_5XX_SCANNER" "2"
+check scanner-visitor "$CORR_5XX_VISITOR" "0"
+check scanner-verdict "$CORR_VERDICT"     "scanner"
+CORR_BANNED_IPS=""
+
+# --- mixed: one real visitor among background noise escalates ----------------
+# The visitor arm is what 🔥 keys on, so a single outside client failing beside
+# ten cron failures must NOT be averaged away.
+_reset
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 203.0.113.10 "25/Jun/2026:09:05:00" \
+     "GET /wp-cron.php HTTP/1.1" 503 "WordPress/6.5"
+_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log"  198.51.100.7 "25/Jun/2026:09:06:00" \
+     "GET /pricing/ HTTP/2.0" 500
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA,acctB"
+check mixed-visitor "$CORR_5XX_VISITOR" "1"
+check mixed-self    "$CORR_5XX_SELF"    "1"
+check mixed-verdict "$CORR_VERDICT"     "visitor"
+
+# --- window boundaries are respected -----------------------------------------
+# A pad is applied, so just-outside means outside the PADDED window. 09:00 minus
+# 10 minutes is outside any sane pad; 09:31 is inside a 120s pad.
+_reset
+CORR_PAD_SECS=120
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "25/Jun/2026:08:50:00" "GET /a/ HTTP/2.0" 500
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "25/Jun/2026:09:31:00" "GET /b/ HTTP/2.0" 500
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "25/Jun/2026:12:00:00" "GET /c/ HTTP/2.0" 500
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"
+check window-pad-in    "$CORR_5XX_TOTAL" "1"
+
+# --- non-5xx and other accounts' logs are never counted ----------------------
+_reset
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "25/Jun/2026:09:05:00" "GET /ok/ HTTP/2.0" 200
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "25/Jun/2026:09:05:01" "GET /nf/ HTTP/2.0" 404
+_log "${CORR_DOMLOG_DIR}/gamma.example-ssl_log" 198.51.100.7 "25/Jun/2026:09:05:00" "GET /x/ HTTP/2.0" 500
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"
+check ignores-2xx-4xx    "$CORR_5XX_TOTAL" "0"
+check ignores-other-acct "$CORR_VERDICT"   "none"
+
+# --- both plain and ssl logs for an account are read -------------------------
+_reset
+_log "${CORR_DOMLOG_DIR}/alpha.example"          198.51.100.7 "25/Jun/2026:09:05:00" "GET /p/ HTTP/1.1" 500
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log"  198.51.100.7 "25/Jun/2026:09:06:00" "GET /s/ HTTP/2.0" 500
+_log "${CORR_DOMLOG_DIR}/alpha-extra.example-ssl_log" 198.51.100.7 "25/Jun/2026:09:07:00" "GET /e/ HTTP/2.0" 500
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"
+check reads-all-logs "$CORR_5XX_TOTAL" "3"
+# -bytes_log is not an access log and must never be parsed
+_log "${CORR_DOMLOG_DIR}/alpha.example-bytes_log" 198.51.100.7 "25/Jun/2026:09:08:00" "GET /z/ HTTP/2.0" 500
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"
+check skips-bytes-log "$CORR_5XX_TOTAL" "3"
+
+# --- failure modes must be distinguishable from "found nothing" --------------
+# rc 1 = could not look; rc 0 with totals 0 = looked and found nothing. A caller
+# that conflates them would print "no failures" when it never read a byte.
+_reset
+swatter_corroborate "$W_AFTER" "$W_BEFORE" ""; rc=$?
+check no-accts-rc      "$rc" "1"
+check no-accts-verdict "$CORR_VERDICT" "unknown"
+swatter_corroborate 0 0 "acctA"; rc=$?
+check no-window-rc "$rc" "1"
+CORR_USERDOMAINS="${WORK}/does-not-exist"
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"; rc=$?
+check no-map-rc      "$rc" "1"
+check no-map-verdict "$CORR_VERDICT" "unknown"
+CORR_USERDOMAINS="${WORK}/userdomains"
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "ghostacct"; rc=$?
+check unknown-acct-rc "$rc" "1"
+# An account whose logs exist but hold nothing in the window: looked, found none.
+_reset
+: > "${CORR_DOMLOG_DIR}/alpha.example-ssl_log"
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"; rc=$?
+check empty-log-rc      "$rc" "0"
+check empty-log-verdict "$CORR_VERDICT" "none"
+
+# --- a hostile log line cannot break the reader ------------------------------
+# Log fields are attacker-influenced (UA, path). Nothing may be evaluated, and a
+# malformed line must be skipped rather than counted or crash the parse.
+_reset
+printf '%s\n' 'not a log line at all' >> "${CORR_DOMLOG_DIR}/alpha.example-ssl_log"
+printf '%s\n' '198.51.100.7 - - [25/Jun/2026:09:05:00 +0000] "GET /$(touch ${WORK}/pwned) HTTP/2.0" 500 1 "-" "`id`"' >> "${CORR_DOMLOG_DIR}/alpha.example-ssl_log"
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"
+check hostile-counted "$CORR_5XX_TOTAL" "1"
+check hostile-no-exec "$([[ -e "${WORK}/pwned" ]] && echo pwned || echo safe)" "safe"
+
+echo "corroborate_test: PASS=${PASS} FAIL=${FAIL}"
+(( FAIL == 0 ))
