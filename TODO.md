@@ -1,5 +1,20 @@
 # Swatter — TODO / parked items
 
+## 🔴 OPEN DEFECT — the fatal classifier can grade a fleet-wide outage GREEN
+
+**Sitrep:** `docs/handoff-2026-08-11-fatal-classifier-false-green.md` ·
+**review:** `docs/proposals/2026-08-11-array-injection-classifier-arm-review-grok.md`
+
+Live in **v2.13.0 on cds1**. The scanner-induced repeat gate keys on a signature that retains the
+absolute `/home/<acct>/…` path, so one shared bug on N accounts becomes N signatures at count 1 —
+all under the threshold. **17 accounts × 1 identical fatal → `GENUINE=0` → GREEN.** Reproduced
+against shipping code; repro script is in the sitrep.
+
+Latent rather than active *today*, because the shipping pattern only matches probe-shaped fatals.
+**It widens the moment anyone broadens `ERROR_FATAL_SCANNER` — so treat widening that pattern as
+gated on fixing this.** Chosen direction: correlate with IPs Swatter itself scored. Dead end already
+ruled out and recorded: path-normalized counting inverts the problem.
+
 ## ⏭️ NEXT PICKUP: gate D
 
 **Everything is unfrozen and deployed as of 2026-08-11.** cds1 runs v2.13.0, the
