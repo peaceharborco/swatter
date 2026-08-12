@@ -270,12 +270,22 @@ check fanout-parity-1x3 "$ERR_FATAL_GENUINE" "3"
   done; } > "$ERROR_DIGEST_LOG"; _run
 check fanout-feed-forged "$ERR_FATAL_GENUINE" "5"
 
-# a single fatal with neither tag nor path is depth 1 / breadth 1 -> scanner,
-# exactly as today. Many of them get unique keys and fan out.
+# a fatal with neither tag nor path is depth 1 / breadth 1 -> scanner, exactly as
+# today. Tier 3 (the per-line unique key) is a fail-direction backstop, not a
+# breadth driver: with no path to normalize, nsig differs exactly when the raw
+# signature differs, so such lines can only share an nsig by being identical — and
+# then depth already fires. There is deliberately no "many untagged fan out" case.
 { echo "[${TS}] [FATAL] ${FANMSG}"; } > "$ERROR_DIGEST_LOG"; _run
 check fanout-single-untagged "$ERR_FATAL_SCANNER" "1"
 { for i in $(seq 1 17); do echo "[${TS}] [FATAL] ${FANMSG} at offset ${i}"; done; } > "$ERROR_DIGEST_LOG"; _run
-check fanout-many-untagged "$ERR_FATAL_GENUINE" "17"
+check fanout-untagged-distinct "$ERR_FATAL_SCANNER" "17"
+
+# a feed that omits the source tag but keeps the path must still fan out, via the
+# path tier. This is the case tier 2 exists for.
+{ for i in $(seq -w 1 17); do
+    echo "[${TS}] [FATAL] ${FANMSG} in /home/acct${i}/public_html/x.php:88"
+  done; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-untagged-path "$ERR_FATAL_GENUINE" "17"
 
 # distinct messages across accounts are unrelated: breadth must not group them
 { for i in $(seq -w 1 17); do
