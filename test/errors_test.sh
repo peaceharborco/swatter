@@ -426,5 +426,26 @@ FANMSG_HI='PHP Fatal error: Uncaught Error: Call to undefined function shared_he
 { _mkfan 9 /home - "$FANMSG_LO"; _mkfan 17 /home2 - "$FANMSG_HI"; } > "$ERROR_DIGEST_LOG"; _run
 check fanout-max-numeric-sort "$ERR_FATAL_FANOUT_MAX" "17"
 
+# --- the two feeds must normalize whitespace identically ---------------------
+# Raw PHP logs "PHP Fatal error:" with TWO spaces. The live emit collapses runs
+# (see _ERR_AWKLIB emit); this pre-consolidated path did not, so the same error
+# produced different signatures on the two feeds and matched no pattern here.
+ERROR_FATAL_SCANNER_REPEATS=3; ERROR_FATAL_FANOUT_ACCOUNTS=4
+TWOSP='PHP Fatal error:  Uncaught Error: Call to undefined function shared_helper()'
+{ echo "[${TS}] [FATAL] [php/acct] ${TWOSP} in /home/acct/public_html/x.php:88"; } > "$ERROR_DIGEST_LOG"; _run
+check twospace-eligible "$ERR_FATAL_SCANNER" "1"
+# and breadth still applies once the pattern matches
+{ for i in $(seq -w 1 17); do
+    echo "[${TS}] [FATAL] [php/acct${i}] ${TWOSP} in /home/acct${i}/public_html/x.php:88"
+  done; } > "$ERROR_DIGEST_LOG"; _run
+check twospace-fanout "$ERR_FATAL_GENUINE" "17"
+# one- and two-space forms of the same error must collapse to ONE signature, so
+# three of them cross the depth gate together
+{ echo "[${TS}] [FATAL] [php/acct] ${TWOSP} in /home/acct/public_html/x.php:88"
+  echo "[${TS}] [FATAL] [php/acct] ${FANMSG} in /home/acct/public_html/x.php:88"
+  echo "[${TS}] [FATAL] [php/acct] ${TWOSP} in /home/acct/public_html/x.php:88"
+} > "$ERROR_DIGEST_LOG"; _run
+check twospace-collapse "$ERR_FATAL_GENUINE" "3"
+
 echo "errors_test: PASS=${PASS} FAIL=${FAIL}"
 (( FAIL == 0 ))

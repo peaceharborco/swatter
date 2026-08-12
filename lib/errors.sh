@@ -21,8 +21,18 @@ _errors_consolidated() {
 
     if [[ -n "${ERROR_DIGEST_LOG}" && -r "${ERROR_DIGEST_LOG}" ]]; then
         # Pre-consolidated UTC log: fixed-width ISO timestamp -> lexical compare.
+        # Collapse runs of whitespace in the MESSAGE exactly as the live emit does
+        # (see emit() in _ERR_AWKLIB). Raw PHP writes "PHP Fatal error:" with two
+        # spaces, so without this the same error yields a different signature on
+        # each feed: it matches no pattern here, and depth/breadth counting cannot
+        # collapse the two forms together.
         local cut_human; cut_human="$(date -u -d "@${cutoff}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -u -r "${cutoff}" '+%Y-%m-%d %H:%M:%S')"
-        awk -v c="$cut_human" '/^\[[0-9-]{10} [0-9:]{8}\]/ { if (substr($0,2,19) >= c) print }' "${ERROR_DIGEST_LOG}"
+        awk -v c="$cut_human" '/^\[[0-9-]{10} [0-9:]{8}\]/ {
+                if (substr($0,2,19) < c) next
+                head=substr($0,1,21); msg=substr($0,22)
+                gsub(/[ \t\r]+/," ",msg); sub(/ $/,"",msg)
+                print head msg
+            }' "${ERROR_DIGEST_LOG}"
         return 0
     fi
 
