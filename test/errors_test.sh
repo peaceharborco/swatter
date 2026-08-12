@@ -415,5 +415,16 @@ check fanout-body-depth-label "$(printf '%s' "$SECTION_OUT" | grep -c 'across .*
 { echo "[${TS}] [FATAL] [php/acct] ${SCAN1}"; } > "$ERROR_DIGEST_LOG"; _run
 check fanout-body-none-max "$ERR_FATAL_FANOUT_MAX" "0"
 
+# the max must come from a NUMERIC sort, not a lexical one: "9" sorts higher
+# than "17" as strings, so a window with two distinct genuine signatures at
+# 9 and 17 accounts would silently under-report to 9 under `sort -r`. Both
+# breadths sit at/above ERROR_FATAL_FANOUT_ACCOUNTS (still 4 from above), so
+# both land in G regardless of message content -- this isolates the sort
+# itself, not the classification.
+FANMSG_LO='PHP Fatal error: Uncaught Error: Call to undefined function shared_helper_lo()'
+FANMSG_HI='PHP Fatal error: Uncaught Error: Call to undefined function shared_helper_hi()'
+{ _mkfan 9 /home - "$FANMSG_LO"; _mkfan 17 /home2 - "$FANMSG_HI"; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-max-numeric-sort "$ERR_FATAL_FANOUT_MAX" "17"
+
 echo "errors_test: PASS=${PASS} FAIL=${FAIL}"
 (( FAIL == 0 ))
