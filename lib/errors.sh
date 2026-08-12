@@ -273,10 +273,12 @@ _errors_validate_fatal_scanner
 
 # Build the "Server errors" digest section on stdout, and set globals:
 #   ERR_TOTAL ERR_FATAL ERR_FATAL_GENUINE ERR_FATAL_SCANNER ERR_GENUINE ERR_NOISE
+#   ERR_FATAL_FANOUT_MAX
 swatter_errors_section() {
     local window="$1" cutoff
     cutoff=$(( $(swatter_now) - $(_report_window_secs "$window") ))
     ERR_TOTAL=0 ERR_FATAL=0 ERR_FATAL_GENUINE=0 ERR_FATAL_SCANNER=0 ERR_GENUINE=0 ERR_NOISE=0
+    ERR_FATAL_FANOUT_MAX=0
 
     local stream; stream="$(_errors_consolidated "$cutoff")"
     [[ -n "$stream" ]] || { echo "Server errors: none in the last ${window}."; return 0; }
@@ -428,6 +430,14 @@ swatter_errors_section() {
         else
             fatal_genuine="$(printf '%s\n' "$marked" | grep '^G' | cut -f3- || true)"
             fatal_scanner="$(printf '%s\n' "$marked" | grep '^S' | cut -f3- || true)"
+
+            # Widest cross-account spread among the GENUINE fatals. Drives the
+            # body label below so an operator can tell "one signature across many
+            # accounts" (breadth) from "one account failing repeatedly" (depth) —
+            # the two now grade the same and need different responses.
+            local _fmax
+            _fmax="$(printf '%s\n' "$marked" | grep '^G' | cut -f2 | sort -rn | head -1)"
+            [[ "$_fmax" =~ ^[0-9]+$ ]] && ERR_FATAL_FANOUT_MAX="$_fmax"
         fi
     fi
     ERR_FATAL_GENUINE=$(printf '%s\n' "$fatal_genuine" | grep -c . || true)
@@ -459,6 +469,10 @@ swatter_errors_section() {
         fi
         if (( ERR_FATAL_GENUINE > 0 )); then
             echo "FATAL entries (verbatim):"
+            if (( ERR_FATAL_FANOUT_MAX >= 2 )); then
+                echo "  (one signature spans across ${ERR_FATAL_FANOUT_MAX} accounts — reported whether a bot swept the"
+                echo "   sites or a deploy broke them; those are indistinguishable in this log.)"
+            fi
             printf '%s\n' "$fatal_genuine" | head -25 | sed 's/^/  /'
             echo
         fi

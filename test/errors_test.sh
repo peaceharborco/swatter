@@ -402,5 +402,18 @@ FS_BYTE=$'\x1c'
     "$TS" "$FS_BYTE"; } > "$ERROR_DIGEST_LOG"; _run
 check fanout-raw-sig-untouched "$ERR_FATAL_GENUINE" "1"
 
+# --- digest body must distinguish breadth from depth -------------------------
+ERROR_FATAL_SCANNER_REPEATS=3; ERROR_FATAL_FANOUT_ACCOUNTS=4
+_mkfan 17 /home - "$FANMSG" > "$ERROR_DIGEST_LOG"; _run
+check fanout-body-max   "$ERR_FATAL_FANOUT_MAX" "17"
+check fanout-body-label "$(printf '%s' "$SECTION_OUT" | grep -c 'across 17 accounts')" "1"
+# a depth-only cluster (one account, repeats) must NOT claim a cross-account spread
+{ for _ in 1 2 3; do echo "[${TS}] [FATAL] [php/acct] ${SCAN1}"; done; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-body-depth-max   "$ERR_FATAL_FANOUT_MAX" "1"
+check fanout-body-depth-label "$(printf '%s' "$SECTION_OUT" | grep -c 'across .* accounts')" "0"
+# no genuine fatals at all -> zero, no label
+{ echo "[${TS}] [FATAL] [php/acct] ${SCAN1}"; } > "$ERROR_DIGEST_LOG"; _run
+check fanout-body-none-max "$ERR_FATAL_FANOUT_MAX" "0"
+
 echo "errors_test: PASS=${PASS} FAIL=${FAIL}"
 (( FAIL == 0 ))
