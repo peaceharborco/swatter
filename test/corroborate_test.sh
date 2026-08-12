@@ -33,6 +33,11 @@ SERVER_IPS="203.0.113.10"
 W_AFTER="$(date -u -d '2026-06-25 09:00:00' '+%s' 2>/dev/null || date -u -j -f '%Y-%m-%d %H:%M:%S' '2026-06-25 09:00:00' '+%s')"
 W_BEFORE="$(date -u -d '2026-06-25 09:30:00' '+%s' 2>/dev/null || date -u -j -f '%Y-%m-%d %H:%M:%S' '2026-06-25 09:30:00' '+%s')"
 
+# Apache stamps logs in the host's LOCAL zone and the code builds its match keys
+# the same way, so fixtures must too — otherwise this suite only passes on a UTC
+# machine and silently stops exercising the timezone handling anywhere else.
+_lts() { ( unset TZ; date -d "@$1" '+%d/%b/%Y:%H:%M:%S' 2>/dev/null || date -r "$1" '+%d/%b/%Y:%H:%M:%S' 2>/dev/null ); }
+
 # Log line helper: <file> <ip> <time> <request> <status> [ua]
 _log() { local f="$1" ip="$2" t="$3" req="$4" st="$5" ua="${6:-Mozilla/5.0 (X11; Linux x86_64) Chrome/120}"
   printf '%s - - [%s +0000] "%s" %s 512 "-" "%s"\n' "$ip" "$t" "$req" "$st" "$ua" >> "$f"; }
@@ -41,8 +46,8 @@ _reset() { rm -f "${CORR_DOMLOG_DIR}"/* 2>/dev/null; : ; }
 
 # --- a visitor-shaped failure: remote client, browser UA, ordinary page -------
 _reset
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "25/Jun/2026:09:05:00" "GET /about-us/ HTTP/2.0" 500
-_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log"  198.51.100.8 "25/Jun/2026:09:06:00" "GET /shop/ HTTP/2.0" 503
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "$(_lts $((W_AFTER+300)))" "GET /about-us/ HTTP/2.0" 500
+_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log"  198.51.100.8 "$(_lts $((W_AFTER+360)))" "GET /shop/ HTTP/2.0" 503
 swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA,acctB"
 check visitor-total    "$CORR_5XX_TOTAL"   "2"
 check visitor-count    "$CORR_5XX_VISITOR" "2"
@@ -55,9 +60,9 @@ check visitor-verdict  "$CORR_VERDICT"     "visitor"
 # This is the real cds1 cluster: wp-cron -> loopback -> jetpack sync -> 503.
 # It is a served failure, but no outside client ever saw it.
 _reset
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 203.0.113.10 "25/Jun/2026:09:05:00" \
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 203.0.113.10 "$(_lts $((W_AFTER+300)))" \
      "POST /wp-json/jetpack/v4/sync/spawn-sync HTTP/1.1" 503 "WordPress/6.5; https://alpha.example"
-_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log"  127.0.0.1    "25/Jun/2026:09:06:00" \
+_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log"  127.0.0.1    "$(_lts $((W_AFTER+360)))" \
      "GET /wp-cron.php?doing_wp_cron HTTP/1.1" 503 "WordPress/6.5; https://beta.example"
 swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA,acctB"
 check self-total     "$CORR_5XX_TOTAL"   "2"
@@ -68,7 +73,7 @@ check self-verdict   "$CORR_VERDICT"     "self"
 # A remote IP can still be self-shaped: a loopback UA or a cron path is the
 # signal, not just the address (some hosts route wp-cron through the edge).
 _reset
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.9 "25/Jun/2026:09:05:00" \
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.9 "$(_lts $((W_AFTER+300)))" \
      "GET /wp-cron.php?doing_wp_cron=1 HTTP/1.1" 500 "WordPress/6.5; https://alpha.example"
 swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"
 check self-remote-ua "$CORR_5XX_SELF" "1"
@@ -76,9 +81,9 @@ check self-remote-ua "$CORR_5XX_SELF" "1"
 # --- a scanner: an IP swatter already blocked --------------------------------
 _reset
 CORR_BANNED_IPS="198.51.100.66 198.51.100.67"
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.66 "25/Jun/2026:09:05:00" \
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.66 "$(_lts $((W_AFTER+300)))" \
      "GET /wp-admin/includes/admin.php HTTP/1.1" 500 "curl/8.4.0"
-_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log"  198.51.100.67 "25/Jun/2026:09:06:00" \
+_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log"  198.51.100.67 "$(_lts $((W_AFTER+360)))" \
      "GET /.env HTTP/1.1" 500 "python-requests/2.31"
 swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA,acctB"
 check scanner-count   "$CORR_5XX_SCANNER" "2"
@@ -92,27 +97,52 @@ CORR_BANNED_IPS=""
 # not in the ledger. No browser omits a user-agent. This is the one arm that
 # deliberately chooses the quieter reading, so it is pinned explicitly.
 _reset
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.44 "25/Jun/2026:09:05:00" \
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.44 "$(_lts $((W_AFTER+300)))" \
      "GET /wp-admin/setup-config.php HTTP/2.0" 500 "-"
 swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"
-check emptyua-scanner "$CORR_5XX_SCANNER" "1"
+check emptyua-bucket  "$CORR_5XX_NOUA"    "1"
+check emptyua-scanner "$CORR_5XX_SCANNER" "0"
 check emptyua-visitor "$CORR_5XX_VISITOR" "0"
-check emptyua-verdict "$CORR_VERDICT"     "scanner"
+# NOT "scanner": an absent UA is a strong bot signal but a curl-based API client
+# or a stripped agent arrives bare too, and calling those "a bot" would let a
+# real customer-facing outage be reported as nobody having seen it.
+check emptyua-verdict "$CORR_VERDICT"     "noua"
 # ...but a browser-shaped client on the same path is still a visitor: the UA is
 # the signal, not the path.
 _reset
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.44 "25/Jun/2026:09:05:00" \
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.44 "$(_lts $((W_AFTER+300)))" \
      "GET /wp-admin/setup-config.php HTTP/2.0" 500 "Mozilla/5.0 (Macintosh) Safari/605"
 swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"
 check browserua-visitor "$CORR_5XX_VISITOR" "1"
+
+# --- wp-cron.php by PATH alone is not "the server talking to itself" ---------
+# External schedulers (EasyCron, cron-job.org) and remote probes hit that path.
+# Calling their failures self-inflicted would hide a 5xx served to a paying
+# integration. It counts as self only from our own address or a WordPress UA.
+_reset
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.55 "$(_lts $((W_AFTER+300)))" \
+     "GET /wp-cron.php?doing_wp_cron HTTP/1.1" 500 "EasyCron/1.0"
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"
+check extcron-visitor "$CORR_5XX_VISITOR" "1"
+check extcron-self    "$CORR_5XX_SELF"    "0"
+
+# --- absence is only claimed about accounts actually READ ---------------------
+# acctA has a readable log; acctC's is missing entirely. One readable log does
+# not license a statement about the other, so the caller must see seen<asked.
+_reset
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 203.0.113.10 "$(_lts $((W_AFTER+300)))" \
+     "GET /wp-cron.php HTTP/1.1" 503 "WordPress/6.5"
+swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA,acctC"
+check partial-asked "$CORR_ACCTS_ASKED" "2"
+check partial-seen  "$CORR_ACCTS_SEEN"  "1"
 
 # --- mixed: one real visitor among background noise escalates ----------------
 # The visitor arm is what 🔥 keys on, so a single outside client failing beside
 # ten cron failures must NOT be averaged away.
 _reset
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 203.0.113.10 "25/Jun/2026:09:05:00" \
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 203.0.113.10 "$(_lts $((W_AFTER+300)))" \
      "GET /wp-cron.php HTTP/1.1" 503 "WordPress/6.5"
-_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log"  198.51.100.7 "25/Jun/2026:09:06:00" \
+_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log"  198.51.100.7 "$(_lts $((W_AFTER+360)))" \
      "GET /pricing/ HTTP/2.0" 500
 swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA,acctB"
 check mixed-visitor "$CORR_5XX_VISITOR" "1"
@@ -124,26 +154,26 @@ check mixed-verdict "$CORR_VERDICT"     "visitor"
 # 10 minutes is outside any sane pad; 09:31 is inside a 120s pad.
 _reset
 CORR_PAD_SECS=120
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "25/Jun/2026:08:50:00" "GET /a/ HTTP/2.0" 500
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "25/Jun/2026:09:31:00" "GET /b/ HTTP/2.0" 500
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "25/Jun/2026:12:00:00" "GET /c/ HTTP/2.0" 500
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "$(_lts $((W_AFTER-600)))" "GET /a/ HTTP/2.0" 500
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "$(_lts $((W_BEFORE+60)))" "GET /b/ HTTP/2.0" 500
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "$(_lts $((W_AFTER+10800)))" "GET /c/ HTTP/2.0" 500
 swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"
 check window-pad-in    "$CORR_5XX_TOTAL" "1"
 
 # --- non-5xx and other accounts' logs are never counted ----------------------
 _reset
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "25/Jun/2026:09:05:00" "GET /ok/ HTTP/2.0" 200
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "25/Jun/2026:09:05:01" "GET /nf/ HTTP/2.0" 404
-_log "${CORR_DOMLOG_DIR}/gamma.example-ssl_log" 198.51.100.7 "25/Jun/2026:09:05:00" "GET /x/ HTTP/2.0" 500
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "$(_lts $((W_AFTER+300)))" "GET /ok/ HTTP/2.0" 200
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "$(_lts $((W_AFTER+301)))" "GET /nf/ HTTP/2.0" 404
+_log "${CORR_DOMLOG_DIR}/gamma.example-ssl_log" 198.51.100.7 "$(_lts $((W_AFTER+300)))" "GET /x/ HTTP/2.0" 500
 swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"
 check ignores-2xx-4xx    "$CORR_5XX_TOTAL" "0"
 check ignores-other-acct "$CORR_VERDICT"   "none"
 
 # --- both plain and ssl logs for an account are read -------------------------
 _reset
-_log "${CORR_DOMLOG_DIR}/alpha.example"          198.51.100.7 "25/Jun/2026:09:05:00" "GET /p/ HTTP/1.1" 500
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log"  198.51.100.7 "25/Jun/2026:09:06:00" "GET /s/ HTTP/2.0" 500
-_log "${CORR_DOMLOG_DIR}/alpha-extra.example-ssl_log" 198.51.100.7 "25/Jun/2026:09:07:00" "GET /e/ HTTP/2.0" 500
+_log "${CORR_DOMLOG_DIR}/alpha.example"          198.51.100.7 "$(_lts $((W_AFTER+300)))" "GET /p/ HTTP/1.1" 500
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log"  198.51.100.7 "$(_lts $((W_AFTER+360)))" "GET /s/ HTTP/2.0" 500
+_log "${CORR_DOMLOG_DIR}/alpha-extra.example-ssl_log" 198.51.100.7 "$(_lts $((W_AFTER+420)))" "GET /e/ HTTP/2.0" 500
 swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"
 check reads-all-logs "$CORR_5XX_TOTAL" "3"
 # -bytes_log is not an access log and must never be parsed
@@ -178,12 +208,12 @@ check no-coverage-rc      "$rc" "1"
 check no-coverage-verdict "$CORR_VERDICT" "unknown"
 # Same, but the log holds only traffic from a different day.
 _reset
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "26/Jun/2026:09:05:00" "GET /a/ HTTP/2.0" 500
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "$(_lts $((W_AFTER+86700)))" "GET /a/ HTTP/2.0" 500
 swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"; rc=$?
 check wrong-day-rc "$rc" "1"
 # Whereas traffic IN the window with no failures is a real, reportable "none".
 _reset
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "25/Jun/2026:09:05:00" "GET /a/ HTTP/2.0" 200
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "$(_lts $((W_AFTER+300)))" "GET /a/ HTTP/2.0" 200
 swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"; rc=$?
 check covered-none-rc      "$rc" "0"
 check covered-none-verdict "$CORR_VERDICT" "none"
@@ -193,10 +223,10 @@ check covered-none-verdict "$CORR_VERDICT" "none"
 # The nightly digest can run after that rotation, and every historical look does.
 _reset
 mkdir -p "${CORR_HOME_ROOT}/acctA/logs"
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "12/Aug/2026:00:01:00" "GET /today/ HTTP/2.0" 200
-_arch="${CORR_HOME_ROOT}/acctA/logs/alpha.example-ssl_log-Jun-2026"
-_log "$_arch" 198.51.100.7 "25/Jun/2026:09:05:00" "GET /rotated/ HTTP/2.0" 500
-_log "$_arch" 203.0.113.10 "25/Jun/2026:09:06:00" "GET /wp-cron.php HTTP/1.1" 503
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "$(_lts $((W_AFTER+4000000)))" "GET /today/ HTTP/2.0" 200
+_arch="${CORR_HOME_ROOT}/acctA/logs/alpha.example-ssl_log-$( ( unset TZ; date -d "@${W_AFTER}" +%b-%Y 2>/dev/null || date -r "${W_AFTER}" +%b-%Y ) )"
+_log "$_arch" 198.51.100.7 "$(_lts $((W_AFTER+300)))" "GET /rotated/ HTTP/2.0" 500
+_log "$_arch" 203.0.113.10 "$(_lts $((W_AFTER+360)))" "GET /wp-cron.php HTTP/1.1" 503
 gzip -f "$_arch"
 swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"; rc=$?
 check archive-rc      "$rc" "0"
@@ -211,7 +241,8 @@ rm -rf "${CORR_HOME_ROOT}/acctA"
 # malformed line must be skipped rather than counted or crash the parse.
 _reset
 printf '%s\n' 'not a log line at all' >> "${CORR_DOMLOG_DIR}/alpha.example-ssl_log"
-printf '%s\n' '198.51.100.7 - - [25/Jun/2026:09:05:00 +0000] "GET /$(touch ${WORK}/pwned) HTTP/2.0" 500 1 "-" "`id`"' >> "${CORR_DOMLOG_DIR}/alpha.example-ssl_log"
+printf '%s - - [%s +0000] "GET /$(touch ${WORK}/pwned) HTTP/2.0" 500 1 "-" "`id`"\n' \
+  198.51.100.7 "$(_lts $((W_AFTER+300)))" >> "${CORR_DOMLOG_DIR}/alpha.example-ssl_log"
 swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"
 check hostile-counted "$CORR_5XX_TOTAL" "1"
 check hostile-no-exec "$([[ -e "${WORK}/pwned" ]] && echo pwned || echo safe)" "safe"
@@ -235,8 +266,8 @@ _reset
 cat >> "$CORR_USERDOMAINS" <<'EOF'
 delta.example: acctD
 EOF
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "25/Jun/2026:09:00:05" "GET /a/ HTTP/2.0" 500
-_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log"  198.51.100.8 "25/Jun/2026:09:10:05" "GET /b/ HTTP/2.0" 500
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "$(_lts $((W_AFTER+5)))" "GET /a/ HTTP/2.0" 500
+_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log"  198.51.100.8 "$(_lts $((W_AFTER+605)))" "GET /b/ HTTP/2.0" 500
 swatter_errors_section 24h > "${WORK}/sec.out"; SECTION="$(cat "${WORK}/sec.out")"
 check e2e-genuine  "$ERR_FATAL_GENUINE" "4"
 check e2e-verdict  "$ERR_CORR_VERDICT"  "visitor"
@@ -247,17 +278,21 @@ check e2e-note     "$(printf '%s' "$SECTION" | grep -c 'to outside clients')" "1
 check e2e-note-split "$(printf '%s' "$SECTION" | grep -c '2 to outside clients, 0 to the server itself')" "1"
 # ...and the same cluster with only loopback failures does NOT read as visitor.
 _reset
-_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 203.0.113.10 "25/Jun/2026:09:00:05" \
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 203.0.113.10 "$(_lts $((W_AFTER+5)))" \
      "GET /wp-cron.php HTTP/1.1" 503 "WordPress/6.5"
 swatter_errors_section 24h > "${WORK}/sec.out"; SECTION="$(cat "${WORK}/sec.out")"
 check e2e-self-verdict "$ERR_CORR_VERDICT" "self"
-check e2e-self-note    "$(printf '%s' "$SECTION" | grep -c 'No outside client saw one')" "1"
+# Only 2 of the 4 clustered accounts have readable logs here, so the note must
+# NOT assert "No outside client saw one" — it says how much it actually read.
+check e2e-self-note    "$(printf '%s' "$SECTION" | grep -c 'not the whole picture')" "1"
 # A mixed cluster reports both arms honestly rather than claiming "all".
-_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log" 198.51.100.90 "25/Jun/2026:09:10:05" \
+_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log" 198.51.100.90 "$(_lts $((W_AFTER+605)))" \
      "GET /wp-admin/setup-config.php HTTP/2.0" 500 "-"
 swatter_errors_section 24h > "${WORK}/sec.out"; SECTION="$(cat "${WORK}/sec.out")"
-check e2e-mixed-verdict "$ERR_CORR_VERDICT" "self"
-check e2e-mixed-split   "$(printf '%s' "$SECTION" | grep -c '1 to the server itself (wp-cron or a loopback call), 1 to bots')" "1"
+# A bare-UA failure alongside the loopback ones is unresolved, not "nobody".
+check e2e-mixed-verdict "$ERR_CORR_VERDICT" "noua"
+check e2e-mixed-split   "$(printf '%s' "$SECTION" | grep -c '1 with no user agent')" "1"
+check e2e-mixed-noclaim "$(printf '%s' "$SECTION" | grep -c 'treat this as unresolved, not as nobody')" "1"
 # A signature sprawling past the span cap declines to correlate at all.
 { echo "[2026-06-25 00:05:00] [FATAL] [php/acctA] ${FAN} in /home/acctA/public_html/x.php:8"
   echo "[2026-06-25 03:05:00] [FATAL] [php/acctB] ${FAN} in /home/acctB/public_html/x.php:8"

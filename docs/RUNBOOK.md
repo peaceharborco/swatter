@@ -559,16 +559,22 @@ cases and the SMS fires in both cases; the lamp and the word ("Outage" instead o
 "Act Now") are the whole difference.
 
 The digest body carries the evidence line, and it is worth reading before you do
-anything else:
+anything else. It always prints the counts — *"N served failure(s) here: V to
+outside clients, S to the server itself (wp-cron or a loopback call), B to known
+bots, U with no user agent"* — followed by one reading:
 
-- *"N of M failed response(s) went to outside clients"* → 🔥. Real people hit this.
-- *"all M went to the server itself — wp-cron or a loopback call"* → the crash is
-  real but the requests were the site talking to itself. This is the common shape
-  on this host: a Jetpack sync or a wp-cron job failing at 3am with nobody there.
-- *"all M went to bots already blocked or sending no user agent"* → a scanner
-  found a way to crash something. Worth fixing, not worth waking up for.
-- *"the logs cover the window and show no failed response"* → the crash never
-  reached a served request at all. A WP-CLI or cron-process fatal looks like this.
+- *"Someone outside saw this."* → 🔥. Real clients received failures.
+- *"treat this as unresolved, not as nobody"* → some failures carried **no user
+  agent**. That is a strong bot signal, but a curl-based API client, a mobile app
+  or a privacy-stripped agent arrives bare too, so it is explicitly NOT counted as
+  proof nobody was there. Open the logs.
+- *"No outside client saw one."* → every failure went to the server itself or to
+  an IP already blocked, **and every affected account's log was readable**. This
+  is the common shape here: a Jetpack sync or wp-cron job failing at 3am.
+- *"not the whole picture"* → some accounts' logs could not be read (rotated,
+  missing). Counts are real but partial, and no absence is claimed.
+- *"show no served failure at all"* → the crash never reached a served request.
+  A WP-CLI or cron-process fatal looks like this.
 - *"recurred over Nh — too long a span to correlate"* → one signature sprawled
   across hours, so correlation was declined rather than guessed. Not an error.
 
@@ -577,10 +583,13 @@ that rotated away, or corroboration turned off all leave the grade exactly where
 the fatal thresholds put it. Nothing here can turn a RED green — that would
 rebuild the false-GREEN this whole plane exists to prevent.
 
-**Absence of 🔥 is not proof nobody saw it.** A fatal after headers are sent
-yields a blank 200; a plugin can catch one and render 200; an edge cache can serve
-a healthy copy over a dying origin. Read it as "no served failure was found for
-these accounts in this window", nothing stronger.
+**Absence of 🔥 is not proof nobody saw it, and is never permission to ignore a
+RED.** A fatal after headers are sent yields a blank 200; a plugin can catch one
+and render 200; an edge cache can serve a healthy copy over a dying origin; a
+customer's API client may send no user agent and be counted as unresolved; and a
+real visitor behind an IP swatter has blocked reads as a bot. Read it as "no
+served failure was attributed to an outside client for these accounts in this
+window", nothing stronger.
 
 **Knobs:** `ERROR_CORROBORATE_ENABLE=false` turns the whole lookup off (the digest
 loses the evidence line and 🔥 never fires). `ERROR_CORROBORATE_MAX_SPAN` is the

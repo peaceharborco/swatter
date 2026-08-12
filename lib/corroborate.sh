@@ -24,9 +24,12 @@
 # must fail toward the louder reading, never quieter (see the design's §2).
 #
 # Globals set by swatter_corroborate:
-#   CORR_5XX_TOTAL CORR_5XX_VISITOR CORR_5XX_SELF CORR_5XX_SCANNER
+#   CORR_5XX_TOTAL CORR_5XX_VISITOR CORR_5XX_SELF CORR_5XX_SCANNER CORR_5XX_NOUA
 #   CORR_5XX_ACCTS   distinct accounts that served at least one 5xx
-#   CORR_VERDICT     visitor | self | scanner | none | unknown
+#   CORR_ACCTS_SEEN / CORR_ACCTS_ASKED  how many accounts were actually READ vs
+#     asked about. Absence of failures may only be claimed when they are equal;
+#     one readable log does not license a statement about the other three.
+#   CORR_VERDICT     visitor | self | scanner | noua | none | unknown
 # rc 0 = the logs were read. rc 1 = they were NOT, and every count is meaningless.
 
 # cPanel layout. Overridable so the suite can build a fake one.
@@ -62,18 +65,30 @@ _corr_domains_for() {
 # touches. Used for the coverage guard, not for matching.
 _corr_day_keys() {
     local a="$1" b="$2" t
-    for (( t = a - a % 86400; t <= b; t += 86400 )); do
-        date -u -d "@$t" '+%d/%b/%Y' 2>/dev/null || date -u -r "$t" '+%d/%b/%Y' 2>/dev/null
-    done
+    # LOCAL time, not UTC: Apache stamps access logs in the host's zone, while
+    # common.sh exports TZ=UTC process-wide. Building UTC keys matches nothing at
+    # all on a non-UTC host — silently, and forever. Same subshell trick the
+    # apache collector uses in lib/errors.sh.
+    # Exactly the local days the window touches — walk it hourly and dedup. Do
+    # NOT round the epoch to a day boundary: that rounds in UTC and then prints
+    # in local time, landing on the wrong day for any host offset from UTC, so
+    # the keys match nothing and every window reads as uncovered. Do not widen to
+    # neighbouring days either, or a log holding only yesterday would count as
+    # covering today and the guard stops guarding.
+    ( unset TZ
+      for (( t = a; t <= b + 3600; t += 3600 )); do
+          date -d "@$t" '+%d/%b/%Y' 2>/dev/null || date -r "$t" '+%d/%b/%Y' 2>/dev/null
+      done ) | sort -u
 }
 
 # _corr_month_tags <after> <before> — the "Mon-YYYY" tags cPanel names its monthly
 # archives with, for a window that may straddle a month boundary.
 _corr_month_tags() {
     local a="$1" b="$2" t
-    for (( t = a; t <= b + 86400; t += 86400 )); do
-        date -u -d "@$t" '+%b-%Y' 2>/dev/null || date -u -r "$t" '+%b-%Y' 2>/dev/null
-    done | sort -u
+    ( unset TZ
+      for (( t = a; t <= b + 86400; t += 86400 )); do
+          date -d "@$t" '+%b-%Y' 2>/dev/null || date -r "$t" '+%b-%Y' 2>/dev/null
+      done ) | sort -u
 }
 
 # _corr_minute_keys <after> <before> — the Apache time prefixes ("25/Jun/2026:09:05")
@@ -84,17 +99,19 @@ _corr_minute_keys() {
     local a="$1" b="$2" t n=0
     # A pathological window must not generate an unbounded pattern list; 3000
     # minutes is two days, far past any real digest window.
-    for (( t = a - a % 60; t <= b; t += 60 )); do
-        (( ++n > 3000 )) && return 1
-        date -u -d "@$t" '+%d/%b/%Y:%H:%M' 2>/dev/null || date -u -r "$t" '+%d/%b/%Y:%H:%M' 2>/dev/null
-    done
+    ( unset TZ
+      for (( t = a - a % 60; t <= b; t += 60 )); do
+          (( ++n > 3000 )) && exit 1
+          date -d "@$t" '+%d/%b/%Y:%H:%M' 2>/dev/null || date -r "$t" '+%d/%b/%Y:%H:%M' 2>/dev/null
+      done )
 }
 
 # swatter_corroborate <after_epoch> <before_epoch> <acct-csv>
 swatter_corroborate() {
     local after="$1" before="$2" accts="$3"
     CORR_5XX_TOTAL=0 CORR_5XX_VISITOR=0 CORR_5XX_SELF=0 CORR_5XX_SCANNER=0
-    CORR_5XX_ACCTS=0 CORR_VERDICT="unknown"
+    CORR_5XX_NOUA=0 CORR_5XX_ACCTS=0 CORR_VERDICT="unknown"
+    CORR_ACCTS_SEEN=0 CORR_ACCTS_ASKED=0
 
     [[ "$after" =~ ^[0-9]+$ && "$before" =~ ^[0-9]+$ ]] || return 1
     (( after > 0 && before >= after )) || return 1
@@ -113,6 +130,7 @@ swatter_corroborate() {
     local oldifs="$IFS"
     while IFS= read -r acct; do
         [[ -n "$acct" ]] || continue
+        CORR_ACCTS_ASKED=$(( CORR_ACCTS_ASKED + 1 ))
         local -a logs=() gzlogs=()
         while read -r dom; do
             [[ -n "$dom" ]] || continue
@@ -164,23 +182,28 @@ swatter_corroborate() {
                   if (lq>1) { pre=0
                               for (i=lq-1; i>0; i--) if (substr(tail,i,1)=="\"") { pre=i; break }
                               if (pre>0) ua=substr(tail,pre+1,lq-pre-1) }
-                  # Self before scanner before visitor. An unrecognized client
-                  # falls through to visitor, which is the louder reading.
+                  # Self, then scanner, then no-UA, then visitor. An unrecognized
+                  # client falls through to visitor, the louder reading.
                   #
-                  # The empty-UA arm is the one place this deliberately chooses
-                  # the QUIETER reading, so it needs its evidence stated: on the
-                  # reference host the only failures that reached this arm were
-                  # "GET /wp-admin/setup-config.php" 500 with UA "-", from two
-                  # IPs not in the ledger — a probe for an unconfigured
-                  # WordPress, landing mid-cluster and reading as a customer.
-                  # No browser omits a user-agent. A real outage still surfaces
-                  # here, because the humans hitting it do send one.
+                  # wp-cron.php by PATH alone is NOT self: external schedulers
+                  # (EasyCron, cron-job.org) and remote probes hit that path too,
+                  # and calling their failures "the server talking to itself"
+                  # would hide a real 5xx served to a paying integration. It
+                  # counts as self only from our own address or a WordPress UA.
+                  #
+                  # An absent user-agent gets its OWN bucket rather than being
+                  # folded into "bot". It is a strong bot signal — the probes
+                  # that made this necessary were "GET /wp-admin/setup-config.php"
+                  # 500 with UA "-" — but a curl-based API client, a mobile app
+                  # or a privacy-stripped agent can also arrive bare, and those
+                  # are customers. Separating it means the digest can say "N had
+                  # no user agent" instead of asserting nobody was there.
                   cls="visitor"
-                  if (ip in self)                cls="self"
-                  else if (ua ~ /WordPress\//)   cls="self"
-                  else if (req ~ /wp-cron\.php/) cls="self"
-                  else if (ip in ban)            cls="scanner"
-                  else if (ua == "" || ua == "-") cls="scanner"
+                  if (ip in self)                                cls="self"
+                  else if (ua ~ /WordPress\//)                   cls="self"
+                  else if (req ~ /wp-cron\.php/ && (ua=="" || ua=="-")) cls="self"
+                  else if (ip in ban)                            cls="scanner"
+                  else if (ua == "" || ua == "-")                cls="noua"
                   print cls
                 }' | sort | uniq -c)" || true
 
@@ -191,6 +214,7 @@ swatter_corroborate() {
                 visitor) CORR_5XX_VISITOR=$(( CORR_5XX_VISITOR + c )); had=1 ;;
                 self)    CORR_5XX_SELF=$((    CORR_5XX_SELF    + c )); had=1 ;;
                 scanner) CORR_5XX_SCANNER=$(( CORR_5XX_SCANNER + c )); had=1 ;;
+                noua)    CORR_5XX_NOUA=$((    CORR_5XX_NOUA    + c )); had=1 ;;
             esac
         done <<< "$out"
         (( had )) && CORR_5XX_ACCTS=$(( CORR_5XX_ACCTS + 1 ))
@@ -201,24 +225,31 @@ swatter_corroborate() {
         # no failures" when nothing covering it was ever opened. Silence from an
         # unread log is the quiet direction, and quiet is the direction that
         # loses an outage.
-        if (( ! covered )); then
+        # Coverage is counted PER ACCOUNT. One account with a readable log does
+        # not license "no outside client saw one" about the other three, whose
+        # logs may have rotated away unread — that is asserting absence from
+        # evidence never examined.
+        if (( had )); then
+            CORR_ACCTS_SEEN=$(( CORR_ACCTS_SEEN + 1 )); covered=1
+        else
             { (( ${#logs[@]} ))   && cat -- "${logs[@]}" 2>/dev/null
               (( ${#gzlogs[@]} )) && gzip -dc -- "${gzlogs[@]}" 2>/dev/null
               true; } \
             | LC_ALL=C grep -qF -f <(_corr_day_keys "$(( after - pad ))" "$(( before + pad ))") 2>/dev/null \
-            && covered=1
+            && { CORR_ACCTS_SEEN=$(( CORR_ACCTS_SEEN + 1 )); covered=1; }
         fi
     done < <(printf '%s\n' "$accts" | tr ',' '\n')   # trailing newline: read drops an unterminated last field
     IFS="$oldifs"
 
     (( looked )) || return 1
     (( covered )) || return 1
-    CORR_5XX_TOTAL=$(( CORR_5XX_VISITOR + CORR_5XX_SELF + CORR_5XX_SCANNER ))
+    CORR_5XX_TOTAL=$(( CORR_5XX_VISITOR + CORR_5XX_SELF + CORR_5XX_SCANNER + CORR_5XX_NOUA ))
 
     # A single outside client failing beside a hundred cron failures is still an
     # outage for that client, so the visitor arm wins outright — it is never
     # averaged against the others.
     if   (( CORR_5XX_VISITOR > 0 )); then CORR_VERDICT="visitor"
+    elif (( CORR_5XX_NOUA    > 0 )); then CORR_VERDICT="noua"     # unclassified, never "nobody"
     elif (( CORR_5XX_SELF    > 0 )); then CORR_VERDICT="self"
     elif (( CORR_5XX_SCANNER > 0 )); then CORR_VERDICT="scanner"
     else                                  CORR_VERDICT="none"

@@ -146,8 +146,11 @@ the window, classify the requester:
   known bad-path probe. Swatter already owns this judgement; no new dependency.
 - **Visitor** — anything else: a remote client, browser-shaped UA, ordinary page URL.
 
-**🔥 escalates only on visitor-shaped failures**, across at least two accounts.
-Background-only or scanner-only clusters stay RED, annotated with what they were.
+**🔥 escalates on any visitor-shaped failure.** Rev 2 proposed also requiring two
+or more accounts; that was dropped when the measurement showed a single outside
+client failing on one account is exactly as real an outage for that customer, and
+the RED is already earned by the fatal thresholds. Background-only, bot-only or
+no-user-agent clusters stay RED, annotated with what they were.
 
 ### §4.4 What the operator sees
 

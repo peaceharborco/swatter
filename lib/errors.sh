@@ -290,6 +290,25 @@ _errors_validate_fatal_scanner() {
             log_warn "errors: ERROR_FATAL_FANOUT_ACCOUNTS='${ERROR_FATAL_FANOUT_ACCOUNTS:-}' is not an integer of 0-99999; using 4"
             ERROR_FATAL_FANOUT_ACCOUNTS=4 ;;
     esac
+    # Same discipline, and here it is not merely tidiness. This value lands in an
+    # arithmetic context, where bash RE-RESOLVES a non-numeric string as a
+    # variable name: under the `set -u` that bin/swatter runs with, a typo like
+    # ERROR_CORROBORATE_MAX_SPAN=1h aborts the whole report — no digest body, no
+    # grade, no RED SMS — on precisely the night there are genuine fatals to
+    # corroborate. A crafted value can also execute a command through an array
+    # subscript. Digits only, always.
+    case "${ERROR_CORROBORATE_MAX_SPAN:-}" in
+        *[!0-9]*|''|???????*)
+            log_warn "errors: ERROR_CORROBORATE_MAX_SPAN='${ERROR_CORROBORATE_MAX_SPAN:-}' is not an integer of 0-999999; using 3600"
+            ERROR_CORROBORATE_MAX_SPAN=3600 ;;
+    esac
+    # An unrecognized boolean disables corroboration silently, which looks exactly
+    # like a quiet night. Say so rather than fail mute.
+    case "${ERROR_CORROBORATE_ENABLE:-true}" in
+        true|false) ;;
+        *) log_warn "errors: ERROR_CORROBORATE_ENABLE='${ERROR_CORROBORATE_ENABLE}' is not true|false; treating as false (no 🔥, no evidence line)"
+           ERROR_CORROBORATE_ENABLE=false ;;
+    esac
 }
 _errors_validate_fatal_scanner
 
@@ -361,11 +380,29 @@ _errors_corroborate() {
     # of 4 loopback failures plus 1 bot probe reported "all 5 went to the server
     # itself". Counts cannot be wrong the way a summary can.
     local n="${CORR_5XX_TOTAL:-0}"
-    local split="${n} served failure(s) here: ${CORR_5XX_VISITOR:-0} to outside clients, ${CORR_5XX_SELF:-0} to the server itself (wp-cron or a loopback call), ${CORR_5XX_SCANNER:-0} to bots"
+    local split="${n} served failure(s) here: ${CORR_5XX_VISITOR:-0} to outside clients, ${CORR_5XX_SELF:-0} to the server itself (wp-cron or a loopback call), ${CORR_5XX_SCANNER:-0} to known bots, ${CORR_5XX_NOUA:-0} with no user agent"
+    # Absence may only be asserted about accounts actually read. One readable log
+    # says nothing about three whose archives rotated away unread, and a sentence
+    # claiming otherwise is the soft-suppression the design forbids.
+    local seen="${CORR_ACCTS_SEEN:-0}" asked="${CORR_ACCTS_ASKED:-0}"
+    local partial=""
+    (( seen < asked )) && partial=" Only ${seen} of ${asked} accounts' logs could be read, so this is not the whole picture."
     case "$ERR_CORR_VERDICT" in
-        visitor) ERR_CORR_NOTE="(${split}. Someone outside saw this.)" ;;
-        self|scanner) ERR_CORR_NOTE="(${split}. No outside client saw one.)" ;;
-        none)    ERR_CORR_NOTE="(these accounts' logs cover the window and show no served failure at all — the crash may never have reached a request.)" ;;
+        visitor) ERR_CORR_NOTE="(${split}. Someone outside saw this.${partial})" ;;
+        # "no user agent" is a bot signal, not proof of one: a curl-based API
+        # client or a stripped agent arrives bare too. Report it, claim nothing.
+        noua)    ERR_CORR_NOTE="(${split}. The ones with no user agent cannot be told apart from a customer's API client — treat this as unresolved, not as nobody.${partial})" ;;
+        self|scanner)
+                 if (( seen < asked )); then
+                     ERR_CORR_NOTE="(${split}.${partial})"
+                 else
+                     ERR_CORR_NOTE="(${split}. No outside client saw one.)"
+                 fi ;;
+        none)    if (( seen < asked )); then
+                     ERR_CORR_NOTE="(no served failure found, but only ${seen} of ${asked} accounts' logs could be read for this window.)"
+                 else
+                     ERR_CORR_NOTE="(these accounts' logs cover the window and show no served failure at all — the crash may never have reached a request.)"
+                 fi ;;
     esac
     return 0
 }

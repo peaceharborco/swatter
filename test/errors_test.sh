@@ -261,6 +261,27 @@ ERROR_FATAL_SCANNER_REPEATS="1234567"; _errors_validate_fatal_scanner
 check repeats-knob-huge    "$ERROR_FATAL_SCANNER_REPEATS" "3"
 ERROR_FATAL_SCANNER_REPEATS=3
 ERROR_FATAL_FANOUT_ACCOUNTS=4
+# --- the corroboration knobs land in an ARITHMETIC context ---------------------
+# bash re-resolves a non-numeric string there as a variable name, so under the
+# `set -u` bin/swatter runs with, ERROR_CORROBORATE_MAX_SPAN=1h aborts the whole
+# report — no digest, no grade, no RED SMS — on exactly the night there are
+# fatals to corroborate. A crafted value can also execute a command via an array
+# subscript. Digits only, and the fallback must be the working default.
+for _bad in "1h" "oops" "" "-5" "3600; id" 'x[$(id)]' "9999999999"; do
+  ERROR_CORROBORATE_MAX_SPAN="$_bad"; _errors_validate_fatal_scanner 2>/dev/null
+  check "maxspan-rejects-${_bad:-empty}" "$ERROR_CORROBORATE_MAX_SPAN" "3600"
+done
+ERROR_CORROBORATE_MAX_SPAN=900; _errors_validate_fatal_scanner
+check maxspan-passthru "$ERROR_CORROBORATE_MAX_SPAN" "900"
+# An unrecognized boolean disables corroboration, which looks exactly like a
+# quiet night — it must warn and land on a known value, not stay ambiguous.
+for _b in "TRUE" "yes" "1" "ture"; do
+  ERROR_CORROBORATE_ENABLE="$_b"; _errors_validate_fatal_scanner 2>/dev/null
+  check "enable-normalizes-${_b}" "$ERROR_CORROBORATE_ENABLE" "false"
+done
+ERROR_CORROBORATE_ENABLE=true; _errors_validate_fatal_scanner
+check enable-true-kept "$ERROR_CORROBORATE_ENABLE" "true"
+ERROR_CORROBORATE_MAX_SPAN=3600
 # the shipped default must match the validation fallback and the example conf
 check fanout-default-common "$(grep -c '^ERROR_FATAL_FANOUT_ACCOUNTS=4$' "${ROOT}/lib/common.sh")" "1"
 check fanout-default-conf   "$(grep -c '^ERROR_FATAL_FANOUT_ACCOUNTS=4$' "${ROOT}/config/swatter.example.conf")" "1"

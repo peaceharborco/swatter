@@ -5,6 +5,42 @@ All notable changes to Swatter are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.15.1] - 2026-08-12
+
+### Fixed
+- **A config typo in `ERROR_CORROBORATE_MAX_SPAN` could kill the entire nightly
+  report** — no digest, no grade, **no RED SMS** — on precisely the night there
+  were genuine fatals to corroborate. The value lands in an arithmetic context,
+  where bash re-resolves a non-numeric string as a variable name; under the
+  `set -u` the tool runs with, `MAX_SPAN=1h` aborted `swatter_errors_section`
+  before the grade or the alert was ever computed. A crafted value could also
+  execute a command through an array subscript. Both knobs are now validated like
+  every sibling (digits only, warn and fall back). The reference host never set
+  the knob, so no live run was affected.
+- **Timezone.** Apache stamps access logs in the host's local zone while the tool
+  exports `TZ=UTC` process-wide, so the lookup's match keys were built in UTC and
+  matched nothing at all on any host not already on UTC — silently, forever. Keys
+  are now built in the log's own zone, and the day-coverage keys no longer round
+  the epoch to a UTC day boundary (which landed on the wrong day entirely). The
+  suite now runs green under `TZ=Asia/Tokyo` as well as UTC.
+- **`wp-cron.php` by path alone no longer counts as "the server talking to
+  itself".** External schedulers and remote probes hit that path too, and calling
+  their failures self-inflicted would hide a 5xx served to a paying integration.
+  It counts as self only from our own address or a `WordPress/` user agent.
+
+### Changed
+- **An absent user agent gets its own bucket** instead of being folded into
+  "bot". It remains a strong bot signal, but a curl-based API client, a mobile app
+  or a privacy-stripped agent arrives bare too — so the digest now reports those
+  as unresolved rather than asserting nobody was there.
+- **Absence is only claimed about accounts actually read.** One readable log said
+  nothing about three whose archives had rotated away unread, yet the evidence
+  line asserted "No outside client saw one" for the whole cluster. It now reports
+  how many of the affected accounts it could actually read and withholds the
+  absolute wording when that is not all of them.
+- RUNBOOK, example config and this changelog corrected where they overstated
+  certainty or quoted evidence wording the code no longer emits.
+
 ## [2.15.0] - 2026-08-12
 
 ### Added
@@ -37,7 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Notes
 - **Nothing here can make a window quieter.** A failed lookup, an unreadable or
   rotated-away log, a span past the cap, or the feature switched off all leave
-  the grade exactly where the fatal thresholds put it. Absence of 🔥 is not proof
+  the grade exactly where the fatal thresholds put it. The *wording* is held to
+  the same standard: absence is only asserted about accounts whose logs were
+  actually read, and failures from clients sending no user agent are reported as
+  unresolved rather than as nobody having been there. Absence of 🔥 is not proof
   nobody saw it: a fatal after headers are sent yields a blank 200, a plugin can
   catch one and render 200, and an edge cache can serve a healthy copy over a
   dying origin.
