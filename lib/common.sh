@@ -320,6 +320,16 @@ ERROR_NOISE="prefetch request body failed|error reading status line from remote 
 ERROR_FATAL_SCANNER='PHP Fatal error: Uncaught Error: (Call to undefined function|Undefined constant)'
 ERROR_FATAL_SCANNER_REPEATS=3
 
+# Breadth companion to ERROR_FATAL_SCANNER_REPEATS. That knob counts DEPTH —
+# repeats of one exact signature — and is blind to BREADTH, because the signature
+# retains the /home/<acct> path and [php/<acct>] tag, so one shared bug on N
+# accounts is N signatures of count 1 and every one slips under the depth gate.
+# This is the account count at which a shared signature stops being filed as bot
+# noise. Measured on cds1: bot sweeps reach 3 accounts, the one confirmed genuine
+# fleet event reached 4, so 4 is the boundary. Raise it per host if ordinary
+# sweeping is wider there; 0 disables the breadth gate entirely.
+ERROR_FATAL_FANOUT_ACCOUNTS=4
+
 # Veto: a fatal matching this can never be classified scanner-induced, however
 # few times it repeats. The classifier assumes a bot executing a PHP file over
 # HTTP, so a known local CLI entrypoint disproves it — that is our own tooling

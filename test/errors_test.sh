@@ -232,5 +232,28 @@ check dialect-recovered-s "$ERR_FATAL_SCANNER" "1"
 _run
 check parse-genuine   "$ERR_FATAL_GENUINE" "1"
 
+# --- fan-out threshold knob: validation + fail direction ----------------------
+# Non-numeric, negative and empty all fall back to the built-in default (4).
+# Never clamp upward: 0 and 1 are legal and are the RED-safe end of the range.
+_fanout_default=4
+ERROR_FATAL_FANOUT_ACCOUNTS="abc"; _errors_validate_fatal_scanner
+check fanout-knob-nonnum   "$ERROR_FATAL_FANOUT_ACCOUNTS" "$_fanout_default"
+ERROR_FATAL_FANOUT_ACCOUNTS=""; _errors_validate_fatal_scanner
+check fanout-knob-empty    "$ERROR_FATAL_FANOUT_ACCOUNTS" "$_fanout_default"
+ERROR_FATAL_FANOUT_ACCOUNTS="-2"; _errors_validate_fatal_scanner
+check fanout-knob-negative "$ERROR_FATAL_FANOUT_ACCOUNTS" "$_fanout_default"
+ERROR_FATAL_FANOUT_ACCOUNTS="4.5"; _errors_validate_fatal_scanner
+check fanout-knob-float    "$ERROR_FATAL_FANOUT_ACCOUNTS" "$_fanout_default"
+ERROR_FATAL_FANOUT_ACCOUNTS=0; _errors_validate_fatal_scanner
+check fanout-knob-zero-ok  "$ERROR_FATAL_FANOUT_ACCOUNTS" "0"
+ERROR_FATAL_FANOUT_ACCOUNTS=1; _errors_validate_fatal_scanner
+check fanout-knob-one-ok   "$ERROR_FATAL_FANOUT_ACCOUNTS" "1"
+ERROR_FATAL_FANOUT_ACCOUNTS=12; _errors_validate_fatal_scanner
+check fanout-knob-passthru "$ERROR_FATAL_FANOUT_ACCOUNTS" "12"
+ERROR_FATAL_FANOUT_ACCOUNTS=4
+# the shipped default must match the validation fallback and the example conf
+check fanout-default-common "$(grep -c '^ERROR_FATAL_FANOUT_ACCOUNTS=4$' "${ROOT}/lib/common.sh")" "1"
+check fanout-default-conf   "$(grep -c '^ERROR_FATAL_FANOUT_ACCOUNTS=4$' "${ROOT}/config/swatter.example.conf")" "1"
+
 echo "errors_test: PASS=${PASS} FAIL=${FAIL}"
 (( FAIL == 0 ))

@@ -258,6 +258,16 @@ _errors_validate_fatal_scanner() {
             log_warn "errors: ERROR_FATAL_SCANNER_REPEATS='${ERROR_FATAL_SCANNER_REPEATS:-}' is not a non-negative integer; using 3"
             ERROR_FATAL_SCANNER_REPEATS=3 ;;
     esac
+    # Same discipline as REPEATS: a non-negative integer or the built-in default,
+    # never clamped upward. Fan-out is always >= 1, so a threshold of 0 would make
+    # `fan < fanmin` false for every line and void the WHOLE scanner class rather
+    # than just this gate — the apply site special-cases 0 as "breadth gate off"
+    # instead. 1 is legal and means every matching fatal counts genuine.
+    case "${ERROR_FATAL_FANOUT_ACCOUNTS:-}" in
+        *[!0-9]*|'')
+            log_warn "errors: ERROR_FATAL_FANOUT_ACCOUNTS='${ERROR_FATAL_FANOUT_ACCOUNTS:-}' is not a non-negative integer; using 4"
+            ERROR_FATAL_FANOUT_ACCOUNTS=4 ;;
+    esac
 }
 _errors_validate_fatal_scanner
 
