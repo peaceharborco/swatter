@@ -332,6 +332,18 @@ ERROR_FATAL_SCANNER_REPEATS=3
 # sweeping is wider there; 0 disables the breadth gate entirely.
 ERROR_FATAL_FANOUT_ACCOUNTS=4
 
+# Outage corroboration. A RED says fatals crashed; it cannot say whether anyone
+# was waiting on them. When enabled, the errors plane reads the affected accounts'
+# OWN access logs for the window that signature occupied and reports who received
+# the failures — an outside client, the server itself (wp-cron, a loopback call),
+# or a bot. A visitor-shaped answer escalates the status lamp to 🔥 "Outage"; the
+# status stays RED either way, and nothing here can ever make a window quieter.
+# MAX_SPAN caps how long a signature may sprawl before correlation is declined
+# outright: a cluster recurring over 6-19 hours collects unrelated failures from
+# any ordinary day, and calling that corroboration is noise wearing a verdict.
+ERROR_CORROBORATE_ENABLE=true
+ERROR_CORROBORATE_MAX_SPAN=3600   # seconds; above this, report the span and correlate nothing
+
 # Veto: a fatal matching this can never be classified scanner-induced, however
 # few times it repeats. The scanner class means "an isolated crash we can ignore";
 # a known local CLI entrypoint disproves that outright — that is our own tooling

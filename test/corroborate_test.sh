@@ -216,5 +216,54 @@ swatter_corroborate "$W_AFTER" "$W_BEFORE" "acctA"
 check hostile-counted "$CORR_5XX_TOTAL" "1"
 check hostile-no-exec "$([[ -e "${WORK}/pwned" ]] && echo pwned || echo safe)" "safe"
 
+# --- end to end: the errors plane calls this and renders the evidence line ----
+# Wires the real classifier to the real lookup over a fake cPanel layout, so the
+# whole path is exercised rather than the two halves separately.
+source "${ROOT}/lib/report.sh"; source "${ROOT}/lib/errors.sh"
+swatter_now() { echo 1782396000; }   # 2026-06-25 12:00:00 UTC
+ERROR_DIGEST_LOG="${WORK}/digest.log"
+ERROR_FATAL_SCANNER_REPEATS=3; ERROR_FATAL_FANOUT_ACCOUNTS=4
+FAN='PHP Fatal error: Uncaught Error: Call to undefined function shared_helper()'
+_reset
+# Four accounts crash inside one hour; two of them served the failure to a real
+# browser. That is the shape 🔥 exists for.
+{ echo "[2026-06-25 09:00:00] [FATAL] [php/acctA] ${FAN} in /home/acctA/public_html/x.php:8"
+  echo "[2026-06-25 09:10:00] [FATAL] [php/acctB] ${FAN} in /home/acctB/public_html/x.php:8"
+  echo "[2026-06-25 09:20:00] [FATAL] [php/acctC] ${FAN} in /home/acctC/public_html/x.php:8"
+  echo "[2026-06-25 09:30:00] [FATAL] [php/acctD] ${FAN} in /home/acctD/public_html/x.php:8"
+} > "$ERROR_DIGEST_LOG"
+cat >> "$CORR_USERDOMAINS" <<'EOF'
+delta.example: acctD
+EOF
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.7 "25/Jun/2026:09:00:05" "GET /a/ HTTP/2.0" 500
+_log "${CORR_DOMLOG_DIR}/beta.example-ssl_log"  198.51.100.8 "25/Jun/2026:09:10:05" "GET /b/ HTTP/2.0" 500
+swatter_errors_section 24h > "${WORK}/sec.out"; SECTION="$(cat "${WORK}/sec.out")"
+check e2e-genuine  "$ERR_FATAL_GENUINE" "4"
+check e2e-verdict  "$ERR_CORR_VERDICT"  "visitor"
+check e2e-note     "$(printf '%s' "$SECTION" | grep -c 'went to outside clients')" "1"
+# ...and the same cluster with only loopback failures does NOT read as visitor.
+_reset
+_log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 203.0.113.10 "25/Jun/2026:09:00:05" \
+     "GET /wp-cron.php HTTP/1.1" 503 "WordPress/6.5"
+swatter_errors_section 24h > "${WORK}/sec.out"; SECTION="$(cat "${WORK}/sec.out")"
+check e2e-self-verdict "$ERR_CORR_VERDICT" "self"
+check e2e-self-note    "$(printf '%s' "$SECTION" | grep -c 'went to the server itself')" "1"
+# A signature sprawling past the span cap declines to correlate at all.
+{ echo "[2026-06-25 00:05:00] [FATAL] [php/acctA] ${FAN} in /home/acctA/public_html/x.php:8"
+  echo "[2026-06-25 03:05:00] [FATAL] [php/acctB] ${FAN} in /home/acctB/public_html/x.php:8"
+  echo "[2026-06-25 06:05:00] [FATAL] [php/acctC] ${FAN} in /home/acctC/public_html/x.php:8"
+  echo "[2026-06-25 09:05:00] [FATAL] [php/acctD] ${FAN} in /home/acctD/public_html/x.php:8"
+} > "$ERROR_DIGEST_LOG"
+swatter_errors_section 24h > "${WORK}/sec.out"; SECTION="$(cat "${WORK}/sec.out")"
+check e2e-wide-verdict "$ERR_CORR_VERDICT" "wide"
+check e2e-wide-note    "$(printf '%s' "$SECTION" | grep -c 'too long a span')" "1"
+# Turning it off leaves no verdict and no line — and never touches the counts.
+ERROR_CORROBORATE_ENABLE=false
+swatter_errors_section 24h > "${WORK}/sec.out"; SECTION="$(cat "${WORK}/sec.out")"
+check e2e-off-verdict "$ERR_CORR_VERDICT" ""
+check e2e-off-note    "$(printf '%s' "$SECTION" | grep -c 'too long a span')" "0"
+check e2e-off-genuine "$ERR_FATAL_GENUINE" "4"
+ERROR_CORROBORATE_ENABLE=true
+
 echo "corroborate_test: PASS=${PASS} FAIL=${FAIL}"
 (( FAIL == 0 ))

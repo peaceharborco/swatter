@@ -118,6 +118,42 @@ check stale-grades-nosend "$(nsent)" "0"
 warn_ok="$(ALERT_SMS_METHOD=twilio ALERT_SMS_TO='+15550001111' ALERT_SMS_GRADES="RED" RPT_GRADE=YELLOW swatter_alert_on_grade 2>&1)"
 check valid-grades-nowarn "$(printf '%s\n' "$warn_ok" | grep -c 'never fire')" "0"
 
+# --- 🔥 escalated RED: a variant of RED, never a grade of its own -------------
+# The whole point: RPT_GRADE stays RED so ALERT_SMS_GRADES (a literal match,
+# default "RED") still fires. A grade named FIRE would match nothing and send
+# NOTHING for the most severe status the tool can produce — silently, since no
+# existing test sets the escalation flag.
+: > "$SENT"; rm -f "$TMP/last-sms-alert"; NOW=3000000
+# Test 9 restored the real sender; re-stub so these record instead of dialing.
+swatter_send_sms() { printf 'TO=%s BODY=%s\n' "$1" "$2" >> "$SENT"; return "${SMS_RC:-0}"; }
+ALERT_SMS_METHOD="twilio"; ALERT_SMS_TO="+15550001111"; ALERT_SMS_GRADES="RED"; SMS_RC=0
+RPT_GRADE=RED; RPT_GRADE_ESCALATED=1; RPT_GRADE_ICON="🔥"; RPT_GRADE_WORD="Outage"
+swatter_alert_on_grade
+check esc-sends       "$(nsent)" "1"
+has   esc-status-token "Status RED"
+has   esc-icon         "🔥"
+check esc-marker      "$(cut -d' ' -f1 < "$TMP/last-sms-alert")" "RED!"
+# A second escalated run inside the window dedups against itself.
+NOW=3001000; swatter_alert_on_grade
+check esc-dedups "$(nsent)" "1"
+# An escalation ARRIVING after a plain RED must break through the dedup: the
+# situation materially changed and the operator has only been told the mild
+# version. This is the case a same-key dedup would silently eat.
+: > "$SENT"; rm -f "$TMP/last-sms-alert"; NOW=4000000
+RPT_GRADE_ESCALATED=0; RPT_GRADE_ICON="🔴"; RPT_GRADE=RED; swatter_alert_on_grade
+check esc-after-red-first "$(nsent)" "1"
+NOW=4001000; RPT_GRADE_ESCALATED=1; RPT_GRADE_ICON="🔥"; swatter_alert_on_grade
+check esc-breaks-dedup "$(nsent)" "2"
+# ...but DE-escalating inside the window must NOT text. The overwhelmingly
+# likely cause is the corroboration lookup failing to read a log this run, not
+# the outage ending. "It's fine now" because a log rotated is worse than silence.
+NOW=4002000; RPT_GRADE_ESCALATED=0; RPT_GRADE_ICON="🔴"; swatter_alert_on_grade
+check deesc-silent "$(nsent)" "2"
+# The escalation must never leak into the grade itself — that is the invariant
+# the entire design rests on.
+check esc-grade-unchanged "$RPT_GRADE" "RED"
+RPT_GRADE_ESCALATED=0
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

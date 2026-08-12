@@ -5,6 +5,49 @@ All notable changes to Swatter are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.15.0] - 2026-08-12
+
+### Added
+- **Outage corroboration.** A RED says fatals crashed; it never said whether
+  anyone was waiting on one. The errors plane now reads the affected accounts'
+  **own access logs** for the window that signature occupied and reports who
+  received the failures: an outside client with a real user agent, the server
+  talking to itself (wp-cron, a Jetpack/REST loopback), or a bot. The evidence
+  line lands in the digest body under the fatal entries.
+- **🔥 status variant.** A visitor-shaped answer swaps the lamp to 🔥 and the word
+  to "Outage". `RPT_GRADE` stays `RED` on purpose — `ALERT_SMS_GRADES` matches it
+  literally, so a new grade name would have matched no knob and sent **no SMS at
+  all** for the most severe thing this tool can report. Preview it with
+  `REPORT_GRADE_FORCE=fire` (note `--test` sends a real SMS).
+- `ERROR_CORROBORATE_ENABLE` (default `true`) and `ERROR_CORROBORATE_MAX_SPAN`
+  (default `3600`s). Above the span cap, correlation is declined outright and the
+  digest says so: one signature can recur over 6–19 hours, and any ordinary day
+  inside such a window contains a few unrelated failures.
+- `swatter test-config` reports whether the lookup can read what it needs, since
+  a missing `/etc/userdomains` would otherwise answer "could not look" on every
+  RED forever — indistinguishable from a quiet night.
+
+### Changed
+- An escalation always breaks through the SMS dedup window: being told the mild
+  version of a situation that has since become customer-visible is worse than a
+  second text. A **de**-escalation inside the window stays silent, because the
+  likely cause is the lookup failing to read a log this run, not the outage
+  ending.
+
+### Notes
+- **Nothing here can make a window quieter.** A failed lookup, an unreadable or
+  rotated-away log, a span past the cap, or the feature switched off all leave
+  the grade exactly where the fatal thresholds put it. Absence of 🔥 is not proof
+  nobody saw it: a fatal after headers are sent yields a blank 200, a plugin can
+  catch one and render 200, and an edge cache can serve a healthy copy over a
+  dying origin.
+- Measured over 30 days of reference-host history before shipping: both clusters
+  that motivated v2.14.0 classify as **self** — a Jetpack sync failing to its own
+  loopback, and a `wp-cli` cluster that served no HTTP request at all. The
+  measurement also corrected the classifier: probes hitting
+  `/wp-admin/setup-config.php` with an empty user agent were reading as customers,
+  which is why an absent user agent now counts as a bot.
+
 ## [2.14.0] - 2026-08-12
 
 ### Added

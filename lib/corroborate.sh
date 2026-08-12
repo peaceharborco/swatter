@@ -43,6 +43,11 @@
 # this from the ledger; empty just means the scanner arm never fires, which is
 # the safe direction (an unrecognized scanner reads as a visitor -> louder).
 : "${CORR_BANNED_IPS:=}"
+# ...or a FILE of them, one per line, which is how production supplies it: the
+# ledger holds thousands of addresses and a command line is the wrong place for
+# that much data (macOS caps argv far lower than Linux). The file wins when both
+# are set. Read inside awk, never expanded by the shell.
+: "${CORR_BANNED_FILE:=}"
 
 # _corr_domains_for <acct> — the domains that belong to an account, one per line.
 # /etc/userdomains is "domain: user"; the leading "*: nobody" wildcard is not a
@@ -138,9 +143,12 @@ swatter_corroborate() {
                   (( ${#gzlogs[@]} )) && gzip -dc -- "${gzlogs[@]}" 2>/dev/null
                   true; } \
             | LC_ALL=C grep -hF -f <(printf '%s\n' "$keys") 2>/dev/null \
-            | awk -v selfips="${SERVER_IPS:-} 127.0.0.1 ::1" -v banned="${CORR_BANNED_IPS:-}" '
+            | awk -v selfips="${SERVER_IPS:-} 127.0.0.1 ::1" -v banned="${CORR_BANNED_IPS:-}" \
+                  -v banfile="${CORR_BANNED_FILE:-}" '
                 BEGIN { n=split(selfips,s," "); for(i=1;i<=n;i++) self[s[i]]=1
-                        n=split(banned,b," ");  for(i=1;i<=n;i++) ban[b[i]]=1 }
+                        if (banfile != "") { while ((getline ln < banfile) > 0) { gsub(/[ \t\r]/,"",ln); if (ln!="") ban[ln]=1 }
+                                             close(banfile) }
+                        else { n=split(banned,b," "); for(i=1;i<=n;i++) ban[b[i]]=1 } }
                 {
                   ip=$1
                   # Combined format: the request is quoted and may contain spaces,

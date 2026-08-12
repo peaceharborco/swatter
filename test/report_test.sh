@@ -186,6 +186,40 @@ _setgrade_cls() { ERR_FATAL="$1" ERR_FATAL_GENUINE="$2" ERR_FATAL_SCANNER="$3" E
 _setgrade_cls 3 0 3 5 165
 check scanner-only-green   "$RPT_GRADE" "GREEN"
 check scanner-only-sub     "$(printf '%s' "$RPT_GRADE_SUB" | grep -c 'scanner-induced')" "1"
+# --- 🔥 escalation: presentation only, never the grade ------------------------
+# A visitor-shaped corroboration means an outside client actually received a
+# failure. It swaps the lamp and the word; RPT_GRADE stays RED so every knob,
+# renderer and the SMS membership test keep working.
+ERR_CORR_VERDICT=visitor; _setgrade_cls 3 3 0 0 0
+check esc-grade     "$RPT_GRADE" "RED"
+check esc-flag      "$RPT_GRADE_ESCALATED" "1"
+check esc-icon      "$RPT_GRADE_ICON" "🔥"
+check esc-word      "$RPT_GRADE_WORD" "Outage"
+# Every other verdict leaves the status exactly where the thresholds put it.
+for v in self scanner none wide ""; do
+  ERR_CORR_VERDICT="$v"; _setgrade_cls 3 3 0 0 0
+  check "esc-not-${v:-empty}" "${RPT_GRADE_ESCALATED}${RPT_GRADE_ICON}" "0🔴"
+done
+# A corroboration cannot manufacture severity on its own: no genuine fatal means
+# no RED to escalate.
+ERR_CORR_VERDICT=visitor; _setgrade_cls 0 0 0 0 0
+check esc-needs-red "${RPT_GRADE}${RPT_GRADE_ESCALATED}" "GREEN0"
+# The flag must be reassigned every call, never left stale from a prior run.
+ERR_CORR_VERDICT=visitor; _setgrade_cls 3 3 0 0 0
+ERR_CORR_VERDICT=self;    _setgrade_cls 3 3 0 0 0
+check esc-flag-not-sticky "$RPT_GRADE_ESCALATED" "0"
+# REPORT_GRADE_FORCE=fire previews it. 'fire' must map to a real level BEFORE the
+# level switch, whose default arm is GREEN — an unmapped value would preview the
+# most severe status the tool has as All Clear.
+ERR_CORR_VERDICT=""; _setgrade 0 0 0 0 fire
+check force-fire-grade "$RPT_GRADE" "RED"
+check force-fire-icon  "$RPT_GRADE_ICON" "🔥"
+check force-fire-flag  "$RPT_GRADE_ESCALATED" "1"
+# An unrecognized force is still ignored with a warning, and 'fire' did not
+# quietly become a fourth grade.
+_setgrade 2 0 0 0 bogus 2>/dev/null
+check force-bogus-still-ignored "$RPT_GRADE" "RED"
+REPORT_GRADE_FORCE=""; ERR_CORR_VERDICT=""
 check scanner-only-nodirect "$(printf '%s' "$RPT_GRADE_SUB" | grep -c 'executing PHP files directly')" "0"
 check scanner-only-nofalse "$(printf '%s' "$RPT_GRADE_SUB" | grep -c 'No fatal errors')" "0"
 # One genuine fatal among scanner ones is still RED, counted as 1.

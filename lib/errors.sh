@@ -303,6 +303,69 @@ _errors_epoch_of() {
         || true
 }
 
+# Ask the affected accounts' own access logs who received the failures, and turn
+# the answer into ERR_CORR_VERDICT + a one-line operator note. Sets:
+#   visitor — an outside client with a real user agent got a failure. The only
+#             verdict that escalates the status.
+#   self    — every failure went to the server talking to itself (wp-cron, a
+#             loopback REST call). Broken, but nobody was waiting.
+#   scanner — every failure went to a bot.
+#   none    — the logs covered the window and held no failure at all.
+#   wide    — the signature recurred across a span too long to correlate against.
+#             Declining is the honest answer: measured on the reference host,
+#             clusters spanning 6-19h collect a few unrelated failures from any
+#             ordinary day, and calling that corroboration is just noise wearing
+#             a verdict.
+#   ""      — could not look (no window, no readable log covering it, disabled).
+# Never downgrades anything. The note states what was observed, never a cause.
+_errors_corroborate() {
+    ERR_CORR_VERDICT="" ERR_CORR_NOTE=""
+    [[ "${ERROR_CORROBORATE_ENABLE:-true}" == "true" ]] || return 0
+    declare -F swatter_corroborate >/dev/null || return 0
+    (( ERR_FATAL_GENUINE > 0 )) || return 0
+    (( ERR_CORR_AFTER > 0 )) || return 0
+    [[ -n "$ERR_CORR_ACCTS" ]] || return 0
+
+    local span=$(( ERR_CORR_BEFORE - ERR_CORR_AFTER ))
+    local cap="${ERROR_CORROBORATE_MAX_SPAN:-3600}"
+    if (( span > cap )); then
+        ERR_CORR_VERDICT="wide"
+        ERR_CORR_NOTE="(this signature recurred over $(( span / 3600 ))h — too long a span to tell a shared failure from ordinary daily errors, so no correlation was attempted.)"
+        return 0
+    fi
+
+    # The server's own addresses are what make a loopback request recognizable.
+    # Derived once here rather than configured, so a host that changes IP does
+    # not silently start reading its own wp-cron traffic as customers.
+    [[ -n "${SERVER_IPS:-}" ]] || SERVER_IPS="$(hostname -I 2>/dev/null || true)"
+    # The scanner arm reads swatter's OWN ledger — it already knows who the bots
+    # are. Via a file, never a command line: the ledger runs to thousands of
+    # addresses and macOS caps argv far below Linux.
+    local _banf=""
+    if [[ -z "${CORR_BANNED_FILE:-}" ]] && command -v sqlite3 >/dev/null 2>&1 \
+       && [[ -r "${STATE_DIR:-/var/lib/swatter}/swatter.db" ]]; then
+        _banf="$(mktemp "${TMPDIR:-/tmp}/swatter-corrban.XXXXXX" 2>/dev/null)" || _banf=""
+        if [[ -n "$_banf" ]]; then
+            sqlite3 "${STATE_DIR:-/var/lib/swatter}/swatter.db" \
+                'select ip from offenders;' > "$_banf" 2>/dev/null || : > "$_banf"
+            CORR_BANNED_FILE="$_banf"
+        fi
+    fi
+
+    swatter_corroborate "$ERR_CORR_AFTER" "$ERR_CORR_BEFORE" "$ERR_CORR_ACCTS" || {
+        ERR_CORR_VERDICT=""; [[ -n "$_banf" ]] && { rm -f "$_banf"; CORR_BANNED_FILE=""; }; return 0; }
+    [[ -n "$_banf" ]] && { rm -f "$_banf"; CORR_BANNED_FILE=""; }
+    ERR_CORR_VERDICT="$CORR_VERDICT"
+    local n="${CORR_5XX_TOTAL:-0}"
+    case "$ERR_CORR_VERDICT" in
+        visitor) ERR_CORR_NOTE="(${CORR_5XX_VISITOR} of ${n} failed response(s) in this window went to outside clients — someone saw this.)" ;;
+        self)    ERR_CORR_NOTE="(all ${n} failed response(s) in this window went to the server itself — wp-cron or a loopback call, not a waiting visitor.)" ;;
+        scanner) ERR_CORR_NOTE="(all ${n} failed response(s) in this window went to bots already blocked or sending no user agent.)" ;;
+        none)    ERR_CORR_NOTE="(these accounts' logs cover the window and show no failed response — the crash may never have reached a request.)" ;;
+    esac
+    return 0
+}
+
 # Build the "Server errors" digest section on stdout, and set globals:
 #   ERR_TOTAL ERR_FATAL ERR_FATAL_GENUINE ERR_FATAL_SCANNER ERR_GENUINE ERR_NOISE
 #   ERR_FATAL_FANOUT_MAX
@@ -314,6 +377,7 @@ swatter_errors_section() {
     ERR_TOTAL=0 ERR_FATAL=0 ERR_FATAL_GENUINE=0 ERR_FATAL_SCANNER=0 ERR_GENUINE=0 ERR_NOISE=0
     ERR_FATAL_FANOUT_MAX=0
     ERR_CORR_AFTER=0 ERR_CORR_BEFORE=0 ERR_CORR_ACCTS=""
+    ERR_CORR_VERDICT="" ERR_CORR_NOTE=""
 
     local stream; stream="$(_errors_consolidated "$cutoff")"
     [[ -n "$stream" ]] || { echo "Server errors: none in the last ${window}."; return 0; }
@@ -548,6 +612,7 @@ swatter_errors_section() {
     fi
     ERR_FATAL_GENUINE=$(printf '%s\n' "$fatal_genuine" | grep -c . || true)
     ERR_FATAL_SCANNER=$(( ERR_FATAL - ERR_FATAL_GENUINE ))
+    _errors_corroborate
 
     local fshow="Fatal: ${ERR_FATAL}"
     (( ERR_FATAL_SCANNER > 0 )) && fshow="Fatal: ${ERR_FATAL_GENUINE} genuine · ${ERR_FATAL_SCANNER} scanner-induced"
@@ -579,6 +644,7 @@ swatter_errors_section() {
                 echo "  (one signature spans across ${ERR_FATAL_FANOUT_MAX} accounts — reported whether a bot swept the"
                 echo "   sites or a deploy broke them; those are indistinguishable in this log.)"
             fi
+            [[ -n "$ERR_CORR_NOTE" ]] && echo "  ${ERR_CORR_NOTE}"
             printf '%s\n' "$fatal_genuine" | head -25 | sed 's/^/  /'
             echo
         fi

@@ -551,6 +551,43 @@ also the rollback: if this misfires at 04:00 and floods you with REDs, set the
 knob in `/etc/swatter/swatter.conf` — no redeploy, no package downgrade, and the
 next run picks it up (§9 covers deploys generally, but you do not need one here).
 
+### 🔥 versus 🔴 — who actually received the failure
+
+A 🔴 RED means fatals crashed. A **🔥 means an outside client with a real user
+agent received one of them** — someone was waiting. The status is RED in both
+cases and the SMS fires in both cases; the lamp and the word ("Outage" instead of
+"Act Now") are the whole difference.
+
+The digest body carries the evidence line, and it is worth reading before you do
+anything else:
+
+- *"N of M failed response(s) went to outside clients"* → 🔥. Real people hit this.
+- *"all M went to the server itself — wp-cron or a loopback call"* → the crash is
+  real but the requests were the site talking to itself. This is the common shape
+  on this host: a Jetpack sync or a wp-cron job failing at 3am with nobody there.
+- *"all M went to bots already blocked or sending no user agent"* → a scanner
+  found a way to crash something. Worth fixing, not worth waking up for.
+- *"the logs cover the window and show no failed response"* → the crash never
+  reached a served request at all. A WP-CLI or cron-process fatal looks like this.
+- *"recurred over Nh — too long a span to correlate"* → one signature sprawled
+  across hours, so correlation was declined rather than guessed. Not an error.
+
+**It can only ever add severity.** A failed lookup, an unreadable log, a window
+that rotated away, or corroboration turned off all leave the grade exactly where
+the fatal thresholds put it. Nothing here can turn a RED green — that would
+rebuild the false-GREEN this whole plane exists to prevent.
+
+**Absence of 🔥 is not proof nobody saw it.** A fatal after headers are sent
+yields a blank 200; a plugin can catch one and render 200; an edge cache can serve
+a healthy copy over a dying origin. Read it as "no served failure was found for
+these accounts in this window", nothing stronger.
+
+**Knobs:** `ERROR_CORROBORATE_ENABLE=false` turns the whole lookup off (the digest
+loses the evidence line and 🔥 never fires). `ERROR_CORROBORATE_MAX_SPAN` is the
+seconds a signature may sprawl before correlation is declined. Preview the 🔥
+rendering any time with `REPORT_GRADE_FORCE=fire swatter report --test` — note
+that `--test` does fire a real SMS.
+
 **Feed contract.** When `ERROR_DIGEST_LOG` is set, the source tag and the
 `/home<N>/<acct>/` path in each line are grading inputs, not just labels. The
 window filter only checks the timestamp, so a wrong account field skews the

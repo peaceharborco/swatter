@@ -342,7 +342,7 @@ _report_render_html() {
     printf '<div style="%s;font-weight:600;font-size:16px;color:%s;">%s</div><div style="font-size:13px;color:%s;margin-top:4px;line-height:1.55;">%s</div><div style="font-size:13px;color:%s;margin-top:10px;line-height:1.5;"><b>&rarr;</b> %s</div>' \
         "$f_h" "$ink" "$(printf '%s' "${RPT_GRADE_HEADLINE}" | esc)" "$slate" "$(printf '%s' "${RPT_GRADE_SUB}" | esc)" "$gfg" "$reco"
     printf '</td></tr></table>'
-    printf '<p style="font-size:11.5px;color:%s;margin:12px 0 0;">🟢 GREEN All Clear &middot; 🟡 YELLOW Investigate &middot; 🔴 RED Fatal / Outage</p>' "$slate"
+    printf '<p style="font-size:11.5px;color:%s;margin:12px 0 0;">🟢 GREEN All Clear &middot; 🟡 YELLOW Investigate &middot; 🔴 RED Fatal &middot; 🔥 RED Outage (an outside client received a failure)</p>' "$slate"
 
     # Bad Actors.
     local bf=""
@@ -466,11 +466,21 @@ _report_grade() {
     local win="${REPORT_WINDOW:-24h}" hint="${REPORT_TRIAGE_HINT:-}"
     local dE="${REPORT_GRADE_D_ERRORS:-300}" cE="${REPORT_GRADE_C_ERRORS:-100}"
 
+    # Escalation is a VARIANT of RED, never its own grade. RPT_GRADE stays RED so
+    # ALERT_SMS_GRADES (a literal match, default "RED") still fires, the HTML
+    # colours still resolve, and every existing consumer keeps working. A grade
+    # named FIRE would match no knob and silently send no SMS for the single most
+    # severe thing this tool can report.
+    RPT_GRADE_ESCALATED=0
+
     local force; force="$(printf '%s' "${REPORT_GRADE_FORCE:-}" | tr '[:upper:]' '[:lower:]')"
-    if [[ -n "$force" && "$force" != green && "$force" != yellow && "$force" != red ]]; then
-        log_warn "report: ignoring REPORT_GRADE_FORCE='${REPORT_GRADE_FORCE}' (expected green|yellow|red)"
+    if [[ -n "$force" && "$force" != green && "$force" != yellow && "$force" != red && "$force" != fire ]]; then
+        log_warn "report: ignoring REPORT_GRADE_FORCE='${REPORT_GRADE_FORCE}' (expected green|yellow|red|fire)"
         force=""
     fi
+    # 'fire' must resolve to a real level BEFORE the case below, whose default arm
+    # is green — an unmapped value would preview the most severe status as All Clear.
+    if [[ "$force" == fire ]]; then force=red; RPT_GRADE_ESCALATED=1; fi
     if [[ -n "$force" ]]; then
         RPT_GRADE_LEVEL="$force"
     elif (( f > 0 ));   then RPT_GRADE_LEVEL=red      # fatal → outage
@@ -480,11 +490,19 @@ _report_grade() {
 
     # RPT_GRADE is the status word both renderers and the SMS alert key on;
     # RPT_GRADE_ICON is the matching traffic-light emoji (🟢/🟡/🔴).
+    # A visitor-shaped corroboration is the only thing that escalates: an outside
+    # client with a real user agent received a failure. Every other verdict —
+    # self, scanner, none, wide, or no answer at all — leaves the status exactly
+    # where the thresholds put it. This can only ever add severity.
+    [[ "${ERR_CORR_VERDICT:-}" == "visitor" && "$RPT_GRADE_LEVEL" == red ]] && RPT_GRADE_ESCALATED=1
+
     case "$RPT_GRADE_LEVEL" in
         red)    RPT_GRADE=RED;    RPT_GRADE_WORD="Act Now";     RPT_GRADE_ICON="🔴" ;;
         yellow) RPT_GRADE=YELLOW; RPT_GRADE_WORD="Investigate"; RPT_GRADE_ICON="🟡" ;;
         *)      RPT_GRADE=GREEN;  RPT_GRADE_WORD="All Clear";   RPT_GRADE_ICON="🟢" ;;
     esac
+    # Swap only the presentation. RPT_GRADE is untouched on purpose (see above).
+    if (( RPT_GRADE_ESCALATED )); then RPT_GRADE_WORD="Outage"; RPT_GRADE_ICON="🔥"; fi
 
     # ERR_GENUINE includes fatal lines (by design), so the recap's "non-fatal"
     # count must subtract them or a scanner-only window reads "2 non-fatal

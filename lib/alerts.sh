@@ -63,6 +63,14 @@ swatter_alert_on_grade() {
     [[ -n "${ALERT_SMS_METHOD:-}" && -n "${ALERT_SMS_TO:-}" ]] || return 0   # alerting off
 
     local grade="${RPT_GRADE:-GREEN}"
+    # An escalated RED (🔥 — an outside client actually received a failure) is a
+    # DIFFERENT thing to be told about than a plain RED, but it must not become a
+    # different GRADE. `grade` below is the membership key against
+    # ALERT_SMS_GRADES and the token in the message body; only the DEDUP key
+    # carries the distinction. Collapsing those roles is how the most severe
+    # alert this tool can send ends up matching no knob and going nowhere.
+    local dedup_key="$grade"
+    (( ${RPT_GRADE_ESCALATED:-0} )) && dedup_key="${grade}!"
     if (( ! test_mode )); then
         # Surface a stale grade config: statuses are traffic-light (RED/YELLOW/GREEN)
         # since v2.8. A pre-2.8 A–F value (e.g. "D F") matches nothing, so SMS would
@@ -80,9 +88,21 @@ swatter_alert_on_grade() {
         local now win; now="$(swatter_now)"; win=$(( ${ALERT_SMS_DEDUP_HOURS:-6} * 3600 ))
         if [[ -r "$statef" ]]; then
             local lg lt; read -r lg lt < "$statef" 2>/dev/null || true
-            if [[ "$lg" == "$grade" && "${lt:-0}" =~ ^[0-9]+$ ]] && (( now - lt < win )); then
-                log_info "alerts: status ${grade} SMS deduped (within ${ALERT_SMS_DEDUP_HOURS:-6}h)"
-                return 0
+            if [[ "${lt:-0}" =~ ^[0-9]+$ ]] && (( now - lt < win )); then
+                if [[ "$lg" == "$dedup_key" ]]; then
+                    log_info "alerts: status ${grade} SMS deduped (within ${ALERT_SMS_DEDUP_HOURS:-6}h)"
+                    return 0
+                fi
+                # STICKY FAIL-OPEN. Escalating (RED -> RED!) always texts: the
+                # situation materially changed. De-escalating inside the dedup
+                # window does NOT, because the overwhelmingly likely cause is the
+                # corroboration lookup failing to read a log this run — not the
+                # outage ending. Texting "it's fine now" because a log rotated is
+                # worse than saying nothing.
+                if [[ "$lg" == "${grade}!" && "$dedup_key" == "$grade" ]]; then
+                    log_info "alerts: status ${grade} SMS deduped (de-escalation within ${ALERT_SMS_DEDUP_HOURS:-6}h)"
+                    return 0
+                fi
             fi
         fi
     fi
@@ -97,7 +117,7 @@ swatter_alert_on_grade() {
     local body="${prefix}${icon:+$icon }Swatter ${host}: Status ${grade} (${RPT_GRADE_WORD:-}). ${RPT_RECO:-}"
     if swatter_send_sms "${ALERT_SMS_TO}" "$body"; then
         # Record the dedup marker only on a successful send (never in --test mode).
-        (( test_mode )) || printf '%s %s\n' "$grade" "$now" > "$statef" 2>/dev/null || true
+        (( test_mode )) || printf '%s %s\n' "$dedup_key" "$now" > "$statef" 2>/dev/null || true
     else
         log_warn "alerts: SMS send failed (report unaffected)"
     fi
