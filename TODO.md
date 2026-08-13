@@ -54,7 +54,12 @@ and `lib/report.sh` all sha256-match the tag (verified 2026-08-13).
 **v2.16.0 (2026-08-13)** ships the WARP IPv6 pool in the *default* CIDR list plus
 a test that the shipped config survives its own validator, and restores CI (red
 since v2.15.0 on a shellcheck-version-only `SC2218`; `install/release.sh` runs no
-shellcheck and no CI check, which is how two tags shipped red — still unfixed).
+shellcheck and no CI check, which is how two tags shipped red — **fixed
+2026-08-13**: `release.sh` now refuses to tag unless every expected GitHub check
+for the exact commit is green, and also runs CI's own lint command locally.
+`--skip-ci-check` overrides, and is offered only for a red or unfinished build —
+never for a failed query or an absent check, because a suggested override is how
+a gate stops mattering).
 
 **The repo default and cds1's live file now deliberately DIVERGE.** Repo ships **9**
 ranges (IPv4 WARP + the eight v6 `/32`s). cds1 has **11**: those nine plus
