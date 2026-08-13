@@ -31,11 +31,49 @@ signatures split and leaves the gate inert on that cluster; and a bot sweep acro
 4+ accounts grades RED, which is accepted — a sweep and a fleet bug are
 indistinguishable in the error log.
 
+## ✅ Release log — 2026-08-12 (v2.14.0 → v2.15.0 → v2.15.1)
+
+Three releases in one day. cds1 runs **v2.15.1**; `bin/swatter`, `lib/errors.sh`
+and `lib/report.sh` all sha256-match the tag (verified 2026-08-13).
+
+- **v2.14.0** — the fan-out gate. See the CLOSED section at the top of this file.
+- **v2.15.0** — outage corroboration. The errors plane reads the affected
+  accounts' own domlogs, classifies who actually received the failure, and
+  escalates the lamp to 🔥 "Outage" when an outside client did. `RPT_GRADE` stays
+  `RED` deliberately: `ALERT_SMS_GRADES` is matched literally against it, so a
+  grade named `FIRE` would have sent **no** SMS for the most severe status the
+  tool can emit.
+- **v2.15.1** — the fix-forward after the review v2.15.0 shipped without. One
+  Blocker (`ERROR_CORROBORATE_MAX_SPAN` unvalidated in an arithmetic context
+  aborts `swatter_errors_section` under `set -u` — no digest, no RED, no SMS, on
+  exactly the night an outage exists) plus four Majors, including a timezone bug
+  that made the new lookup match nothing on any non-UTC host. This is the
+  incident that turned the `/grok` pre-ship review into a written gate; see
+  `CLAUDE.md`.
+
+**Both post-deploy watch items are still OPEN — no result has been recorded.**
+
+- [ ] **v2.14.0 fan-out gate — unconfirmed.** The `get_locale()` cluster puts
+      exactly 4 accounts inside a 24h window, the threshold with zero margin.
+      Digests ran 08-12 and 08-13, both sent, and **neither graded RED** (no SMS
+      line in `report.log`). That is most likely the gate correctly finding
+      nothing, but it has not been confirmed by reading a digest body.
+- [ ] **v2.15.1 corroboration has never demonstrably run against a real fatal
+      cluster in production.** Deployed 08-12 17:52 UTC; exactly one digest since
+      (08-13 11:00:03). The evidence line, the per-account classification and the
+      🔥 escalation are all unproven on live data. `test-config` reports
+      `corroboration: on, max span 3600s`, so it is armed and waiting for a
+      cluster to land. Read the next digest that carries fatals before trusting
+      the feature.
+
 ## ⏭️ NEXT PICKUP: gate D
 
-**Everything is unfrozen and deployed as of 2026-08-11.** cds1 runs v2.13.0, the
-shared-egress cap is live, the WARP/shared-VPN cohort is remediated, and **both**
-publication arms are on: `SWARM_PUBLISH="true"` and `ABUSEIPDB_REPORT="true"`
+**Everything is unfrozen and deployed as of 2026-08-11.** cds1 runs **v2.15.1**
+(deployed 2026-08-12, sha-verified 2026-08-13; this line read "v2.13.0" until
+then — three releases shipped on 08-12, see the release log below), the
+shared-egress cap is live, the WARP/shared-VPN cohort is remediated **for IPv4
+only** (the 2026-08-13 ASN sweep found WARP IPv6 was never capped — see the
+consumer-VPN section), and **both** publication arms are on: `SWARM_PUBLISH="true"` and `ABUSEIPDB_REPORT="true"`
 (flipped 13:05 UTC; conf backup `swatter.conf.bak-2026-08-11-abuseipdb`).
 
 Pre-flight at the flip, all clean: `pending_blocks WHERE action='perm'` = 0;
@@ -197,14 +235,85 @@ attacker a bypass via the 1.1.1.1 app.
       they are capped now rather than exempt.
 - [x] **AS206092 handled** — added to cds1's local ASN file, which surfaced and
       cleared 3 more live perms.
-- [ ] **Remaining: watch for other consumer-VPN ASNs.** The Team Cymru sweep
-      (see the methodology note above) is the instrument. Only `104.28.0.0/16`
-      ships by default; every ASN entry is deliberately local and
-      evidence-backed.
-- [ ] **Gate D interaction:** gate D's review rule already says VPN exits get
-      allowlisted first. At `REPEAT_WINDOW_DAYS=30` the WARP cohort's temps get a
-      4.3× wider window to accumulate into perms, so settle this **before** the
-      widen, not during the 615-row review.
+- [x] **Sweep RUN 2026-08-13 over the whole perm set — three new exposures
+      found, all still open below.** Profiled all **1,104** perm-banned IPs
+      (1,091 IPv4 + 13 IPv6) by ASN via Team Cymru DNS: **101 distinct ASNs, zero
+      lookup failures**. Then whois'd all **269** non-hyperscaler IPs — one
+      representative per ASN is NOT sufficient, because AS206092 was caught by a
+      *netblock* netname, not an AS-wide one, and both new IPv4 hits below sit in
+      mixed ASNs where a single sample would have missed them.
+      **Why 08-11 missed these:** that sweep profiled the 257-IP publish
+      *backlog*, not the full perm set, and all three sit outside it. Two also
+      carry maximal corroboration (`abuseipdb:confidence100`, `spamhaus:drop`),
+      so a weak-evidence filter would have skipped them a second time — the exact
+      failure the methodology note above documents. **Profile the whole perm set,
+      not the backlog.**
+      Everything else is datacenter/VPS and correctly banned: Microsoft/Azure
+      **662** (60% of all perms), DigitalOcean 73, GCP 31, Bucklog 28, Vultr 24,
+      TechTies 20, DMZHOST 19, M247 16, Contabo 14. Team Cymru's *bulk* whois
+      port rate-limits at this volume; the documented per-IP DNS method
+      (`dig … origin.asn.cymru.com`) ran 1,091 lookups clean under `xargs -P 40`.
+- [ ] **NEW/1 — Cloudflare WARP IPv6 is entirely uncapped.** `shared-egress.cidr`
+      holds exactly one entry, the IPv4 `104.28.0.0/16`; there is **no IPv6
+      coverage at all**. WARP's v6 egress is `2a09:bac0::/29` — `bac0` through
+      `bac7` each carry netname `CLOUDFLAREWARP` in RIPE, and `bac8` does not, so
+      the /29 is the real boundary. On cds1: **209 distinct addresses temp-banned,
+      2 perm-banned** — `2a09:bac5:33e6:248c::3a4:23` (2026-06-14) and
+      `2a09:bac5:952a:3af::5e:7e` (2026-06-25, at `abuseipdb:confidence5`, i.e.
+      effectively uncorroborated). Traffic is current: last temp 2026-08-05.
+      Neither perm is on the hub feed today and neither has an AbuseIPDB marker,
+      so nothing needs retracting. Same customer-facing collateral as the IPv4
+      WARP cohort, across 2.7× more addresses.
+- [ ] **NEW/2 — PureVPN, `192.253.248.142`.** AS213790, NetName `PUREVPN`, org
+      Secure Internet LLC, range `192.253.240.0/20`. Live perm — score 81,
+      `spamhaus:drop(100)`, plane-upgrade 2026-08-05. **It IS in the consumed
+      swarm feed, so it was published to the hub** — the only one of the three
+      that went out. Not reported to AbuseIPDB. Swarm is recallable (`/purge`,
+      7-day TTL) but `/purge` is all-or-nothing.
+- [ ] **NEW/3 — "VPN Consumer Singapore", `194.5.82.169`.** AS137409, netname
+      `VPN-Consumer-Network`, range `194.5.82.0/24`. Live perm at
+      `abuseipdb:confidence100`. **Same operator naming convention as AS206092**
+      ("VPN Consumer Paris, France", F.N.S. Holdings) — so that operation spans
+      at least two ASNs, and the ASN-keyed 206092 entry added on 08-11 caught
+      only one leg of it. Not on the feed, not reported.
+- [ ] **Remediate with CIDRs, NOT ASN entries — proposed, not applied.** Both new
+      IPv4 ASNs are **mixed**: AS213790 also originates `AMWAJ` (AE) and AS137409
+      also originates `IPLuo BV` (NL), neither of them VPN. An ASN entry would cap
+      unrelated space, which is precisely what `shared-egress-asns.txt`'s own
+      header warns against. Proposal: add `2a09:bac0::/29`, `192.253.240.0/20`
+      and `194.5.82.0/24` to `shared-egress.cidr`, then `shared-egress-audit
+      --fix`, verifying each unblock on **both** planes (see the warning below —
+      the exit code is not enough).
+      **Both questions settled 2026-08-13 — and the first proposal was wrong.**
+      (a) The matcher DOES handle IPv6: `_cidr_overlaps_file` (`lib/allowlist.sh`)
+      goes through `_ipv6_expand`/`_ipv6_in_prefix`. No code change is needed.
+      (b) **Do NOT add the covering `2a09:bac0::/29`.** `SHARED_EGRESS_MIN_PREFIX6`
+      is 32, and `swatter_intel_cidr_feed_ok` (`lib/common.sh:636`) rejects any
+      global-unicast v6 prefix shorter than that — `case "$addr" in [23]*) ((plen
+      < min6)) && return 1`. That rejection fails the **whole file**, so
+      `_swatter_shared_egress_cidr_usable` logs "CIDR arm off this run" and the
+      existing IPv4 `104.28.0.0/16` protection silently switches **off** too.
+      Reproduced in a local harness: with the `/29` line present, the known WARP
+      address `104.28.196.52` stops matching entirely.
+      **Correct form: the eight discrete `/32`s, `2a09:bac0::/32` through
+      `2a09:bac7::/32`** — which is also exactly how RIPE registers them
+      (`2a09:bac8::` falls through to the parent `2a00::/11`, confirming bac7 as
+      the boundary). Verified 16/16 against the real validator and matcher:
+      file accepted, both live v6 perms match, `2a09:bac8::1` and the non-VPN
+      neighbours in the mixed ASNs (`185.93.89.147`, `185.137.164.8`) correctly
+      do not.
+      **General lesson: one over-broad line disables the entire CIDR arm, in the
+      direction nobody notices.** Any future addition to this file gets validated
+      before it lands, not after.
+- [ ] **Gate D interaction — now sharper after the 08-13 sweep.** Gate D's review
+      rule already says VPN exits get allowlisted first. At
+      `REPEAT_WINDOW_DAYS=30` the WARP cohort's temps get a 4.3× wider window to
+      accumulate into perms, so settle this **before** the widen, not during the
+      615-row review. The sweep raises the stakes: the uncapped WARP **IPv6**
+      pool alone carries **209** temp-banned addresses, an order of magnitude more
+      than the IPv4 pool's 77, and every one of them gets that wider window. Cap
+      the three new ranges before widening, or gate D converts a known-shared
+      cohort into perms at scale.
 
 **Verify unblocks on both planes — the exit code is not enough.**
 `swatter_store_unblock` runs at `bin/swatter:168` **before** the failure check
@@ -608,17 +717,22 @@ resolved. None blocks the release; all were verified real.
 
 Both are documented in `docs/RUNBOOK.md` §2/§3.
 
-## Validate the remaining silent-arithmetic knobs (DONE in v2.11.0)
+## Validate the remaining silent-arithmetic knobs (CLOSED 2026-08-13)
 
 - [x] SHIPPED 2026-07-27. The escalation knobs (`REPEAT_N`, `REPEAT_WINDOW_DAYS`,
       `REPEAT_N_CRITICAL_SINGLE`) and the tripwire knobs
-      (`PERM_RATE_ALERT_PER_RUN`, `PERM_RATE_ALERT_PER_DAY`) are now validated at
-      the end of `swatter_load_config`. The same hazard remains on `SCORE_TEMP`,
-      `MAX_BLOCKS_PER_RUN`, `WINDOW_SECONDS`, and `MIN_REQS`: an empty or
-      non-numeric value degrades silently rather than erroring, and under `set -u`
-      a non-numeric value can exit the shell mid-scan. `PERSIST_N` and
-      `TTL_LADDER` already have fallbacks. Apply the same `10#`-normalizing
-      validation.
+      (`PERM_RATE_ALERT_PER_RUN`, `PERM_RATE_ALERT_PER_DAY`) are validated at the
+      end of `swatter_load_config`.
+- [x] **CLOSED 2026-08-13 — the four still listed as open here are done.**
+      `SCORE_TEMP`, `MAX_BLOCKS_PER_RUN`, `WINDOW_SECONDS` and `MIN_REQS` each run
+      through `_swatter_validate_int` at `lib/common.sh:489-492`, which regex-tests
+      `^[0-9]+$` **before** any arithmetic and falls back to the documented default
+      with a `log_warn`. That closes the `set -u` mid-scan abort for these four.
+      `PERSIST_N` and `TTL_LADDER` already had fallbacks.
+      **The hazard class is NOT retired.** v2.15.1's Blocker was this exact bug on
+      `ERROR_CORROBORATE_MAX_SPAN`, a knob added after this section was written —
+      the section going stale is part of how it got through. Every new numeric
+      knob takes the same validation; the rule is in `CLAUDE.md`.
 
 ## App-signal ingest, Path A (next up, 2026-07-24)
 
