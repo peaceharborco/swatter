@@ -632,11 +632,14 @@ live file is now narrower than the shipped one. After upgrading, diff and merge:
 diff /etc/swatter/shared-egress.cidr /etc/swatter/shared-egress.cidr.example
 # merge anything missing, then re-check what is already permanently banned:
 swatter shared-egress-audit
-``` A surgical deploy that copies only `bin/swatter` and `lib/*.sh` leaves the
+```
+
+A surgical deploy that copies only `bin/swatter` and `lib/*.sh` leaves the
 policy enabled and capping nothing, **silently**. `swatter test-config` prints
 the state of each arm (`cidr: … (9 range(s))` for the shipped default, vs
-`MISSING — deploy it; CIDR arm INERT`), and `swatter shared-egress-audit` exits non-zero rather than printing
-an all-clear it cannot back up when neither arm is usable.
+`MISSING — deploy it; CIDR arm INERT`), and `swatter shared-egress-audit` exits
+non-zero rather than printing an all-clear it cannot back up when neither arm is
+usable.
 
 ### Operating it
 
