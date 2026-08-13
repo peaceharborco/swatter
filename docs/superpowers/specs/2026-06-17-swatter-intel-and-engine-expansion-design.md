@@ -446,4 +446,3 @@ The README's "Getting your own provider API keys" section is the public-facing
 guide (each provider, free/paid, signup URL, all optional). Operators pull keys
 from their own secret store; nothing about any specific deployment's secret
 management belongs in this repo.
-```

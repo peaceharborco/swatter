@@ -299,4 +299,3 @@ leave always-on. Watch the digest for any `plane-upgrade`/`dual-plane` on an
 unexpected IP for a week, same gate as the original enforce cutover. The swarm
 consumer fix (§2b) is **in scope** — the scan loop and the fleet consumer land
 together so no path stays single-plane.
-```
