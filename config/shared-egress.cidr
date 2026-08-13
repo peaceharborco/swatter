@@ -5,6 +5,31 @@
 # banned FOREVER, because one address is shared by many unrelated people.
 #
 # Every line must be a real, narrow range with evidence. Lines broader than a
-# /16 (v4) or /32 (v6) are rejected and disable this file entirely — a wide
-# entry here silently stops ALL permanent banning on the host.
+# /16 (v4) or /32 (v6) are rejected, and a rejected line fails the WHOLE file,
+# turning the CIDR arm OFF.
+#
+# Note WHICH WAY that fails, because the earlier wording here had it backwards.
+# Arm off means nothing is capped, so you get MORE permanent bans — including on
+# the shared pools this file exists to protect. The floor guards the opposite
+# hazard: an entry broad enough to match everyone would cap every perm and stop
+# permanent banning altogether. Both are bad; they are not the same failure, and
+# a rejected line causes the first, never the second.
 104.28.0.0/16  # Cloudflare consumer WARP egress (1.1.1.1 app); NOT in the published CDN edge list
+#
+# Cloudflare consumer WARP IPv6 egress. RIPE registers this pool as eight
+# discrete /32s, all netname CLOUDFLAREWARP; 2a09:bac8:: falls through to the
+# parent 2a00::/11, so bac7 is the boundary. Verified 2026-08-13.
+#
+# Listed as eight /32s and deliberately NOT as the covering 2a09:bac0::/29:
+# the floor above is a /32 for v6, so the /29 is rejected as over-broad — and a
+# rejected line fails the WHOLE file, which turns the CIDR arm off and takes the
+# IPv4 WARP line with it. Reproduced: with the /29 present, 104.28.196.52 stops
+# matching. Same trap as any other over-broad entry; it just looks tidier.
+2a09:bac0::/32  # Cloudflare consumer WARP egress (IPv6)
+2a09:bac1::/32  # Cloudflare consumer WARP egress (IPv6)
+2a09:bac2::/32  # Cloudflare consumer WARP egress (IPv6)
+2a09:bac3::/32  # Cloudflare consumer WARP egress (IPv6)
+2a09:bac4::/32  # Cloudflare consumer WARP egress (IPv6)
+2a09:bac5::/32  # Cloudflare consumer WARP egress (IPv6)
+2a09:bac6::/32  # Cloudflare consumer WARP egress (IPv6)
+2a09:bac7::/32  # Cloudflare consumer WARP egress (IPv6)

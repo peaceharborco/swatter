@@ -576,7 +576,8 @@ Recovery after a rollback:
 ## Shared consumer-VPN egress
 
 Some addresses are used by many unrelated people at once — Cloudflare WARP
-(`104.28.0.0/16`, the 1.1.1.1 app) and consumer VPN exits. Offenses from them
+(`104.28.0.0/16` for IPv4, plus `2a09:bac0::/32`–`2a09:bac7::/32` for IPv6; the
+1.1.1.1 app) and consumer VPN exits. Offenses from them
 are real and the scoring is right, but the **identifier is not the offender**:
 the ladder counts offenses per *address*, so three bad afternoons from three
 different people behind one exit escalate it exactly as if one attacker had
@@ -618,10 +619,23 @@ file-by-file deploy never creates:
 | `/etc/swatter/shared-egress-asns.txt` | ASN arm inert (this is the shipped default: the file ships with documentation and no entries) |
 
 `install/install.sh` creates both from `config/`, never overwriting an existing
-one. A surgical deploy that copies only `bin/swatter` and `lib/*.sh` leaves the
+one — it refreshes `<file>.example` instead, so the shipped list is always
+available to diff.
+
+**That means widening the shipped default does not reach a host that already has
+the file.** When these lists grow upstream (the IPv6 WARP pool was added on
+2026-08-13, taking the default from 1 range to 9), an existing install keeps its
+old copy and `test-config` still reports `ENABLED` — there is no warning that the
+live file is now narrower than the shipped one. After upgrading, diff and merge:
+
+```bash
+diff /etc/swatter/shared-egress.cidr /etc/swatter/shared-egress.cidr.example
+# merge anything missing, then re-check what is already permanently banned:
+swatter shared-egress-audit
+``` A surgical deploy that copies only `bin/swatter` and `lib/*.sh` leaves the
 policy enabled and capping nothing, **silently**. `swatter test-config` prints
-the state of each arm (`cidr: … (1 range(s))` vs `MISSING — deploy it; CIDR arm
-INERT`), and `swatter shared-egress-audit` exits non-zero rather than printing
+the state of each arm (`cidr: … (9 range(s))` for the shipped default, vs
+`MISSING — deploy it; CIDR arm INERT`), and `swatter shared-egress-audit` exits non-zero rather than printing
 an all-clear it cannot back up when neither arm is usable.
 
 ### Operating it
