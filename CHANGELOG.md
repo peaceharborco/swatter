@@ -5,6 +5,45 @@ All notable changes to Swatter are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.0] - 2026-08-13
+
+### Added
+- **Cloudflare WARP's IPv6 egress is now capped by default.** The shipped
+  shared-egress list only ever held one IPv4 range, so every install has been
+  placing permanent bans on addresses out of a pool shared by ordinary WARP users.
+  On the reference host that was 209 distinct addresses temp-banned and 2
+  perm-banned, with traffic current to 2026-08-05. Added as the eight discrete
+  `/32`s `2a09:bac0::/32`–`2a09:bac7::/32`, each registered `CLOUDFLAREWARP` in
+  RIPE; `2a09:bac8::` falls through to the parent `2a00::/11`, which is what fixes
+  the boundary.
+  **Deliberately not the covering `2a09:bac0::/29`.** `SHARED_EGRESS_MIN_PREFIX6`
+  is 32 and a shorter global-unicast v6 prefix is rejected — and a rejected line
+  fails the *whole* file, so the tidier `/29` would have turned the CIDR arm off
+  and taken the existing IPv4 WARP protection with it.
+  **This does not reach hosts that already have the file.** `install.sh` never
+  overwrites an operator-editable list; it refreshes `<file>.example`. An existing
+  install keeps its narrower copy and `test-config` still reports `ENABLED` with no
+  hint of the difference. After upgrading, diff the `.example` and re-run
+  `shared-egress-audit`. See the README.
+- **`test/shipped_config_valid_test.sh`** — the config we ship must survive its own
+  validator. Probes every `/32` individually rather than sampling the pool edges,
+  pins the prefix floors so the test owns the production contract, holds the
+  shipped ASN list to entry-free, and asserts the blast radius directly: an
+  over-broad `/29` kills the good IPv4 line with it.
+
+### Fixed
+- **CI had been red since 2.15.0 and nobody noticed**, including across the 2.15.1
+  release. Nothing local reproduced it: shellcheck 0.11.0 is silent where CI's apt
+  shellcheck 0.9.0 is not. `test/alerts_test.sh` defined `swatter_send_sms` twice —
+  a stub, then the real dispatcher via `unset -f` + `source`, then a re-stub added
+  in 2.15.0 — and 0.9.0 flagged the earlier use as `SC2218` "defined later". Fixed
+  structurally: the dispatch test moves last, so the function is defined once and
+  the re-stub is unnecessary. No suppression directive.
+- **The shared-egress file header had the failure direction backwards.** It warned
+  that a wide entry "silently stops ALL permanent banning"; a *rejected* wide entry
+  does the reverse — the arm goes off, nothing is capped, and you get **more**
+  permanent bans, including on the pools the file exists to protect.
+
 ## [2.15.1] - 2026-08-12
 
 ### Fixed

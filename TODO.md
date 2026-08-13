@@ -51,6 +51,18 @@ and `lib/report.sh` all sha256-match the tag (verified 2026-08-13).
   incident that turned the `/grok` pre-ship review into a written gate; see
   `CLAUDE.md`.
 
+**v2.16.0 (2026-08-13)** ships the WARP IPv6 pool in the *default* CIDR list plus
+a test that the shipped config survives its own validator, and restores CI (red
+since v2.15.0 on a shellcheck-version-only `SC2218`; `install/release.sh` runs no
+shellcheck and no CI check, which is how two tags shipped red — still unfixed).
+
+**The repo default and cds1's live file now deliberately DIVERGE.** Repo ships **9**
+ranges (IPv4 WARP + the eight v6 `/32`s). cds1 has **11**: those nine plus
+`192.253.240.0/20` (PureVPN) and `194.5.82.0/24` (VPN Consumer SG), which are
+locally observed and stay local. `install.sh` never overwrites the live file, so
+the divergence is stable — but it also means a widened default never reaches an
+existing host. Diff `.example` after any upgrade.
+
 **Both post-deploy watch items are still OPEN — no result has been recorded.**
 
 - [ ] **v2.14.0 fan-out gate — unconfirmed.** The `get_locale()` cluster puts
