@@ -80,10 +80,6 @@ SMS_RC=1; RPT_GRADE=RED; swatter_alert_on_grade      # send fails: no marker
 SMS_RC=0; RPT_GRADE=RED; swatter_alert_on_grade      # retry within window: sends
 check failed-send-no-dedup "$(nsent)" "2"
 
-# 9. swatter_send_sms dispatch: method "" is a no-op success (restore real fn)
-unset -f swatter_send_sms; source "${ROOT}/lib/alerts.sh"
-ALERT_SMS_METHOD=""; swatter_send_sms "+1555" "hi"; check dispatch-off "$?" "0"
-
 # 10. Twilio sender key: a phone number -> From=, a Messaging Service SID (MG…) ->
 #     MessagingServiceSid=. Stub curl (echo args, return a 2xx code).
 CURLLOG="$TMP/curl"; : > "$CURLLOG"
@@ -124,8 +120,6 @@ check valid-grades-nowarn "$(printf '%s\n' "$warn_ok" | grep -c 'never fire')" "
 # NOTHING for the most severe status the tool can produce — silently, since no
 # existing test sets the escalation flag.
 : > "$SENT"; rm -f "$TMP/last-sms-alert"; NOW=3000000
-# Test 9 restored the real sender; re-stub so these record instead of dialing.
-swatter_send_sms() { printf 'TO=%s BODY=%s\n' "$1" "$2" >> "$SENT"; return "${SMS_RC:-0}"; }
 ALERT_SMS_METHOD="twilio"; ALERT_SMS_TO="+15550001111"; ALERT_SMS_GRADES="RED"; SMS_RC=0
 RPT_GRADE=RED; RPT_GRADE_ESCALATED=1; RPT_GRADE_ICON="🔥"; RPT_GRADE_WORD="Outage"
 swatter_alert_on_grade
@@ -153,6 +147,19 @@ check deesc-silent "$(nsent)" "2"
 # the entire design rests on.
 check esc-grade-unchanged "$RPT_GRADE" "RED"
 RPT_GRADE_ESCALATED=0
+
+# 9. swatter_send_sms dispatch: method "" is a no-op success.
+# LAST on purpose. It swaps the recording stub for the REAL dispatcher via
+# `unset -f` + `source`, so anything after it would dial for real; keeping it
+# last also means the file defines swatter_send_sms exactly ONCE, which is what
+# stops shellcheck 0.9.0 emitting SC2218 here. An earlier revision put this
+# mid-file with a re-stub afterwards and silenced the warning with a file-scoped
+# disable -- that worked, but it blinded the whole file to a real
+# use-before-define, and its stated reason (an ALERT_SMS_METHOD leak) was wrong:
+# the stale-grades tests set method/to INLINE precisely so prior tests cannot
+# affect them.
+unset -f swatter_send_sms; source "${ROOT}/lib/alerts.sh"
+ALERT_SMS_METHOD=""; swatter_send_sms "+1555" "hi"; check dispatch-off "$?" "0"
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
