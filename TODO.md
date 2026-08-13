@@ -253,7 +253,7 @@ attacker a bypass via the 1.1.1.1 app.
       TechTies 20, DMZHOST 19, M247 16, Contabo 14. Team Cymru's *bulk* whois
       port rate-limits at this volume; the documented per-IP DNS method
       (`dig … origin.asn.cymru.com`) ran 1,091 lookups clean under `xargs -P 40`.
-- [ ] **NEW/1 — Cloudflare WARP IPv6 is entirely uncapped.** `shared-egress.cidr`
+- [x] **NEW/1 — Cloudflare WARP IPv6 was entirely uncapped. CAPPED 2026-08-13.** `shared-egress.cidr`
       holds exactly one entry, the IPv4 `104.28.0.0/16`; there is **no IPv6
       coverage at all**. WARP's v6 egress is `2a09:bac0::/29` — `bac0` through
       `bac7` each carry netname `CLOUDFLAREWARP` in RIPE, and `bac8` does not, so
@@ -264,19 +264,19 @@ attacker a bypass via the 1.1.1.1 app.
       Neither perm is on the hub feed today and neither has an AbuseIPDB marker,
       so nothing needs retracting. Same customer-facing collateral as the IPv4
       WARP cohort, across 2.7× more addresses.
-- [ ] **NEW/2 — PureVPN, `192.253.248.142`.** AS213790, NetName `PUREVPN`, org
+- [x] **NEW/2 — PureVPN, `192.253.248.142`. CAPPED + UNBLOCKED 2026-08-13.** AS213790, NetName `PUREVPN`, org
       Secure Internet LLC, range `192.253.240.0/20`. Live perm — score 81,
       `spamhaus:drop(100)`, plane-upgrade 2026-08-05. **It IS in the consumed
       swarm feed, so it was published to the hub** — the only one of the three
       that went out. Not reported to AbuseIPDB. Swarm is recallable (`/purge`,
       7-day TTL) but `/purge` is all-or-nothing.
-- [ ] **NEW/3 — "VPN Consumer Singapore", `194.5.82.169`.** AS137409, netname
+- [x] **NEW/3 — "VPN Consumer Singapore", `194.5.82.169`. CAPPED + UNBLOCKED 2026-08-13.** AS137409, netname
       `VPN-Consumer-Network`, range `194.5.82.0/24`. Live perm at
       `abuseipdb:confidence100`. **Same operator naming convention as AS206092**
       ("VPN Consumer Paris, France", F.N.S. Holdings) — so that operation spans
       at least two ASNs, and the ASN-keyed 206092 entry added on 08-11 caught
       only one leg of it. Not on the feed, not reported.
-- [ ] **Remediate with CIDRs, NOT ASN entries — proposed, not applied.** Both new
+- [x] **Remediated with CIDRs, NOT ASN entries — APPLIED 2026-08-13.** Both new
       IPv4 ASNs are **mixed**: AS213790 also originates `AMWAJ` (AE) and AS137409
       also originates `IPLuo BV` (NL), neither of them VPN. An ASN entry would cap
       unrelated space, which is precisely what `shared-egress-asns.txt`'s own
@@ -305,6 +305,23 @@ attacker a bypass via the 1.1.1.1 app.
       **General lesson: one over-broad line disables the entire CIDR arm, in the
       direction nobody notices.** Any future addition to this file gets validated
       before it lands, not after.
+
+      **Applied to cds1 2026-08-13 17:56 UTC.** Backup
+      `/etc/swatter/shared-egress.cidr.bak-20260813-preipv6`. `test-config` reports
+      **11 range(s)** with the arm ENABLED — the live proof the file validates,
+      since a rejected file reports the arm off instead. `shared-egress-audit`
+      matched exactly the predicted **4** perms (the 2 WARP v6, PureVPN, VPN
+      Consumer SG) and no others; `--fix` cleared all four, each verified
+      independently on both planes — `offenders.perm=0`, no `csf.deny` line, no
+      `csf -g` hit, no `cf-rules.tsv` ref. Post-fix audit is clean and both arms
+      report live.
+      **Two count reconciliations, so nobody re-derives them in alarm:** the perm
+      total reads **1101**, not 1104-4=1100, because a new perm (`34.50.186.119`)
+      landed at 17:55 — as *two* rows sharing one `ts`, the primary plus the
+      dual-plane leg, which is the documented SQL trap. And the audit reports
+      **1090 checked** against 1101 total because it skips the 11 report-mode
+      residue rows (`perm=1` with no enforced perm action). Both differences are
+      expected; neither is a miscount.
 - [ ] **Gate D interaction — now sharper after the 08-13 sweep.** Gate D's review
       rule already says VPN exits get allowlisted first. At
       `REPEAT_WINDOW_DAYS=30` the WARP cohort's temps get a 4.3× wider window to
