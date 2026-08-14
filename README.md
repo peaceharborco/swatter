@@ -60,9 +60,10 @@ Permanent bans are tracked **per plane**, and the two planes cover each other:
 an IP permed at the Cloudflare edge that later shows up hitting the origin
 directly (say, a webmail flood on a cPanel service port that never transits
 Cloudflare) acquires the missing CSF deny instead of being dismissed as
-"already blocked" — and vice versa. Offenders with a **hard-intel** reputation
-(Spamhaus DROP, AbuseIPDB 100 — never a legitimate visitor; threshold
-`INTEL_HARDBLOCK_MIN`) are permed on **both planes at once**
+"already blocked" — and vice versa. An offender that earns a perm while
+carrying a **hard-intel** reputation (Spamhaus DROP, AbuseIPDB 100 — never a
+legitimate visitor; threshold `INTEL_HARDBLOCK_MIN`) gets it on **both planes
+at once**
 (`DUAL_PLANE_HARD_INTEL`, default on), so direct-to-origin ports are covered
 before the attacker tries them.
 
