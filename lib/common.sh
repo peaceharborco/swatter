@@ -460,8 +460,10 @@ swatter_load_config() {
     # safety signal there is. They are consumed raw by lib/score.sh's
     # `(( SWATTER_RUN_PERMS >= PERM_RATE_ALERT_PER_RUN || _pday >= ... ))`:
     #   ""    -> `(( 0 >= "" ))` is TRUE, so the tripwire fires EVERY run with
-    #            zero perms placed; the key is hour-bucketed, so that is an
-    #            alert an hour, forever, until the operator mutes the channel.
+    #            zero perms placed. The severity-band key would collapse that to
+    #            one alert per ALERT_REPEAT_TTL rather than the alert-an-hour
+    #            storm the old hour-bucketed key produced — still wrong, still
+    #            trains the operator to mute the channel, just more slowly.
     #   "abc" -> under `set -u` the arithmetic aborts the shell INSIDE
     #            swatter_scan, so cmd_scan never reaches swatter_swarm_publish
     #            and every */5 cron run dies at the very end of its work.
