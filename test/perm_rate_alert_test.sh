@@ -16,14 +16,75 @@ check() { local name="$1" got="$2" want="$3"
 check perm-alert-run-default "${PERM_RATE_ALERT_PER_RUN}" "5"
 check perm-alert-day-default "${PERM_RATE_ALERT_PER_DAY}" "15"
 
-# The alert key must vary by hour. A static key would be suppressed by
-# _notify_ratelimited for ALERT_REPEAT_TTL (6h by default), silencing exactly
-# the multi-hour burst the tripwire exists to catch.
-k1="$(_swatter_perm_rate_key 1000000000)"
-k2="$(_swatter_perm_rate_key 1000003600)"   # +1h
-k3="$(_swatter_perm_rate_key 1000000060)"   # +1m, same hour
-check perm-key-differs-hour "$([[ "$k1" != "$k2" ]] && echo yes || echo no)" "yes"
-check perm-key-stable-hour  "$([[ "$k1" == "$k3" ]] && echo yes || echo no)" "yes"
+# The alert key is bucketed by SEVERITY, not by wall clock.
+#
+# It was keyed on the hour, which defeated _notify_ratelimited entirely: every
+# hour minted a new key, so a _pday count that stays over the threshold — and a
+# trailing-24h count necessarily does — re-alerted once an hour for a full day.
+# Measured on cds1 2026-08-15: four texts, 10:55/11:00/12:00/13:00, the first
+# two five minutes apart because the run straddled an hour boundary.
+#
+# Keying on the band means a steady incident is ONE alert (then governed by
+# ALERT_REPEAT_TTL), while a genuinely worsening one still re-alerts the moment
+# it crosses another full threshold's worth. Louder on escalation, silent on
+# repetition — the fail direction the alerting plane requires.
+PERM_RATE_ALERT_PER_RUN=5
+PERM_RATE_ALERT_PER_DAY=70
+
+# Same severity -> same key, no matter how much wall time passes.
+kA="$(_swatter_perm_rate_key 0 73)"
+kB="$(_swatter_perm_rate_key 0 99)"    # still band 1 (70..139)
+check perm-key-stable-in-band "$([[ "$kA" == "$kB" ]] && echo yes || echo no)" "yes"
+
+# Crossing another full threshold's worth -> new key -> alerts again.
+kC="$(_swatter_perm_rate_key 0 140)"   # band 2
+check perm-key-escalates "$([[ "$kA" != "$kC" ]] && echo yes || echo no)" "yes"
+
+# The per-run arm escalates independently of the per-day arm.
+kD="$(_swatter_perm_rate_key 5 73)"
+check perm-key-run-arm-independent "$([[ "$kA" != "$kD" ]] && echo yes || echo no)" "yes"
+
+# The key must NOT depend on the clock — that was the whole defect.
+SWATTER_NOW_EPOCH=1000000000; kE="$(_swatter_perm_rate_key 0 73)"
+SWATTER_NOW_EPOCH=1000090000; kF="$(_swatter_perm_rate_key 0 73)"   # +25h
+unset SWATTER_NOW_EPOCH
+check perm-key-clock-independent "$([[ "$kE" == "$kF" ]] && echo yes || echo no)" "yes"
+
+# Non-numeric args must not reach an arithmetic context (lib/common.sh assigns
+# defaults unconditionally, so a conf typo can arrive here) and must fail LOUD:
+# an unreadable severity gets its own key rather than colliding with a quiet one.
+check perm-key-nonnumeric-safe "$(_swatter_perm_rate_key notanumber 73)" "perm_rate.unreadable"
+check perm-key-nonnumeric-thresh "$(PERM_RATE_ALERT_PER_DAY=oops _swatter_perm_rate_key 0 73)" "perm_rate.unreadable"
+
+# --- the high-water ratchet -------------------------------------------------
+# The pure band above re-alerts on the way DOWN (140 -> 100 is d2 -> d1, a new
+# key, which _notify_ratelimited reads as a new incident). _swatter_perm_rate_hw_key
+# ratchets, so only worsening mints a new key.
+STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/swatter-hw.XXXXXX")"
+trap 'rm -rf "$STATE_DIR"' EXIT
+
+check hw-first        "$(_swatter_perm_rate_hw_key 0 140)" "perm_rate.r0.d2"
+check hw-decay-holds  "$(_swatter_perm_rate_hw_key 0 100)" "perm_rate.r0.d2"   # improving -> same key
+check hw-decay-holds2 "$(_swatter_perm_rate_hw_key 0 71)"  "perm_rate.r0.d2"
+check hw-escalates    "$(_swatter_perm_rate_hw_key 0 210)" "perm_rate.r0.d3"   # worse -> new key
+check hw-run-arm      "$(_swatter_perm_rate_hw_key 5 210)" "perm_rate.r1.d3"
+check hw-run-decay    "$(_swatter_perm_rate_hw_key 0 210)" "perm_rate.r1.d3"   # run arm ratchets too
+
+# A corrupt high-water file must not abort or wedge the key at a bogus band.
+printf 'garbage\n' > "$(_swatter_perm_rate_hw_file)"
+check hw-corrupt-file "$(_swatter_perm_rate_hw_key 0 140)" "perm_rate.r0.d2"
+
+# Unreadable severity is passed through untouched, not ratcheted.
+check hw-unreadable "$(_swatter_perm_rate_hw_key notanumber 73)" "perm_rate.unreadable"
+
+# A directory where the state file should be must not hang or abort the scan.
+rm -f "$(_swatter_perm_rate_hw_file)"; mkdir -p "$(_swatter_perm_rate_hw_file)"
+check hw-dir-at-path "$(_swatter_perm_rate_hw_key 0 140)" "perm_rate.r0.d2"
+rmdir "$(_swatter_perm_rate_hw_file)" 2>/dev/null || rm -rf "$(_swatter_perm_rate_hw_file)"
+
+# An empty STATE_DIR must degrade to the pure band, never build a path at /.
+check hw-no-statedir "$(STATE_DIR="" _swatter_perm_rate_hw_key 0 140)" "perm_rate.r0.d2"
+rm -rf "$STATE_DIR"; trap - EXIT
 
 # ---------------------------------------------------------------------------
 # The remaining sections need real sqlite: they exercise SWATTER_RUN_PERMS'
@@ -147,10 +208,88 @@ if (( HAVE_SQLITE )); then
     swatter_scan >/dev/null 2>&1
     check perm-rate-5-counter "${SWATTER_RUN_PERMS}" "5"
     check perm-rate-5-trips   "$(grep -c 'perm-rate tripwire' "$NOTIFY_LOG" || true)" "1"
-    # The alert that fired used the hour-bucketed key (the reason a static key
-    # would have been wrong: it would go silent for ALERT_REPEAT_TTL while the
-    # backlog kept growing).
-    check perm-rate-5-key "$(tail -1 "$NOTIFY_LOG" | cut -f3)" "$(_swatter_perm_rate_key)"
+    # The alert that fired carries the SEVERITY-BAND key, built from the real
+    # counts: 5 perms this run over PERM_RATE_ALERT_PER_RUN=5 is band r1, and
+    # the day arm is isolated to 0 here by PERM_RATE_ALERT_PER_DAY=999.
+    # Asserting the literal (not a re-call of the helper) means a helper that
+    # silently returned a constant could not pass this.
+    check perm-rate-5-key "$(tail -1 "$NOTIFY_LOG" | cut -f3)" "perm_rate.r1.d0"
+
+    # A SECOND scan at the same severity must NOT mint a new key — that is the
+    # repetition the hour bucket could not suppress.
+    prev_key="$(tail -1 "$NOTIFY_LOG" | cut -f3)"
+    feed_multi "$(honeypot_lines 5)"
+    swatter_scan >/dev/null 2>&1
+    check perm-rate-repeat-same-key "$(tail -1 "$NOTIFY_LOG" | cut -f3)" "$prev_key"
+
+    # -----------------------------------------------------------------------
+    # Call-site wiring, end to end through swatter_scan. The helper tests above
+    # pin the HELPERS; reviewers proved you could revert every call-site
+    # contract (use the pure key instead of the ratchet, drop the _unreadable
+    # trip, delete the high-water clear) with the suite still green. These
+    # drive swatter_scan and assert what the operator actually receives.
+    # -----------------------------------------------------------------------
+
+    # (i) DECAY through the real scan: cross into d2, then decay to d1 while
+    # still over threshold. One key, not two — no page on the way down.
+    setup_scan_case
+    PERM_RATE_ALERT_PER_RUN=999      # isolate the DAY arm
+    PERM_RATE_ALERT_PER_DAY=10
+    seed_day() {   # seed_day <n> — n distinct IPs with an enforced perm, now
+        local n="$1" i
+        for ((i = 1; i <= n; i++)); do
+            sqlite3 "${STATE_DIR}/swatter.db" "INSERT INTO actions(ip,ts,action,channel,ttl,score,reason,dry_run)
+              VALUES('10.20.$(( i / 250 )).$(( i % 250 ))',$(swatter_now),'perm','csf',0,91,'seed',0);"
+        done
+    }
+    feed_multi ""                    # no new offenders; the ledger drives the day arm
+    seed_day 25                      # 25 >= 10 -> band d2
+    swatter_scan >/dev/null 2>&1
+    k_hi="$(tail -1 "$NOTIFY_LOG" | cut -f3)"
+    check e2e-decay-first-key "$k_hi" "perm_rate.r0.d2"
+    # Now decay: rewrite the ledger to 15 distinct IPs (still >= 10 -> band d1).
+    sqlite3 "${STATE_DIR}/swatter.db" "DELETE FROM actions;"
+    seed_day 15
+    swatter_scan >/dev/null 2>&1
+    check e2e-decay-no-new-key "$(tail -1 "$NOTIFY_LOG" | cut -f3)" "$k_hi"
+    check e2e-decay-band-file-present \
+        "$([[ -f "${STATE_DIR}/perm_rate.band" ]] && echo yes || echo no)" "yes"
+
+    # (ii) The high-water is CLEARED once nothing trips, so the next wave is
+    # judged fresh instead of being suppressed by an old peak.
+    sqlite3 "${STATE_DIR}/swatter.db" "DELETE FROM actions;"
+    swatter_scan >/dev/null 2>&1     # 0 perms, under both arms
+    check e2e-clear-band-file \
+        "$([[ -e "${STATE_DIR}/perm_rate.band" ]] && echo present || echo absent)" "absent"
+
+    # (iii) An UNREADABLE ledger must page, and must keep ratcheting on the run
+    # arm — a blind day arm may not also disarm the arm that can still see.
+    setup_scan_case
+    PERM_RATE_ALERT_PER_RUN=5
+    PERM_RATE_ALERT_PER_DAY=10
+    swatter_store_perm_count_since() { echo UNREADABLE; }   # post-init read failure
+    feed_multi "$(honeypot_lines 5)"
+    swatter_scan >/dev/null 2>&1
+    check e2e-unreadable-pages \
+        "$(grep -c 'perm-rate tripwire' "$NOTIFY_LOG" || true)" "1"
+    check e2e-unreadable-key "$(tail -1 "$NOTIFY_LOG" | cut -f3)" "perm_rate.unreadable.r1.d0"
+    check e2e-unreadable-body-says-so \
+        "$(tail -1 "$NOTIFY_LOG" | grep -c 'UNREADABLE' || true)" "1"
+    # (iv) The case that isolates the _unreadable arm: NOTHING else trips.
+    # 1 perm this run (< 5) and a day arm that cannot be read. Without the
+    # _unreadable term in the trip condition this is silent — an alarm that has
+    # gone blind reporting a quiet day, which is the whole defect.
+    setup_scan_case
+    PERM_RATE_ALERT_PER_RUN=5
+    PERM_RATE_ALERT_PER_DAY=10
+    swatter_store_perm_count_since() { echo UNREADABLE; }
+    feed_multi "$(honeypot_lines 1)"
+    swatter_scan >/dev/null 2>&1
+    check e2e-unreadable-alone-counter "${SWATTER_RUN_PERMS}" "1"
+    check e2e-unreadable-alone-pages \
+        "$(grep -c 'perm-rate tripwire' "$NOTIFY_LOG" || true)" "1"
+    unset -f swatter_store_perm_count_since
+    source "${ROOT}/lib/store_sqlite.sh"
 
     # -----------------------------------------------------------------------
     # Part 4: swatter_store_perm_count_since — ts>since cutoff, dry_run=0
@@ -174,6 +313,65 @@ if (( HAVE_SQLITE )); then
     since=$(( NOW - 5 * DAY ))
     check permcount-cutoff-and-dryrun "$(swatter_store_perm_count_since "$since")" "2"
 
+    # -----------------------------------------------------------------------
+    # The two ways this counter over-reported on real data. Every seed above is
+    # one IP with one row, so neither shape was reachable by the suite; on cds1
+    # 2026-08-15 the pair inflated a true 30 into 73 and tripped a 70/day
+    # tripwire that the honest number never came close to.
+    # -----------------------------------------------------------------------
+
+    seed_action_ch() {   # seed_action_ch <ip> <days_ago> <channel> <ttl>
+        sqlite3 "$db" "INSERT INTO actions(ip,ts,action,channel,ttl,score,reason,dry_run)
+          VALUES('$1',$(( NOW - $2 * DAY )),'perm','$3',$4,91,'seed',0);"
+    }
+
+    # (a) A Cloudflare perm MUST COUNT. Its ttl is rewritten to the ladder max,
+    # so it is not a never-expiring row — but it IS the ladder's perm decision,
+    # and on a CF-fronted host it is the only form most of them take. Filtering
+    # on ttl=0 here pinned this arm near 0 (and at exactly 0 on an all-proxied
+    # host), which is an alarm that cannot fire. The run arm counts CF primaries
+    # too, so excluding them here would also make the two numbers in one SMS
+    # mean different things.
+    STATE_DIR="$(newdir)"; swatter_store_init; db="${STATE_DIR}/swatter.db"
+    seed_action_ch 10.9.1.1 1 csf        0        # direct perm
+    seed_action_ch 10.9.1.2 1 cloudflare 259200   # CF perm -> STILL COUNTS
+    check permcount-counts-cf-perm "$(swatter_store_perm_count_since "$since")" "2"
+
+    # (b) One IP blocked on BOTH planes writes one row per plane, same second.
+    # The per-run counter already guards this (lib/score.sh's audit_action
+    # check, with a comment naming the exact hazard); the day counter did not.
+    STATE_DIR="$(newdir)"; swatter_store_init; db="${STATE_DIR}/swatter.db"
+    seed_action_ch 10.9.2.1 1 csf        0        # same IP, direct plane
+    seed_action_ch 10.9.2.1 1 cloudflare 259200   # same IP, edge plane
+    check permcount-dualplane-counts-ip-once "$(swatter_store_perm_count_since "$since")" "1"
+
+    # (b2) The shape that isolates DISTINCT from any ttl predicate: ONE IP, TWO
+    # rows, BOTH ttl=0. Reviewers proved (b) alone passes with DISTINCT reverted,
+    # because the ttl values differed and a ttl filter did the collapsing.
+    STATE_DIR="$(newdir)"; swatter_store_init; db="${STATE_DIR}/swatter.db"
+    seed_action_ch 10.9.5.1 1 csf   0
+    seed_action_ch 10.9.5.1 1 ipset 0
+    check permcount-distinct-isolates "$(swatter_store_perm_count_since "$since")" "1"
+
+    # (c) The same IP re-permed later in the window is still one banned IP.
+    # (653 distinct IPs across 662 all-time perm rows on cds1 — this happens.)
+    STATE_DIR="$(newdir)"; swatter_store_init; db="${STATE_DIR}/swatter.db"
+    seed_action_ch 10.9.3.1 3 csf 0
+    seed_action_ch 10.9.3.1 1 csf 0
+    check permcount-repeat-perm-counts-once "$(swatter_store_perm_count_since "$since")" "1"
+
+    # Guard the other direction: distinct IPs must still each count, or the fix
+    # would trade an over-report for an under-report and blunt the alarm.
+    STATE_DIR="$(newdir)"; swatter_store_init; db="${STATE_DIR}/swatter.db"
+    seed_action_ch 10.9.4.1 1 csf 0
+    seed_action_ch 10.9.4.2 1 csf 0
+    seed_action_ch 10.9.4.3 1 csf 0
+    check permcount-distinct-ips-all-count "$(swatter_store_perm_count_since "$since")" "3"
+
+    STATE_DIR="$(newdir)"; swatter_store_init; db="${STATE_DIR}/swatter.db"
+    seed_action 10.9.0.1 1 perm 0
+    seed_action 10.9.0.2 2 perm 0
+
     # Flatfile asymmetry: same DB present, STORE=flatfile -> always 0.
     STORE=flatfile
     check permcount-flatfile-zero "$(swatter_store_perm_count_since "$since")" "0"
@@ -181,6 +379,19 @@ if (( HAVE_SQLITE )); then
 
     # Non-numeric since -> 0, not an error.
     check permcount-bad-since "$(swatter_store_perm_count_since notaninteger)" "0"
+
+    # A ledger that EXISTS but cannot be read must report UNREADABLE, never 0 —
+    # 0 is "quiet day", and the day arm is the only thing watching a slow
+    # accumulation. Corrupt the DB file in place to force _sqlq to fail.
+    STATE_DIR="$(newdir)"; STORE=sqlite; swatter_store_init
+    printf 'not a sqlite database at all' > "${STATE_DIR}/swatter.db"
+    check permcount-unreadable-is-loud "$(swatter_store_perm_count_since "$since")" "UNREADABLE"
+
+    # ...but a flatfile host or a never-scanned host has no ledger to read and is
+    # honestly 0. Absence of data is not a failed read.
+    STORE=flatfile
+    check permcount-flatfile-not-unreadable "$(swatter_store_perm_count_since "$since")" "0"
+    STORE=sqlite
 
     # No-phantom-DB guard: a never-scanned STATE_DIR must not get a swatter.db
     # planted merely by querying (mirrors swatter_ladder_perms_since's guard).

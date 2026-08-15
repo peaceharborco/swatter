@@ -288,55 +288,104 @@ the number.
 
 ### The two arms do not count the same thing
 
-Measure each arm in **its own units** or the numbers you set will be wrong by
-about 3×. Verified on cds1 2026-08-01: 207 enforced perm rows over 4.7 days
-decompose into **67 primary, 70 `dual-plane`, 70 `plane-upgrade`**.
+Both arms now count perm decisions on **either plane**, which they did not
+before — but they are still not the same unit, and the lead sentence used to
+overclaim that they were. The run arm counts **primary legs in one scan**; the
+day arm counts **distinct IPs with any enforced perm row over a rolling 24h**
+(so dual-plane and plane-upgrade rows collapse into the IP they belong to, and
+honeypot / hard-intel / imported perms all count — there is no `recidivism=`
+predicate). Measure each in its own units; a per-run and a per-day number are
+not interchangeable.
+
+This was not always true, and the difference is worth knowing if you are reading
+a band measured before v2.16.1:
 
 - **`PERM_RATE_ALERT_PER_RUN`** counts `SWATTER_RUN_PERMS`, which `lib/score.sh`
   guards with `audit_action == action` — the second plane leg for an IP is
   deliberately excluded so one IP is not double-counted. **Primary legs only.**
+  This arm was always correct.
 - **`PERM_RATE_ALERT_PER_DAY`** counts `swatter_store_perm_count_since`
-  (`lib/store_sqlite.sh`), a bare `COUNT(*) ... action='perm' AND dry_run=0`
-  over a **rolling 24h** — not a calendar day, and with **no** such filter.
-  **Every row, including both plane legs.**
+  (`lib/store_sqlite.sh`) over a **rolling 24h** — not a calendar day. It used
+  to be a bare `COUNT(*)` with no such guard, so one IP blocked on **both plane
+  legs counted twice**. It is now `COUNT(DISTINCT ip)`, with **no** `ttl`
+  predicate — see below for why the obvious `ttl=0` filter is wrong.
 
-Three consequences when reading the per-day number:
+**Why this is NOT filtered on `ttl=0`.** A Cloudflare "perm" is TTL-emulated —
+the ttl is rewritten to the ladder max and the rule is swept later — so `ttl=0`
+is a tempting proxy for "truly permanent", and as a statement about the row it is
+accurate. It is the wrong question for this alarm. On a Cloudflare-fronted host
+most offenders classify `VIA_CF`, so the filter discards the majority of perm
+decisions, and on a host where every offender is proxied it pins the day arm at
+**0 forever** — an alarm that cannot fire. Measured on cds1 it dropped 13 of 43
+distinct IPs in a day and 100 of 500 over 30 days. The run arm counts CF
+primaries (its guard is `audit_action`, not ttl), so filtering here would also
+make the two numbers printed side by side in one SMS mean different things. The
+alerting plane fails toward the louder reading.
 
-1. **The ~3× gap is all second legs, and they are two different mechanisms —
-   don't attribute it to one.** Of the 140 non-primary rows on cds1, **70 are
-   `dual-plane`** and **70 are `plane-upgrade`**.
-   - `dual-plane` is a **one-shot** hard-intel second leg: when an IP's
-     reputation clears `INTEL_HARDBLOCK_MIN`, the other plane is covered at the
-     same time as the first perm. It does not repeat and has nothing to do with
-     Cloudflare TTLs.
-   - `plane-upgrade` is the recurring one, and also the *only* one of the two
-     that re-counts a single IP over time.
-2. `plane-upgrade` re-counts **persistent** offenders, so the per-day figure
-   overstates how many *distinct* IPs were newly banned. A Cloudflare "perm" is a
-   TTL-emulated rule with a real expiry (ladder max, `_swatter_pick_ttl 99` →
-   ~3d by default); `swatter_cf_sweep_expired` deletes the edge rule and
-   `is_perm_on` — which reads `plane_blocks.expires_at`, not sweep success —
-   stops holding. If that IP is then **re-observed scoring over `SCORE_TEMP`**,
-   the perm gate writes a fresh `plane-upgrade` row (`lib/score.sh`,
-   `test/cf_perm_ledger_test.sh` pins this). One durable attacker therefore
-   contributes a new row roughly once per CF TTL for as long as it keeps
-   attacking — on cds1 `plane-upgrade` ran 9-28 rows/day.
+**Do not calibrate against the nightly digest.** It answers a different
+question: `lib/report.sh` counts `decisions.jsonl` records with `.action=="perm"`
+— primary audit legs, not distinct IPs, and not the ledger at all. For the window
+below the digest said **30** where the day arm's unit was **43**. Neither is
+wrong; the two agreeing on any given window would be a coincidence rather than a
+property of the code. Measure with the queries further down, or you are
+calibrating one counter against another counter's units.
 
-   It is **not** a function of the standing perm population: the gate sits
-   inside the scored-IP loop, so an IP that stops sending traffic contributes
-   nothing. Nor is `plane-upgrade` exclusively the CF-refresh case — the same
-   label covers a first-time cross-plane upgrade and a legacy-import backfill.
+**What this cost, before it was fixed.** On cds1, 2026-08-15: the counter read
+**73** for a rolling 24h in which **43** distinct IPs were actually escalated to
+a perm. That crossed a 70/day threshold the real rate had not reached, and a
+separate defect in the alert key (see below) then repeated the text hourly. Four
+SMS for a day that was, by the honest measure, unremarkable.
 
-   Widening `REPEAT_WINDOW_DAYS` does **not** directly manufacture
-   still-attacking-after-TTL IPs. What it directly raises is *primary* perms
-   (more IPs clear the ladder). The second-leg rows follow indirectly, and by an
-   amount this measurement cannot predict — which is the actual reason a widen
-   must re-baseline rather than reuse the prior band.
-3. It is not comparable to the per-run number. "15/run, 120/day" is not an 8:1
-   ratio of the same quantity.
+> **Upgrading from ≤ v2.16.0: re-measure, but you probably do not need to move
+> the number.** The day arm used to count every ledger row (both plane legs), so
+> it read roughly 1.7× higher than it does now. A threshold calibrated under the
+> old unit is therefore slightly lax rather than badly wrong — on the reference
+> host the measured ceiling moved 54 → 37 and the existing 70/day stayed inside
+> the "~2× the ceiling" rule, so it was left alone. Re-measure with the queries
+> below (which now match the production predicate) and confirm yours still sits
+> above your band with headroom.
 
-This asymmetry is recorded, not resolved — changing the counting unit would
-invalidate any band measured under the old one, so it is not a mid-soak edit.
+### The alert key is bucketed by severity, not by the clock
+
+`_swatter_perm_rate_key` (`lib/score.sh`) keys on how many full thresholds'
+worth have accrued — `perm_rate.r<band>.d<band>` — **not** on wall-clock time.
+
+`_notify_ratelimited` marks a key before any channel sends and suppresses it for
+`ALERT_REPEAT_TTL` (6h), so the key alone decides whether a repeat is a repeat.
+A static key would go silent for six hours through exactly the escalating burst
+the tripwire exists to catch. An **hourly** key — what shipped through v2.16.0 —
+removed the ceiling instead: the day arm reads a *trailing* 24h count, so once
+it crosses it stays crossed, and one incident re-alerted every hour for a day.
+Two alerts can even land five minutes apart when a run straddles the boundary
+(cds1 observed 10:55 and 11:00).
+
+Banding on severity keeps both properties: a steady incident is one alert, then
+`ALERT_REPEAT_TTL` governs; one that is genuinely worsening re-alerts the moment
+it crosses the next band. Loud on escalation, quiet on repetition.
+
+A non-numeric count or threshold yields `perm_rate.unreadable` — its own key, so
+it still alerts rather than colliding with a band that may already be suppressed,
+and it never reaches an arithmetic context that would abort the run under `set -u`.
+
+**An unreadable ledger trips the alarm.** `swatter_store_perm_count_since`
+returns the string `UNREADABLE` when the DB exists but the read failed, and the
+tripwire fires on that rather than comparing a coerced `0`. Note what this does
+and does not cover: a DB that is corrupt *at scan start* never reaches here —
+`cmd_scan` does `swatter_store_init || die` and the run exits (loudly in the log,
+silently under `MAILTO=""`). `UNREADABLE` covers the failure that happens
+**after** init: a busy-lock timeout against the `*/5` scan, a dropped table,
+schema drift — absence of evidence is not evidence of a quiet day, and
+a lock timeout during a live wave is exactly when the day arm must not go silent.
+A flatfile store or a host that has never scanned has no ledger to read at all
+and is honestly `0`, which is a different thing.
+
+**The band is a high-water mark, ratcheted up only** (`_swatter_perm_rate_hw_key`).
+A raw current band re-alerts on the way DOWN: a trailing-24h count decaying
+140 → 100 moves `d2` → `d1`, which is a new key, which reads as a new incident —
+paging on recovery, the hour-bucket defect wearing a different hat. The
+high-water is stored in `$STATE_DIR/perm_rate.band` and cleared on the first scan
+where nothing trips, so the next wave is judged on its own merits.
+
 
 ### Measuring
 
@@ -350,7 +399,7 @@ Per-day, in the arm's real units — **rolling 24h over all rows**. The calendar
 
 ```
 sqlite3 /var/lib/swatter/swatter.db "
-WITH r AS (SELECT a.ts, (SELECT COUNT(*) FROM actions b WHERE b.action='perm' AND b.dry_run=0 AND b.ts > a.ts-86400 AND b.ts <= a.ts) c
+WITH r AS (SELECT a.ts, (SELECT COUNT(DISTINCT b.ip) FROM actions b WHERE b.action='perm' AND b.dry_run=0 AND b.ts > a.ts-86400 AND b.ts <= a.ts) c
            FROM actions a WHERE a.action='perm' AND a.dry_run=0 AND a.ts >= strftime('%s','<soak-start>'))
 SELECT MAX(c) FROM r;"
 ```
@@ -361,7 +410,7 @@ match `SWATTER_RUN_PERMS`:
 ```
 sqlite3 /var/lib/swatter/swatter.db "
 SELECT c, COUNT(*) FROM (
-  SELECT ts/300 b, COUNT(*) c FROM actions
+  SELECT ts/300 b, COUNT(DISTINCT ip) c FROM actions
   WHERE action='perm' AND dry_run=0
     AND reason NOT LIKE 'dual-plane%' AND reason NOT LIKE 'plane-upgrade%'
     AND ts >= strftime('%s','<soak-start>')
@@ -381,7 +430,7 @@ returns — they give `MAX` and a bucket histogram. For the percentiles:
 
 ```
 sqlite3 /var/lib/swatter/swatter.db "
-WITH r AS (SELECT a.ts, (SELECT COUNT(*) FROM actions b WHERE b.action='perm' AND b.dry_run=0 AND b.ts > a.ts-86400 AND b.ts <= a.ts) c
+WITH r AS (SELECT a.ts, (SELECT COUNT(DISTINCT b.ip) FROM actions b WHERE b.action='perm' AND b.dry_run=0 AND b.ts > a.ts-86400 AND b.ts <= a.ts) c
            FROM actions a WHERE a.action='perm' AND a.dry_run=0 AND a.ts >= strftime('%s','<soak-start>')),
 o AS (SELECT c, ROW_NUMBER() OVER (ORDER BY c) rn, COUNT(*) OVER () n FROM r)
 SELECT 'p50='||MAX(CASE WHEN rn<=n*0.50 THEN c END)||' p95='||MAX(CASE WHEN rn<=n*0.95 THEN c END)||' max='||MAX(c) FROM o;"
@@ -415,12 +464,17 @@ starting bid.
 
 ```
 This host's measured band:  cds1
-  perms/run (primary legs):  p95 1   max 2    (lifetime max 4)
-  perms/day (rolling 24h):   p95 55  max 59   (lifetime max 83, June enforce ramp)
-  measured over:             2026-07-27 23:44:45 UTC + 7.9d, v2.11.0/v2.12.0
-  thresholds set:            5/run (shipped default) · 70/day (regime max 59 + headroom,
-                             ratified 2026-08-04; supersedes the provisional 15/120)
-  last reviewed:             2026-08-04
+  perms/run (primary legs):  max 3    (14d, distinct IPs)
+  perms/day (rolling 24h):   max 37   (14d, distinct IPs; daily range 12-37)
+  measured over:             2026-08-01 .. 2026-08-15, 14d
+  unit:                      COUNT(DISTINCT ip), action='perm', dry_run=0 -- the
+                             predicate lib/store_sqlite.sh actually runs. The
+                             pre-2.16.1 series was COUNT(*) (both plane legs) and
+                             read ~1.7x higher; do not compare the two directly.
+  thresholds set:            5/run (shipped default; observed max 3) · 70/day
+                             (~2x the 37 ceiling -- unchanged, still correct
+                             under the corrected unit)
+  last reviewed:             2026-08-15
 ```
 
 ---

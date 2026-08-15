@@ -116,12 +116,104 @@ _swatter_ev_stamp() {
 # label shown in the success audit (default = action) so an upgrade can surface
 # as 'plane-upgrade' while still recording action=perm/temp.
 
-# Alert key for the perm-rate tripwire, bucketed by HOUR. _notify_ratelimited
-# marks its key before channels send and suppresses for ALERT_REPEAT_TTL (6h by
-# default), so a static key would fire once and then stay silent through exactly
-# the multi-hour burst this exists to catch — and the marker is written even when
-# every channel fails.
-_swatter_perm_rate_key() { printf 'perm_rate.%s' "$(( ${1:-$(swatter_now)} / 3600 ))"; }
+# Alert key for the perm-rate tripwire, bucketed by SEVERITY BAND.
+#
+# _notify_ratelimited marks its key before channels send and suppresses for
+# ALERT_REPEAT_TTL (6h by default), and the marker is written even when every
+# channel fails. A STATIC key would therefore fire once and then stay silent
+# through exactly the multi-hour burst this exists to catch.
+#
+# The first fix for that keyed on the HOUR, which removed the ceiling entirely:
+# every hour minted a new key, and because the day arm reads a TRAILING 24h
+# count, once it crosses it stays crossed — so one incident re-alerted every
+# hour for a full day. Two alerts can even land five minutes apart when a run
+# straddles an hour boundary (observed on cds1 2026-08-15: 10:55 and 11:00).
+#
+# Keying on how many full thresholds' worth have accrued keeps both properties:
+# a steady incident is ONE alert (then governed by ALERT_REPEAT_TTL), while one
+# that is genuinely worsening re-alerts the moment it crosses the next band.
+# Loud on escalation, quiet on repetition.
+#
+# This function is PURE — it computes the band for a pair of counts and nothing
+# else. The band that actually keys the alert is the incident HIGH-WATER (see
+# _swatter_perm_rate_hw_key), because a raw current band re-alerts on the way
+# DOWN: a trailing-24h count decaying 140 -> 100 moves d2 -> d1, a new key, and
+# _notify_ratelimited cannot tell that apart from a new incident. Paging on
+# recovery is the same defect as the hour bucket wearing a different hat.
+#   _swatter_perm_rate_key <run_perms> <day_perms>
+_swatter_perm_rate_key() {
+    local run="${1:-0}" day="${2:-0}" rt="${PERM_RATE_ALERT_PER_RUN:-5}" dt="${PERM_RATE_ALERT_PER_DAY:-15}" v
+    # Bash re-resolves a non-numeric string in an arithmetic context as a
+    # variable name and aborts the run under `set -u` (CLAUDE.md, "Config
+    # knobs"). An unreadable severity gets its OWN key so it still alerts,
+    # rather than colliding with a band that may already be suppressed.
+    for v in "$run" "$day" "$rt" "$dt"; do
+        [[ "$v" =~ ^[0-9]+$ ]] || { printf 'perm_rate.unreadable'; return 0; }
+    done
+    (( rt > 0 )) || rt=1   # a 0 threshold would divide by zero
+    (( dt > 0 )) || dt=1
+    printf 'perm_rate.r%s.d%s' "$(( run / rt ))" "$(( day / dt ))"
+}
+
+# Where the open incident's high-water band lives. Cleared when the tripwire
+# stops firing, so the NEXT wave alerts from a clean slate instead of being
+# suppressed by a band some earlier incident already reached.
+#
+# Concurrency is handled for us: cmd_scan takes swatter_acquire_lock before
+# swatter_scan, so two */5 runs cannot interleave a read-modify-write here.
+# Prints nothing if STATE_DIR is empty/unset — callers treat that as "no
+# high-water available" rather than building a path at the filesystem root.
+_swatter_perm_rate_hw_file() {
+    [[ -n "${STATE_DIR:-}" ]] || return 1
+    printf '%s/perm_rate.band' "${STATE_DIR}"
+}
+
+# The alert key: the high-water band of the OPEN incident, ratcheted up only.
+# Reads the current band from _swatter_perm_rate_key, raises the stored
+# high-water if this is worse, and keys on the result — so worsening mints a new
+# key and alerts, while steady OR IMPROVING reuses the key and stays quiet.
+#   _swatter_perm_rate_hw_key <run_perms> <day_perms>
+_swatter_perm_rate_hw_key() {
+    local cur f hw_r=0 hw_d=0 cr=0 cd=0
+    cur="$(_swatter_perm_rate_key "$1" "$2")"
+    # An unreadable severity has no band to ratchet — key it as-is.
+    [[ "$cur" == perm_rate.r*.d* ]] || { printf '%s' "$cur"; return 0; }
+    cr="${cur#perm_rate.r}"; cr="${cr%%.d*}"
+    cd="${cur##*.d}"
+    # No usable state dir -> no ratchet; fall back to the pure band rather than
+    # failing the scan. Losing the ratchet costs a duplicate alert, not silence.
+    f="$(_swatter_perm_rate_hw_file)" || { printf '%s' "$cur"; return 0; }
+    # -f, not -r: a directory at that path would make `read` hang or error.
+    #
+    # A high-water older than ALERT_REPEAT_TTL is STALE and ignored. Without
+    # this the file is a one-way ratchet with exactly one clear path (the
+    # not-tripped branch below), so a clear that never lands — read-only fs,
+    # bad perms, a copied state dir — wedges the band high FOREVER and every
+    # later wave at or below that band is suppressed. Expiring it makes the
+    # wedge self-heal instead of silently disarming the alarm.
+    if [[ -f "$f" && -r "$f" ]]; then
+        local _age _mt
+        _mt="$(stat_mtime "$f" 2>/dev/null || echo 0)"
+        _age=$(( $(swatter_now) - ${_mt:-0} ))
+        if (( _age < ${ALERT_REPEAT_TTL:-21600} )); then
+            read -r hw_r hw_d _ < "$f" 2>/dev/null || true
+        fi
+    fi
+    # Clamp before any arithmetic: `^[0-9]+$` admits a 21-digit number, and
+    # `(( cr > hw_r ))` on that prints "value too great for base" and writes the
+    # garbage straight back. Bands are small by construction.
+    [[ "$hw_r" =~ ^[0-9]{1,6}$ ]] || hw_r=0
+    [[ "$hw_d" =~ ^[0-9]{1,6}$ ]] || hw_d=0
+    [[ "$cr"   =~ ^[0-9]{1,6}$ ]] || cr=0
+    [[ "$cd"   =~ ^[0-9]{1,6}$ ]] || cd=0
+    (( cr > hw_r )) && hw_r="$cr"
+    (( cd > hw_d )) && hw_d="$cd"
+    # Braces, not `printf ... 2>/dev/null`: a failed REDIRECTION is reported by
+    # the shell before printf ever runs, so its own stderr redirect cannot catch
+    # it and the noise would land in the cron log every 5 minutes.
+    { printf '%s %s\n' "$hw_r" "$hw_d" > "$f"; } 2>/dev/null || true
+    printf 'perm_rate.r%s.d%s' "$hw_r" "$hw_d"
+}
 
 _swatter_apply_plane() {
     local ip="$1" plane="$2" action="$3" ttl="$4" reason="$5" top_vhost="$6" healthy="$7" \
@@ -696,12 +788,40 @@ swatter_scan() {
     fi
 
     # Perm-rate tripwire — same run that placed them, not the next digest.
-    local _pday
+    local _pday _pday_txt _unreadable=0
     _pday="$(swatter_store_perm_count_since $(( $(swatter_now) - 86400 )) )"
-    [[ "$_pday" =~ ^[0-9]+$ ]] || _pday=0
-    if (( SWATTER_RUN_PERMS >= PERM_RATE_ALERT_PER_RUN || _pday >= PERM_RATE_ALERT_PER_DAY )); then
+    # A ledger that could not be read is NOT a quiet day. Trip on it: the day arm
+    # is the only thing watching a slow accumulation, and a lock timeout during a
+    # live wave is exactly when it must not report absence.
+    if [[ "$_pday" =~ ^[0-9]+$ ]]; then
+        _pday_txt="$_pday"
+    else
+        _unreadable=1; _pday=0
+        _pday_txt="UNREADABLE (the ledger exists but could not be read — treat this as an alarm, not a quiet day)"
+    fi
+    if (( _unreadable )) || (( SWATTER_RUN_PERMS >= PERM_RATE_ALERT_PER_RUN || _pday >= PERM_RATE_ALERT_PER_DAY )); then
+        local _key
+        if (( _unreadable )); then
+            # Still ratchet the RUN arm. A flat "perm_rate.unreadable" is one
+            # static key, so a live wave placing perms every scan would page
+            # once and then be suppressed for ALERT_REPEAT_TTL — the day arm
+            # being blind must not also disarm the arm that can still see.
+            local _rk; _rk="$(_swatter_perm_rate_hw_key "${SWATTER_RUN_PERMS}" 0)"
+            _key="perm_rate.unreadable.${_rk#perm_rate.}"
+        else
+            _key="$(_swatter_perm_rate_hw_key "${SWATTER_RUN_PERMS}" "${_pday}")"
+        fi
         swatter_notify "swatter perm-rate tripwire on $(hostname -s 2>/dev/null)" \
-            "Placed ${SWATTER_RUN_PERMS} permanent block(s) this run; ${_pday} in the last 24h (thresholds ${PERM_RATE_ALERT_PER_RUN}/run, ${PERM_RATE_ALERT_PER_DAY}/day). Review: swatter escalate-preview; undo: swatter rollback-ladder --since <ts>." \
-            "$(_swatter_perm_rate_key)"
+            "Placed ${SWATTER_RUN_PERMS} permanent block(s) this run; ${_pday_txt} in the last 24h (thresholds ${PERM_RATE_ALERT_PER_RUN}/run, ${PERM_RATE_ALERT_PER_DAY}/day). Review: swatter escalate-preview; undo: swatter rollback-ladder --since <ts>." \
+            "$_key"
+    else
+        # Nothing tripped: the incident (if there was one) is over. Drop the
+        # high-water so the next wave is judged on its own merits.
+        local _hwf
+        if _hwf="$(_swatter_perm_rate_hw_file)" && [[ -e "$_hwf" ]]; then
+            # A clear that silently fails leaves the band wedged high; the mtime
+            # staleness check above bounds the damage, but say so either way.
+            rm -f "$_hwf" 2>/dev/null || log_warn "perm-rate: could not clear high-water ${_hwf} (band may stay latched until it ages out)"
+        fi
     fi
 }

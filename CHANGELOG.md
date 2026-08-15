@@ -5,6 +5,57 @@ All notable changes to Swatter are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **The perm-rate tripwire counted the wrong thing and then repeated itself
+  hourly.** On the reference host it sent four SMS in one morning for a day whose
+  honest figure was unremarkable. Three defects, all in the day arm:
+  - **`swatter_store_perm_count_since` was a bare `COUNT(*)`**, so an IP blocked
+    on both planes counted twice. The per-run counter has excluded that second
+    leg since it was written (`_swatter_apply_plane`'s `audit_action` guard,
+    whose comment names the exact hazard); this arm never got the same treatment.
+    Now `COUNT(DISTINCT ip)`. Measured effect: a rolling 24h that read **73** now
+    reads **43**, the number of IPs actually escalated to a perm.
+    **Deliberately NOT filtered on `ttl=0`.** A Cloudflare perm is TTL-emulated,
+    so that filter looks like the honest definition of "permanent" — but on a
+    CF-fronted host it discards most perm decisions, and on an all-proxied host
+    it pins the arm at 0 forever, which is an alarm that cannot fire. It dropped
+    13 of 43 distinct IPs in a day on the reference host. The run arm counts CF
+    primaries, so filtering here would also make the two figures in one SMS mean
+    different things.
+  - **The alert key was bucketed by the hour**, which defeated
+    `_notify_ratelimited` entirely: `ALERT_REPEAT_TTL` (6h) can only suppress a
+    repeat if the key is stable, and a fresh key every hour meant no ceiling at
+    all. Because the day arm reads a *trailing* 24h count, once it crosses it
+    stays crossed — so one incident re-alerted hourly for a full day, and two
+    alerts can land five minutes apart when a run straddles the boundary
+    (observed: 10:55 and 11:00). The key is now the incident's **high-water
+    severity band**, ratcheted up only, so worsening alerts and steady *or
+    improving* does not. A raw current band would have re-alerted on the way
+    down — a page on recovery, the same defect wearing a different hat.
+  - **An unreadable ledger was reported as a quiet day.** A lock timeout or a
+    corrupt DB left `_sqlq` returning empty, which the caller coerced to `0`, so
+    the one arm watching slow accumulation went silent at exactly the moment it
+    was most needed. It now returns `UNREADABLE` and trips the alarm. A flatfile
+    or never-scanned host still reports `0` — no ledger to read is not a failed
+    read.
+
+  None of this was reachable by the suite: the fixtures seeded five distinct IPs
+  with one row each, so no dual-plane pair, no repeat, no decay, and no unreadable
+  store ever existed. Added coverage for every shape — including end-to-end cases
+  through `swatter_scan`, because the helper-level tests alone still allowed every
+  *call-site* contract to be reverted with the suite green. Verified by mutation:
+  nine reverts of these fixes, each caught.
+
+  Known and deliberately out of scope: `swatter_notify` writes its rate-limit
+  marker before dispatching sends into a background subshell, and no channel
+  reports success, so a total delivery failure still spends the key for
+  `ALERT_REPEAT_TTL`. The old hour-bucketed key accidentally retried around this;
+  a stable key does not. Fixing it means changing the return contract of all four
+  channel functions, which touches every alert this tool sends and deserves its
+  own change.
+
 ## [2.16.0] - 2026-08-13
 
 ### Added

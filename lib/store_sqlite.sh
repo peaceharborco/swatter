@@ -287,8 +287,39 @@ swatter_store_temps_all_critical_single() {
     (( tot > 0 && tot == crit )) && echo 1 || echo 0
 }
 
-# Enforced perm decisions since <ts> — the durable rolling source for the
-# perm-rate tripwire (decisions.jsonl rotates; the ledger does not).
+# Distinct IPs given a permanent-ban DECISION since <ts> — the durable rolling
+# source for the perm-rate tripwire (decisions.jsonl rotates; the ledger does
+# not).
+#
+# The unit is "distinct IPs the ladder escalated to perm", NOT "rows written":
+#
+#   DISTINCT ip    One IP blocked on both planes writes one row per plane, in
+#                  the same second. The per-run counter already excludes the
+#                  second leg (see _swatter_apply_plane's audit_action guard,
+#                  whose comment names this exact hazard); this one did not.
+#                  It also collapses an IP re-permed later in the window — 662
+#                  all-time perm rows on cds1 cover 653 distinct IPs.
+#
+# DELIBERATELY NOT FILTERED ON ttl. A Cloudflare 'perm' is TTL-emulated (ttl
+# rewritten to the ladder max at lib/score.sh's CF branch, later swept), so
+# `ttl=0` looks like an appealing proxy for "truly permanent" — and it is, as a
+# statement about the row. It is the wrong question. On a Cloudflare-fronted
+# host most offenders classify VIA_CF, so `ttl=0` would drop the majority of
+# perm decisions and, on a host where every offender is proxied, would pin this
+# arm at 0 forever — an alarm that cannot fire. Measured on cds1: it discarded
+# 13 of 43 distinct IPs in one day and 100 of 500 over 30 days. The run arm
+# counts CF primaries (its guard is audit_action, not ttl), so filtering here
+# would also leave the two arms measuring different things while the SMS reports
+# them side by side. The alerting plane fails toward the LOUDER reading.
+#
+# Measured 2026-08-15: COUNT(*) read 73 where the distinct-IP figure was 43,
+# tripping a 70/day threshold the real rate had not reached.
+#
+# Returns a plain integer, or the string UNREADABLE when the ledger EXISTS but
+# could not be read (locked, corrupt, schema drift). A failed read must never be
+# reported as 0 — that is absence, and the caller trips the alarm on UNREADABLE
+# rather than concluding a quiet day. A flatfile store or a host that has never
+# scanned has no ledger to read and is honestly 0, which is not the same thing.
 #   swatter_store_perm_count_since <epoch>
 swatter_store_perm_count_since() {
     local since="${1:-0}"
@@ -299,7 +330,13 @@ swatter_store_perm_count_since() {
     # fails on a missing table. Check for the file first so a query never plants
     # a phantom DB (mirrors the guard swatter_escalate_preview added).
     [[ -e "$(_swatter_db)" ]] || { echo 0; return 0; }
-    _sqlq "SELECT COUNT(*) FROM actions WHERE action='perm' AND dry_run=0 AND ts>${since};"
+    local out
+    out="$(_sqlq "SELECT COUNT(DISTINCT ip) FROM actions WHERE action='perm' AND dry_run=0 AND ts>${since};")"
+    # The DB exists and we asked it a question, so anything that is not a number
+    # means the READ failed — _sqlq returns empty stdout on a lock timeout or a
+    # corrupt file. Say so; do not coerce it to a quiet 0.
+    [[ "$out" =~ ^[0-9]+$ ]] || { echo UNREADABLE; return 0; }
+    printf '%s' "$out"
 }
 
 # Is the IP already permanently blocked?
