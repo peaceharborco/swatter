@@ -83,6 +83,48 @@ existing host. Diff `.example` after any upgrade.
       cluster to land. Read the next digest that carries fatals before trusting
       the feature.
 
+## A failed send spends the alert's dedup key (open 2026-08-15) — SPEC READY
+
+**Spec:** `docs/superpowers/specs/2026-08-15-notify-delivery-failure-suppresses-retry-design.md`
+(rev 1). Nothing implemented yet.
+
+`lib/notify.sh` writes the rate-limit marker BEFORE sending, and no channel reports
+whether it succeeded — every `_notify_*` returns 0 for "sent", "failed" and "not
+configured" alike. A total delivery failure therefore spends the key for the full
+`ALERT_REPEAT_TTL` (6h) while the condition is still live.
+
+**All three ops-critical alerts route through it** — fail-closed (`lib/score.sh:641`),
+circuit breaker (`:786`), perm-rate tripwire (`:814`). The **circuit breaker is the
+worst case and it predates everything recent**: its key is the literal string
+`circuit_breaker`, so a Twilio outage at the moment `MAX_BLOCKS_PER_RUN` trips buys 6h
+of silence while the scan is actively dropping blocks.
+
+**Why now:** the perm-rate key used to be hour-bucketed, which accidentally retried a
+failed send on the next hour's new key — a side effect of the very bug that was
+producing alert spam. Stabilising the key (v2.16.1 branch) removed the accident and
+left this exposed. It did not create it.
+
+**The design is not novel** — `lib/alerts.sh` already does this correctly for the
+nightly status SMS, records the marker only inside `if swatter_send_sms …; then`, and
+states the rule in a comment: *"a failed send must not suppress the retry."* This is
+making `notify.sh` follow a convention its sibling already follows. The subtle part —
+"intentionally disabled" must count as success, not failure — is already solved there.
+
+**Shape:** three-state channel returns (0 sent / 1 failed / 2 not configured); an
+`attempt <epoch>` marker on a short `ALERT_ATTEMPT_TTL` (~one scan interval) promoted
+to `sent <epoch>` on the full TTL by the background subshell when any channel
+succeeds. Sends stay backgrounded so the `*/5` scan is never delayed.
+
+⚠️ **The migration is the risky half.** Existing markers are empty files. They must
+read as `sent`, or the upgrade lapses every live suppression on every host within 5
+minutes and the tool's first act after an alert-spam fix is a burst of alert spam.
+§2.3 and test 4 in the spec.
+
+Found by `grok-4.6` + `grok-4.5`, both rounds of the perm-rate review; deferred there
+on scope (it changes the return contract of four functions used by every alert), not
+on merit. Retire the CHANGELOG's "Known and deliberately out of scope" paragraph in
+whatever commit lands this.
+
 ## ⏭️ NEXT PICKUP: gate D
 
 **Everything is unfrozen and deployed as of 2026-08-11.** cds1 runs **v2.15.1**
