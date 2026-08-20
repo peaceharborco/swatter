@@ -221,13 +221,12 @@ saved list the gate says never to review.
 
 **Thu 08-20 → Sun 08-23 — do now; nothing here is freshness-sensitive**
 
-- [ ] **Decide the AbuseIPDB freeze question first** (the ⚠️ block in the gate D
-      section). It is the only open item that changes what the widen *does*, it
-      has no dependency on the floor, and deciding it late is how it gets decided
-      by default. If re-freezing: back up `/etc/swatter/swatter.conf`, set
-      `ABUSEIPDB_REPORT="false"`, confirm with `swatter test-config`. Config is
-      read per-process, so it takes effect on the next `*/5` scan; no cron hold
-      (same procedure as the 2026-08-04 tripwire knobs).
+- [x] **AbuseIPDB freeze question — DECIDED 2026-08-20.** Re-freeze
+      `ABUSEIPDB_REPORT="false"` across the widen and its 48h baseline; swarm
+      stays on. Rationale and the asymmetry behind it are in the ⚠️ block of the
+      gate D section. **Nothing to do today** — the flip is step 1 of the widen
+      block below, because until the window is actually 30d there is no risk to
+      cover and an early flip only forfeits ~21 legitimate reports/day.
 - [ ] **Re-baseline any `swatter top` triage notes taken before 2026-07-27** —
       the open precondition further down. Independent of the floor, and it feeds
       the review, so it wants to be done before the review starts, not during it.
@@ -261,11 +260,27 @@ saved list the gate says never to review.
       allowlisted *first*. This is a multi-session job at 4.9× the window=7
       population — do not compress it to fit a date. The floor is a floor, not a
       schedule.
-- [ ] Only after the review: set `REPEAT_WINDOW_DAYS=30`.
+- [ ] **Step 1 — freeze AbuseIPDB, BEFORE the knob change.** Back up
+      `/etc/swatter/swatter.conf` (dated `.bak`, per the 2026-08-04 precedent),
+      set `ABUSEIPDB_REPORT="false"`, confirm with `swatter test-config` that the
+      line reads `abuseipdb reporting: off` (that is the exact string —
+      `bin/swatter:457`; anything other than the literal `true` renders `off`).
+      Config is read per-process, so
+      it takes effect on the next `*/5` scan; no cron hold. Leave
+      `SWARM_PUBLISH="true"` alone — toggling swarm would flush its whole
+      deferred backlog on re-enable. Do this first: a widen that runs even one
+      `*/5` with reporting live can publish a false positive that cannot be
+      retracted.
+- [ ] **Step 2 — only after the review AND step 1:** set `REPEAT_WINDOW_DAYS=30`.
 - [ ] Watch the first 48h to establish gate D's **own** rate baseline. Judge
       against that, never against gate C's band. `PERM_RATE_ALERT_*` only
       notifies — a silent tripwire is not a green light, and ladder perms keep
       landing every `*/5` while you wait.
+- [ ] **After the 48h baseline reads clean — restore `ABUSEIPDB_REPORT="true"`.**
+      Confirm with `test-config`. Nothing replays: the arm has no cursor, so the
+      perms placed during the freeze are simply never reported, which is the
+      accepted cost of the decision. If the baseline does *not* read clean, the
+      freeze stays on through the back-out.
 - [ ] Back-out, if needed, is `swatter rollback-ladder --since <ts>` — **never** a
       config revert, which does not undo bans already placed. Verify every unblock
       on both planes; the exit code is not enough.
@@ -689,14 +704,25 @@ widen produces publishes immediately. Swarm is recallable (`/purge`, 7-day TTL).
 **AbuseIPDB is not — there is no delete API**, so a wrong perm is published under
 our reporter identity permanently.
 
-- [ ] **Operator decision, before setting `REPEAT_WINDOW_DAYS=30`:** either
-      re-freeze `ABUSEIPDB_REPORT="false"` across the widen and its 48h baseline
-      (swarm can stay on — it is recallable), or accept irreversible publication
-      of whatever the widen produces. There is no third option and no default;
-      leaving it unexamined *is* choosing the second. Note the asymmetry recorded
-      above: re-enabling swarm later flushes the whole deferred backlog at once,
-      whereas `ABUSEIPDB_REPORT` has no cursor and no replay, so a re-freeze
-      costs only the perms placed while it is off.
+- [x] **DECIDED 2026-08-20 (owner): re-freeze AbuseIPDB across the widen.**
+      `ABUSEIPDB_REPORT="false"` for the widen and its 48h baseline; **swarm stays
+      on** — it is recallable via `/purge` on a 7-day TTL, so it carries no
+      irreversible exposure. The alternative was accepting permanent publication
+      of whatever false positives the 7d → 30d widen manufactures, under our
+      reporter identity, with no delete API to walk it back.
+
+      **The flip happens at the widen, not now.** Until `REPEAT_WINDOW_DAYS=30`
+      is actually set, the window is still 7d and the risk this freeze exists to
+      cover does not exist — flipping early would only forfeit ~21 legitimate
+      reports/day for nothing. It is wired in as step 1 of the widen block in the
+      run-up plan above, ahead of the knob change, so it cannot be forgotten.
+
+      The asymmetry that makes this cheap, restated so nobody second-guesses it
+      mid-widen: `ABUSEIPDB_REPORT` has one caller (`lib/score.sh:210`, inline at
+      block time), no cursor and no replay, so a freeze costs exactly the perms
+      placed while it is off and nothing queues up. Swarm is the opposite —
+      `swatter_swarm_publish` defers rather than suppresses, so toggling it would
+      flush the entire backlog at once on re-enable.
 
 **Gate D has a hard date floor of 2026-08-26 22:40 UTC, discovered 2026-08-01.**
 `REPEAT_N_CRITICAL_SINGLE` does not merely stay inert on unstamped temps — it
