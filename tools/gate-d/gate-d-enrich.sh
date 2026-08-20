@@ -7,8 +7,13 @@
 # docs/superpowers/specs/2026-08-20-gate-d-enrich-review-grok.md — every design
 # choice below that looks fussy is a Blocker that review found.
 #
-# READ-ONLY against swatter state. It reads the ledger, the domlogs and the
-# policy files; it writes ONLY inside --out. In particular it deliberately does
+# READ-ONLY against swatter state: it never writes under $STATE_DIR and never
+# changes a ban, an allowlist or a config. Its own output goes under --out. It is
+# NOT literally "writes only inside --out" — an earlier version of this header
+# claimed that and was wrong: the sourced never-block helpers plant short-lived
+# mktemps under $TMPDIR (_ip_in_cidr_list, _swatter_csf_allow_file, and the
+# OPERATOR_IPS overlay). The csf.allow one is cleaned by the EXIT trap; the
+# others are per-call and removed inline. In particular it deliberately does
 # NOT call swatter_is_never_block or swatter_asn_resolve, because those write
 # per-IP cache files under $STATE_DIR (lib/allowlist.sh:283-284, lib/asn.sh:44)
 # — ~1000 writes as root racing the */5 scan, and a missed forward-confirm
@@ -153,12 +158,36 @@ case "$OUT" in
         note "         customer IP-to-vhost mappings. Prefer /root/gate-d-review/." ;;
 esac
 
+# The never-block files get no usability guard from swatter, and _inert_reason
+# consults them for every candidate. One over-broad line in allow.cidr or
+# monitoring.cidr would mark EVERY row inert — the review would report "1000
+# inert, 0 to review" and look like a clean run while having examined nothing.
+# Found by the Claude-side sweep, not by either model.
+for _nb in "${OPERATOR_ALLOW_FILE:-}" "${MONITORING_RANGES_FILE:-}"; do
+    [[ -s "$_nb" ]] || continue
+    if ! sed 's/#.*//' "$_nb" \
+         | INTEL_FEED_MIN_PREFIX4="${SHARED_EGRESS_MIN_PREFIX4:-16}" \
+           INTEL_FEED_MIN_PREFIX6="${SHARED_EGRESS_MIN_PREFIX6:-32}" \
+           swatter_intel_cidr_feed_ok 2>/dev/null; then
+        die "never-block file ${_nb} contains an invalid or over-broad range. Every
+     candidate would be marked inert and the review would silently examine
+     nothing. Fix the file before running."
+    fi
+done
+
 CAND="${OUT}/candidates.tsv"
 TRAFFIC="${OUT}/traffic.tsv"
 INTEL="${OUT}/intel.tsv"
 ENRICHED="${OUT}/enriched.tsv"
 BUCKETS="${OUT}/buckets.txt"
 DECISIONS="${OUT}/decisions.tsv"
+
+# Invalidate the previous round's published pair BEFORE overwriting any input.
+# Otherwise a kill during the multi-minute lookup phase leaves a stale
+# enriched.tsv + buckets.txt — still ending in "COMPLETE n/n" — sitting beside
+# a brand-new candidates.tsv, and its audit sample reads as authoritative for a
+# list it was never computed from.
+rm -f -- "$ENRICHED" "$BUCKETS"
 
 # ------------------------------------------------------------ phase 1: parse
 "$AWK" -F'\t' 'NF==4 && $1!="ip" && $1!="" { print }' "$PREVIEW" > "$CAND"
@@ -264,8 +293,9 @@ intel_ok=0
 if [[ -f "$DB" ]]; then
     sqlite3 -cmd '.timeout 5000' -separator $'\t' "$DB" \
         "SELECT a.ip, GROUP_CONCAT(a.reason, ' ') FROM actions a
-           JOIN (SELECT ip, MAX(ts) mt FROM actions GROUP BY ip) m
+           JOIN (SELECT ip, MAX(ts) mt FROM actions WHERE dry_run=0 GROUP BY ip) m
              ON a.ip = m.ip AND a.ts = m.mt
+          WHERE a.dry_run=0
           GROUP BY a.ip;" > "$INTEL" 2>/dev/null
     intel_ok=$?
 else
@@ -285,12 +315,72 @@ fi
 # on the AS206092 / WARP cohort — the arm being off, the ASN list being
 # unreadable, and the CIDR file being rejected — each ending in an irreversible
 # public report against an address the enforcer itself would cap.
+# _asn_is_shared <asn>... — 0 if ANY supplied ASN is on the shared list.
+# Two hazards, both reproduced:
+#  - The `|| [[ -n "$line" ]]` is the house idiom (lib/common.sh:616-621). cds1's
+#    list is a SINGLE line; hand-edited without a trailing newline, `grep` (which
+#    _swatter_shared_egress_asns_usable uses) still sees it and reports the arm
+#    usable, while a bare `while read` never yields it. The arm then reports "not
+#    shared" for the one ASN it exists to catch.
+#  - Every candidate ASN is tested, not just the first. See _asn_of.
+_asn_is_shared() {
+    local line f a
+    [[ -f "$SE_ASNS" ]] || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"; line="${line%%#*}"; f="${line//[[:space:]]/}"
+        [[ -n "$f" ]] || continue
+        for a in "$@"; do [[ "$f" == "$a" ]] && return 0; done
+    done < "$SE_ASNS"
+    return 1
+}
+
+# PROBE THE MATCHERS, DO NOT TRUST THE VALIDATORS. Round 4 found that
+# `se_cidr_ok && se_asns_ok` proves only "both files passed a different parser",
+# not "this IP was matched by both arms" — and those are different languages:
+#   * _swatter_shared_egress_asns_usable is `grep -qE '^[[:space:]]*[0-9]'`, so a
+#     documentation line like "1. Add your ASNs below" passes, while the matcher
+#     strips whitespace to "1.AddyourASNsbelow" and can never equal an ASN.
+#   * _swatter_shared_egress_cidr_usable is sed+bash, but the IPv4 matcher inside
+#     _cidr_overlaps_file is a separate awk process. If that awk fails, the
+#     function returns 1 — identical to "not in the file". WARP v4
+#     (104.28.0.0/16) is CIDR-only, so that single return code is its ONLY
+#     protection.
+# So: take an entry we KNOW is in each file and require the real matcher to find
+# it. A matcher that cannot match its own file is a broken arm, not a clean miss.
+# NOTE: deliberately the LAST entry. The whole trailing-newline defect class
+# drops the FINAL line, so probing the first entry would prove nothing about the
+# one actually at risk — and this script may be pointed at an installed
+# /usr/local/lib/swatter that predates the library-side fix.
+_probe_cidr_arm() {
+    local tok net
+    tok="$(sed 's/#.*//' "$SE_CIDR" 2>/dev/null | tr -d '[:blank:]' \
+           | grep -E '^[0-9a-fA-F:.]+/[0-9]+$' | tail -1)" || return 1
+    [[ -n "$tok" ]] || return 1
+    net="${tok%%/*}"                      # a prefix always contains its own network address
+    _cidr_overlaps_file "$net" "$SE_CIDR" 2>/dev/null
+}
+_probe_asn_arm() {
+    local tok
+    tok="$(sed 's/#.*//' "$SE_ASNS" 2>/dev/null | tr -d '[:blank:]' \
+           | grep -E '^[0-9]+$' | tail -1)" || return 1
+    [[ -n "$tok" ]] || return 1
+    _asn_is_shared "$tok"
+}
+
 se_enabled=1
 [[ "${SHARED_EGRESS_ENABLE:-true}" == "true" ]] || se_enabled=0
 se_cidr_ok=0; se_asns_ok=0
 if (( se_enabled )); then
-    _swatter_shared_egress_cidr_usable 2>/dev/null && se_cidr_ok=1
-    _swatter_shared_egress_asns_usable 2>/dev/null && se_asns_ok=1
+    if _swatter_shared_egress_cidr_usable 2>/dev/null && _probe_cidr_arm; then
+        se_cidr_ok=1
+    else
+        note "shared-egress CIDR arm did NOT match its own first entry — arm treated as broken"
+    fi
+    if _swatter_shared_egress_asns_usable 2>/dev/null && _probe_asn_arm; then
+        se_asns_ok=1
+    else
+        note "shared-egress ASN arm did NOT match its own first entry — arm treated as broken"
+    fi
 fi
 # A policy file whose last line lacks a trailing newline is read differently by
 # its validator than by its matcher: _cidr_overlaps_file's IPv6 branch
@@ -301,12 +391,12 @@ fi
 # $( ) strips trailing newlines, so a file ending in "\n" yields the empty
 # string and one ending in any other byte yields that byte. No od, no escaping.
 _ends_with_newline() { [[ -s "$1" ]] || return 1; [[ -z "$(tail -c1 -- "$1")" ]]; }
-for _pf in "$SE_CIDR:se_cidr_ok" "$SE_ASNS:se_asns_ok"; do
-    _f="${_pf%:*}"; _v="${_pf##*:}"
+for _f in "$SE_CIDR" "$SE_ASNS"; do
     if [[ -s "$_f" ]] && ! _ends_with_newline "$_f"; then
-        note "WARNING: ${_f} has no trailing newline — its last line is invisible to"
-        note "         swatter's own IPv6 matcher. Treating that arm as unusable."
-        printf -v "$_v" '%s' 0
+        note "NOTE: ${_f} has no trailing newline. Historically that made the last"
+        note "      line invisible to the matcher while validators still passed the"
+        note "      file. The last-entry probe below is what actually decides now —"
+        note "      if it matches, the file is readable and this is informational."
     fi
 done
 
@@ -326,16 +416,26 @@ while IFS=$'\t' read -r i r || [[ -n "$i" ]]; do [[ -n "$i" ]] && INTEL_OF["$i"]
 # the enforcer capped months ago could be missed. Both are vetoes, so read the
 # whole history for them.
 declare -A FLOOD_EVER=() SECAP_EVER=()
+hist_ok=1
 if [[ -f "$DB" ]]; then
+    # This is a full-table LIKE scan of an append-only table, racing the */5
+    # scan for the same lock. If it fails, both maps come back empty — which is
+    # indistinguishable from "this IP was never capped and never flooded". Track
+    # the status so the sort can refuse to clear anything.
+    _hist="$(sqlite3 -cmd '.timeout 5000' -separator $'\t' "$DB" \
+        "SELECT DISTINCT ip, 'flood' FROM actions WHERE reason LIKE '%request_flood%'
+         UNION SELECT DISTINCT ip, 'secap' FROM actions
+           WHERE reason LIKE '%shared-egress=%' OR reason LIKE '%perm-capped%';" 2>&1)" || hist_ok=0
+    case "$_hist" in *"Error"*|*"error"*|*"locked"*) hist_ok=0 ;; esac
     while IFS=$'\t' read -r i k || [[ -n "$i" ]]; do
         [[ -n "$i" ]] || continue
         [[ "$k" == "flood" ]] && FLOOD_EVER["$i"]=1
         [[ "$k" == "secap" ]] && SECAP_EVER["$i"]=1
-    done < <(sqlite3 -cmd '.timeout 5000' -separator $'\t' "$DB" \
-        "SELECT DISTINCT ip, 'flood' FROM actions WHERE reason LIKE '%request_flood%'
-         UNION SELECT DISTINCT ip, 'secap' FROM actions
-           WHERE reason LIKE '%shared-egress=%' OR reason LIKE '%perm-capped%';" 2>/dev/null)
+    done <<< "$_hist"
+else
+    hist_ok=0
 fi
+(( hist_ok )) || note "WARNING: ledger history query failed — request_flood and shared-egress-capped vetoes are BLIND; forcing every non-inert row to bucket 3"
 
 declare -A TRAF_OF=()
 while IFS= read -r l || [[ -n "$l" ]]; do [[ -n "$l" ]] && TRAF_OF["${l%%$'\t'*}"]="$l"; done < "$TRAFFIC"
@@ -361,6 +461,14 @@ _asn_of() {
     # several RRs. Any non-digit token makes the whole answer ambiguous -> the
     # caller sends the row to human review.
     local -a asns=(); local rr tok
+    # B-M3: query as an ABSOLUTE name (trailing dot). Without it a resolver
+    # search list can append a local domain and answer from somewhere that is
+    # not Cymru; a numeric answer from there would "clear" the row.
+    # A-M4: honour dig's exit status — a truncated or failed lookup that still
+    # emitted digit-looking bytes must not count as a successful evaluation.
+    local _dig_out _dig_rc=0
+    _dig_out="$(dig +short +time=2 +tries=1 TXT "${rev}." 2>/dev/null)" || _dig_rc=$?
+    (( _dig_rc == 0 )) || { printf ''; return 1; }
     while IFS= read -r rr || [[ -n "$rr" ]]; do
         [[ -n "$rr" ]] || continue
         rr="${rr%\"}"; rr="${rr#\"}"
@@ -369,7 +477,7 @@ _asn_of() {
             [[ "$tok" =~ ^[0-9]+$ ]] || { printf ''; return 1; }
             asns+=("$tok")
         done
-    done < <(dig +short +time=2 +tries=1 TXT "$rev" 2>/dev/null)
+    done <<< "$_dig_out"
     (( ${#asns[@]} > 0 )) || { printf ''; return 1; }
     printf '%s' "${asns[*]}"
 }
@@ -427,24 +535,6 @@ _inert_reason() {
 _cleanup() { [[ -n "${SWATTER_CSF_ALLOW_FILE:-}" ]] && rm -f -- "${SWATTER_CSF_ALLOW_FILE}"; }
 trap _cleanup EXIT
 
-# _asn_is_shared <asn>... — 0 if ANY supplied ASN is on the shared list.
-# Two hazards, both reproduced:
-#  - The `|| [[ -n "$line" ]]` is the house idiom (lib/common.sh:616-621). cds1's
-#    list is a SINGLE line; hand-edited without a trailing newline, `grep` (which
-#    _swatter_shared_egress_asns_usable uses) still sees it and reports the arm
-#    usable, while a bare `while read` never yields it. The arm then reports "not
-#    shared" for the one ASN it exists to catch.
-#  - Every candidate ASN is tested, not just the first. See _asn_of.
-_asn_is_shared() {
-    local line f a
-    [[ -f "$SE_ASNS" ]] || return 1
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        line="${line%$'\r'}"; line="${line%%#*}"; f="${line//[[:space:]]/}"
-        [[ -n "$f" ]] || continue
-        for a in "$@"; do [[ "$f" == "$a" ]] && return 0; done
-    done < "$SE_ASNS"
-    return 1
-}
 
 # ------------------------------------------------------------ phase 4: bucket
 printf 'ip\ttemps_prior\tlast_temp_utc\tstatus\tinert\tasn\tptr\tptr_confirmed\tvhost_top\treqs\tserved\tua_present\tua_empty\tua_distinct\tbrowser\tpaths\tbadlines\tintel\tbucket\twhy\n' > "${ENRICHED}.partial"
@@ -481,9 +571,11 @@ while IFS=$'\t' read -r ip temps last status || [[ -n "$ip" ]]; do
     # that served anything landed in bucket 3 as an ordinary review row — safer
     # than bucket 2, but still wrong: a human can mark it ban-ok, which is
     # exactly what the inert bucket exists to prevent.
-    # Skipped entirely when shared-egress is not fully evaluable: there is
-    # nothing the lookup could decide, and it would be ~1000 serial digs to
-    # produce an answer we are already refusing to trust.
+    # Gated on se_asns_ok alone, NOT se_evaluable: the arms are independent for
+    # deciding INERT (production does the same, lib/asn.sh:145-151). Only
+    # CLEARING a row for bucket 2 needs both arms, and that is enforced in the
+    # sort below. Skipping it when the ASN arm is broken also avoids ~1000
+    # serial digs for an answer we would refuse to trust anyway.
     asn_ok=1
     if [[ -z "$inert" ]] && (( se_enabled && se_asns_ok )); then
         if asn="$(_asn_of "$ip")" && [[ -n "$asn" ]]; then
@@ -529,6 +621,8 @@ while IFS=$'\t' read -r ip temps last status || [[ -n "$ip" ]]; do
         bucket=3; why="unparseable-log-lines:${badl}"
     elif (( flood == 1 )); then
         bucket=3; why="request_flood"          # spec says human; now a real veto
+    elif (( hist_ok == 0 )); then
+        bucket=3; why="ledger-history-unreadable-vetoes-blind"
     elif (( se_evaluable == 0 )); then
         bucket=3; why="shared-egress-not-evaluable"
     elif (( asn_ok == 0 )); then

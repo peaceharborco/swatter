@@ -475,3 +475,80 @@ killed partial append or a hand-edit could bite — but `_cf_ref_exists` is awk 
 *would* see such a line while the upsert/sweep loops drop it, which by that
 file's own comment means "an unsweepable permanent ban". A defensible scope cut,
 not a proof of safety.
+
+---
+
+# Round 4 (2026-08-20) — the fourth route, and why no review found the fifth
+
+Both models HOLD again. This time they converged on one sentence, and pass A put
+it best:
+
+> the triple `se_enabled=1, se_cidr_ok=1, se_asns_ok=1` is **"both files passed a
+> different parser"**, not **"this IP was matched by both arms."**
+
+The `se_evaluable` gate added in round 3 proved a *weaker proposition* than the
+one it needed to prove. Two concrete exploits of that gap:
+
+- **The validator and the matcher speak different languages.**
+  `_swatter_shared_egress_asns_usable` is `grep -qE '^[[:space:]]*[0-9]'`, so a
+  documentation line like `1. Add your ASNs below` passes it — while the matcher
+  strips whitespace to `1.AddyourASNsbelow` and can never equal an ASN. Arm
+  reports healthy, matches nothing, AS206092 clears into bucket 2.
+- **`_cidr_overlaps_file` returns 1 for "not in the file" AND for "awk failed".**
+  Its IPv4 path is a separate awk process that the usability check never
+  exercises. WARP v4 (`104.28.0.0/16`) is CIDR-only and its Cymru origin is
+  13335, which the shipped ASN list *deliberately never contains* — so a
+  successful ASN lookup returning 13335 is **false confidence**, and clearance
+  rests entirely on that one ambiguous return code.
+
+**The fix stops trusting validators and probes the actual matchers.** Take an
+entry that is provably in each policy file and require the real matcher to find
+it; a matcher that cannot match its own file is a broken arm, not a clean miss.
+The probe deliberately uses the **last** entry, because the whole
+trailing-newline defect class drops the final line — and because this script may
+be pointed at an installed `/usr/local/lib/swatter` predating the library fix.
+
+That probe also **subsumed and corrected an over-strict guard of my own**: round
+3 had made a missing trailing newline mark an arm unusable. With a last-entry
+probe that is both redundant and harmful — it disabled an arm that demonstrably
+worked. Downgraded to a note.
+
+Also folded in: the ledger history query (a full-table scan racing the `*/5`
+scan's lock) now reports failure instead of returning empty and reading as "never
+capped"; the MAX(ts) intel query is `dry_run=0`-filtered so report-mode activity
+cannot supply the hard intel that skips human review; `_asn_of` honours dig's
+exit status and queries an absolute name; the published pair is invalidated at
+the *start* of a run, not just at publish; and the never-block files finally get
+a poison guard — one over-broad line in `allow.cidr` would have marked every
+candidate inert and reported "1000 inert, 0 to review" as a clean run. That last
+one was found by the Claude-side sweep, not by either model.
+
+## The finding that matters most, and it is not a bug
+
+Round 4's Majors included, from both models independently: **no tests for this
+script had ever been committed.** Rounds 1-3 claimed unit verification; that
+testing was ad-hoc and never entered the tree. `test/trailing_newline_test.sh`
+exercises `swatter_is_shared_egress` — a function this script deliberately does
+not call.
+
+So `test/gate_d_enrich_test.sh` now runs the real script end-to-end against
+fixtures, with `dig` stubbed for determinism, one case per route every round
+found, plus a positive control so the suite cannot pass by sorting everything to
+human review. It is mutation-verified.
+
+**Writing it immediately found a defect four review rounds had missed:**
+`_probe_asn_arm` called `_asn_is_shared` before it was defined, so the ASN arm
+was *always* broken and no row could ever reach bucket 2. Fail-safe — and it made
+the tool useless, since every candidate would land in human review. Four rounds
+of careful reading by two models did not catch it, because **not one of them ever
+executed the script.**
+
+That is the lesson worth keeping from this whole exercise. Adversarial reading
+found five subtle logic defects that tests would likely never have caught. The
+first test run found one that no amount of reading did. Neither substitutes for
+the other.
+
+## Status
+
+Both awk dialects green under a non-UTC TZ; `gate_d_enrich_test: PASS=16 FAIL=0`.
+The script has **not** been re-reviewed since these round-4 fixes.
