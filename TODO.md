@@ -207,7 +207,71 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       append-only ledger — do not read a file count as "recent activity".
       `ABUSEIPDB_REPORT_TTL` is unset → default 900s.
 - [ ] **Gate D** (floor **2026-08-26 22:40 UTC**) is now the only remaining
-      scheduled work — see its section below; preconditions unchanged.
+      scheduled work — see its section below, and the dated run-up immediately
+      after this list.
+
+### 📅 Run-up plan, 2026-08-20 → the floor
+
+Written 2026-08-20 (Thu). **The floor is Wed 2026-08-26 22:40 UTC = 15:40 PDT.**
+The organising rule: the two freshness-sensitive checks and the preview must be
+run *after* the floor, so everything schedulable early is decision work, and
+everything after the floor is measurement then review. Do not pull the fresh runs
+forward to "get ahead" — a preview generated before the floor is exactly the
+saved list the gate says never to review.
+
+**Thu 08-20 → Sun 08-23 — do now; nothing here is freshness-sensitive**
+
+- [ ] **Decide the AbuseIPDB freeze question first** (the ⚠️ block in the gate D
+      section). It is the only open item that changes what the widen *does*, it
+      has no dependency on the floor, and deciding it late is how it gets decided
+      by default. If re-freezing: back up `/etc/swatter/swatter.conf`, set
+      `ABUSEIPDB_REPORT="false"`, confirm with `swatter test-config`. Config is
+      read per-process, so it takes effect on the next `*/5` scan; no cron hold
+      (same procedure as the 2026-08-04 tripwire knobs).
+- [ ] **Re-baseline any `swatter top` triage notes taken before 2026-07-27** —
+      the open precondition further down. Independent of the floor, and it feeds
+      the review, so it wants to be done before the review starts, not during it.
+- [ ] **Decide how the 615-row review gets recorded** and who does the
+      allowlisting. A sizing run of `escalate-preview --window 30` now is fine to
+      scope the hours — but the list that is actually reviewed must be
+      regenerated after the floor.
+
+**Mon 08-24 → Wed 08-26 (before 15:40 PDT) — hold**
+
+- [ ] Nothing to run. Keep reading the nightly digest (11:00 UTC / 04:00 PDT).
+      A RED in this window is almost certainly unrelated to gate D — check
+      whether the perm rate moved before treating it as one.
+- [ ] If any knob drifts, note it. Gate D's baseline assumes today's live values:
+      `window=7d`, `REPEAT_N=3`, `crit-single=4`, tripwire `5/run 70/day`.
+
+**Wed 08-26, after 15:40 PDT — the floor opens**
+
+- [ ] Re-run the unstamped-temp check with the **narrowed, pre-stamp-era**
+      definition (query and reasoning in limit 3 of the floor section). Expect the
+      07-21..27 block to have aged out, and expect post-v2.11.0 intel-driven rows
+      to remain — those read as negatives, not as a floor slip.
+- [ ] Re-run the `scanner_profile` audit fresh, from raw domlogs — not from
+      swatter's own evidence JSON, which folds UA and paths.
+- [ ] `swatter escalate-preview --window 30`, fresh.
+
+**Thu 08-27 onward — review, then widen**
+
+- [ ] **The 615-row human review** (ASN, PTR, customer mapping, plane). Anything
+      resembling NAT/CGNAT, mobile carrier, VPN exit, crawler or customer gets
+      allowlisted *first*. This is a multi-session job at 4.9× the window=7
+      population — do not compress it to fit a date. The floor is a floor, not a
+      schedule.
+- [ ] Only after the review: set `REPEAT_WINDOW_DAYS=30`.
+- [ ] Watch the first 48h to establish gate D's **own** rate baseline. Judge
+      against that, never against gate C's band. `PERM_RATE_ALERT_*` only
+      notifies — a silent tripwire is not a green light, and ladder perms keep
+      landing every `*/5` while you wait.
+- [ ] Back-out, if needed, is `swatter rollback-ladder --since <ts>` — **never** a
+      config revert, which does not undo bans already placed. Verify every unblock
+      on both planes; the exit code is not enough.
+
+None of this ships code, so the `/grok` gate does not bind the widen itself. It
+binds immediately if any of it turns into a code change.
 
 ### Deployed 2026-08-11 (v2.13.0) — do not redo
 
@@ -416,15 +480,20 @@ attacker a bypass via the 1.1.1.1 app.
       **1090 checked** against 1101 total because it skips the 11 report-mode
       residue rows (`perm=1` with no enforced perm action). Both differences are
       expected; neither is a miscount.
-- [ ] **Gate D interaction — now sharper after the 08-13 sweep.** Gate D's review
-      rule already says VPN exits get allowlisted first. At
+- [x] **Gate D interaction — SETTLED 2026-08-13, re-confirmed 2026-08-20.** Gate
+      D's review rule already says VPN exits get allowlisted first. At
       `REPEAT_WINDOW_DAYS=30` the WARP cohort's temps get a 4.3× wider window to
-      accumulate into perms, so settle this **before** the widen, not during the
-      615-row review. The sweep raises the stakes: the uncapped WARP **IPv6**
-      pool alone carries **209** temp-banned addresses, an order of magnitude more
-      than the IPv4 pool's 77, and every one of them gets that wider window. Cap
-      the three new ranges before widening, or gate D converts a known-shared
-      cohort into perms at scale.
+      accumulate into perms, so this had to be settled **before** the widen, not
+      during the 615-row review. The sweep raised the stakes: the uncapped WARP
+      **IPv6** pool alone carried **209** temp-banned addresses, an order of
+      magnitude more than the IPv4 pool's 77, and every one of them would get that
+      wider window. The requirement was to cap the three new ranges before
+      widening, or gate D converts a known-shared cohort into perms at scale.
+      **Done** — the ranges were applied to cds1 2026-08-13 17:56 UTC (see the
+      block above) and `swatter test-config` on 2026-08-20 still reports
+      `shared-egress: ENABLED`, **11 range(s)**, ASN arm live. A rejected file
+      would report the arm off instead, so that line is the live proof it
+      validates. Nothing blocks gate D here any more.
 
 **Verify unblocks on both planes — the exit code is not enough.**
 `swatter_store_unblock` runs at `bin/swatter:168` **before** the failure check
@@ -579,8 +648,10 @@ disturb the `rule=`-stamped ladder data the soak accumulates.
       `swatter escalate-preview --window 30` fresh (never review a saved
       list); human-review every candidate (ASN, PTR, customer mapping, plane;
       anything resembling NAT/CGNAT, mobile carrier, VPN exit, crawler, or
-      customer gets allowlisted first); confirm the gate B freeze is still
-      active (nothing to change here); set `REPEAT_WINDOW_DAYS=30`; watch the
+      customer gets allowlisted first); ~~confirm the gate B freeze is still
+      active (nothing to change here)~~ — **FALSE as of 2026-08-11, see "the
+      publication freeze has inverted" below; this step is now a decision, not a
+      confirmation**; set `REPEAT_WINDOW_DAYS=30`; watch the
       first 48h to establish gate D's own rate baseline (the decision to back
       out is judged against *that*, not the gate C band — and it is an
       **operator** decision: `PERM_RATE_ALERT_*` only notifies, there is no
@@ -600,6 +671,32 @@ disturb the `rule=`-stamped ladder data the soak accumulates.
       (~21/day). Swarm is the big-bang arm and is recallable (`/purge`, 7-day
       TTL); AbuseIPDB trickles and is **irreversible** (no delete API). Either
       way the review is the point, not a formality.
+
+### ⚠️ The publication freeze has INVERTED — decide this before widening
+
+**Noticed 2026-08-20.** The sequence above was written assuming the gate B
+publication freeze would still be in force across the widen, with the arms
+restored only after 14 clean days. **Both arms went back on 2026-08-11** —
+`SWARM_PUBLISH="true"` and `ABUSEIPDB_REPORT="true"`, confirmed live by
+`test-config` on 2026-08-20 (`publication: swarm=true abuseipdb=true`) — which is
+15 days *before* the widen can even start. The freeze no longer covers the widen;
+it covers the period before it. That is backwards from the design.
+
+Why it matters: `REPEAT_WINDOW_DAYS=30` is exactly the change most likely to
+manufacture a false-positive perm, and the 615-row human review exists because
+this cohort is where false positives live. With the arms live, every perm the
+widen produces publishes immediately. Swarm is recallable (`/purge`, 7-day TTL).
+**AbuseIPDB is not — there is no delete API**, so a wrong perm is published under
+our reporter identity permanently.
+
+- [ ] **Operator decision, before setting `REPEAT_WINDOW_DAYS=30`:** either
+      re-freeze `ABUSEIPDB_REPORT="false"` across the widen and its 48h baseline
+      (swarm can stay on — it is recallable), or accept irreversible publication
+      of whatever the widen produces. There is no third option and no default;
+      leaving it unexamined *is* choosing the second. Note the asymmetry recorded
+      above: re-enabling swarm later flushes the whole deferred backlog at once,
+      whereas `ABUSEIPDB_REPORT` has no cursor and no replay, so a re-freeze
+      costs only the perms placed while it is off.
 
 **Gate D has a hard date floor of 2026-08-26 22:40 UTC, discovered 2026-08-01.**
 `REPEAT_N_CRITICAL_SINGLE` does not merely stay inert on unstamped temps — it
@@ -645,8 +742,38 @@ light.** Four limits, all verified in code:
    temp whose evidence carries an empty `decisive_rule` is written unstamped
    *even post-v2.11.0*, and one such row re-breaks `tot == crit` for that IP for
    the rest of the window. Measured 2026-08-01: **0 of 664** post-deploy temps
-   were unstamped, so this has not happened on cds1 — but re-run that check at
+   were unstamped, so this had not happened on cds1 — but re-run that check at
    gate D rather than assuming the date alone cleared it.
+
+   **It has now happened. Observed 2026-08-20 — and it does NOT move the floor.**
+   Two post-v2.11.0 temps are unstamped, both on 2026-08-12
+   (`74.248.32.128` 18:25:01, `20.113.132.165` 19:40:01). Both are hard-intel
+   blocks: `reason="score=72 intel=abuseipdb:confidence100(100)"`,
+   `evidence.decisive_rule=""`, `badpath_cat=MEDIUM`. There was no decisive local
+   rule to stamp.
+
+   Why the floor stands: the floor protects against rows that are *unevaluable* —
+   pre-stamp-era temps that may or may not have been `critical_badpath` and cannot
+   be read either way. These two are honest negatives. With no decisive rule they
+   are genuinely not `critical_badpath`, so they fail `tot == crit` whether stamped
+   or not, and nothing is lost. Blast radius is those two IPs, and only if they
+   otherwise carry an all-CRITICAL history — a bar drop from 4 to 3 on two
+   AbuseIPDB-confidence-100 addresses. **The pre-v2.11.0 backlog still clears
+   2026-08-26 22:40 UTC.**
+
+   **What this DOES break is the readiness query as written.** A naive "unstamped
+   temps still in the 30d window" now returns **646** with a newest date of
+   **2026-08-12**, which reads as a floor slip to 2026-09-11 and is not one. Run
+   the check scoped to the **pre-stamp era** — treat a post-v2.11.0 row whose
+   `decisive_rule` is legitimately empty as a negative, not as unevaluable. The
+   query that produced the numbers above:
+   ```sql
+   SELECT date(ts,'unixepoch') d, COUNT(*) FROM actions
+    WHERE action='temp' AND dry_run=0
+      AND ts >= strftime('%s','now','-30 days')
+      AND reason NOT LIKE '%rule=%'
+    GROUP BY d ORDER BY d;   -- the 07-21..27 block is the real backlog
+   ```
 4. The other gate D preconditions below (`monitoring.cidr` still empty, the
    615-row human review, the publication freeze) are unaffected by this date and
    remain open.
