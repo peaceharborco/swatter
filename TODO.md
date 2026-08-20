@@ -287,6 +287,43 @@ rows) held zero. So bucket 3 should be tens of rows, not a thousand. **The job i
 a ~1,000-row sort and a ~50-row judgement** — size the calendar against the sort
 being cheap and the judgement being slow, not the reverse.
 
+**Allowlist vs shared-egress — the review rule's old wording was wrong.**
+Corrected 2026-08-20. It used to read "anything resembling NAT/CGNAT, mobile
+carrier, VPN exit, crawler, or customer gets **allowlisted** first." Sorting them
+out first is right; allowlisting all of them is not. `swatter allow` writes a
+**never-block**, and a never-block on a *shared* exit is a free pass for everyone
+else riding it — this file already makes exactly that argument about
+`monitoring.cidr` ("every CIDR here is a never-block, so ranges for services you
+do not use are free passes for anyone on them"). The wording predates the
+shared-egress cap, and the 2026-08-11 work **reversed this very mistake**: 7
+`--perm-allow` never-blocks were removed and replaced with shared-egress, leaving
+those IPs "not never-block but *are* shared-egress, i.e. still bannable, just not
+permanently."
+
+Disposition by class:
+
+- **A single identified endpoint** — a customer's office or home IP, a site
+  owner, an operator box: **`swatter allow`**. A never-block is correct because
+  the address maps to one accountable party. This is what the 10 live allowlist
+  entries are.
+- **A shared exit** — consumer VPN, CGNAT, mobile carrier NAT, WARP:
+  **shared-egress, never allowlist.** Add the range to
+  `/etc/swatter/shared-egress.cidr` (or the ASN to `shared-egress-asns.txt`) so a
+  matching perm becomes a ladder-max temp, unpublished, while the address stays
+  bannable. Validate before it lands — **one over-broad line disables the entire
+  CIDR arm silently**, including the IPv4 WARP protection already in the file.
+- **Verified crawler** — neither. Forward-confirmed rDNS already exempts it
+  (`exempt:verified-crawler` in the digest); adding a never-block range for a
+  crawler is the `monitoring.cidr` mistake in a different hat.
+
+Worked example, checked 2026-08-20: the operator's own egress is
+`unn-…​.datapacket.com`, **AS212238** — a shared consumer VPN exit. Allowlisting it
+would never-block every other subscriber sharing that pop. It needs no action
+today (zero ledger rows, zero actions, and its `/24` has zero offenders; the only
+perm anywhere in `149.22.x` is a different `/24`, dated 2026-06-27), but it is the
+exact shape the review will hit repeatedly — the gate D interaction item alone
+counts **209** WARP IPv6 addresses.
+
 **Applying a verdict — the order matters and getting it backwards is silent:**
 
 - `allow` on a candidate carrying **no live ban** → `swatter allow <ip> "<who> -
@@ -329,9 +366,10 @@ implies. No customer IPs, no vhost mappings.
 
 **Thu 08-27 onward — review, then widen**
 
-- [ ] **The 615-row human review** (ASN, PTR, customer mapping, plane). Anything
-      resembling NAT/CGNAT, mobile carrier, VPN exit, crawler or customer gets
-      allowlisted *first*. This is a multi-session job at 4.9× the window=7
+- [ ] **The 615-row human review** (ASN, PTR, customer mapping, plane). Sort
+      NAT/CGNAT, mobile carrier, VPN exit, crawler and customer out *first* — but
+      **allowlist is not the disposition for all of them**; see "allowlist vs
+      shared-egress" below. This is a multi-session job at 4.9× the window=7
       population — do not compress it to fit a date. The floor is a floor, not a
       schedule.
 - [ ] **Step 1 — freeze AbuseIPDB, BEFORE the knob change.** Back up
@@ -570,7 +608,9 @@ attacker a bypass via the 1.1.1.1 app.
       residue rows (`perm=1` with no enforced perm action). Both differences are
       expected; neither is a miscount.
 - [x] **Gate D interaction — SETTLED 2026-08-13, re-confirmed 2026-08-20.** Gate
-      D's review rule already says VPN exits get allowlisted first. At
+      D's review rule already says VPN exits get sorted out first (it said
+      "allowlisted" until 2026-08-20 — wrong for shared exits, corrected in the
+      review scheme; shared-egress is the disposition, not a never-block). At
       `REPEAT_WINDOW_DAYS=30` the WARP cohort's temps get a 4.3× wider window to
       accumulate into perms, so this had to be settled **before** the widen, not
       during the 615-row review. The sweep raised the stakes: the uncapped WARP
@@ -736,8 +776,9 @@ disturb the `rule=`-stamped ladder data the soak accumulates.
       them near the 08-26 floor, not early); run
       `swatter escalate-preview --window 30` fresh (never review a saved
       list); human-review every candidate (ASN, PTR, customer mapping, plane;
-      anything resembling NAT/CGNAT, mobile carrier, VPN exit, crawler, or
-      customer gets allowlisted first); ~~confirm the gate B freeze is still
+      sort NAT/CGNAT, mobile carrier, VPN exit, crawler and customer out first —
+      ~~all allowlisted~~ **the disposition differs per class, see "allowlist vs
+      shared-egress" in the review scheme**); ~~confirm the gate B freeze is still
       active (nothing to change here)~~ — **FALSE as of 2026-08-11, see "the
       publication freeze has inverted" below; this step is now a decision, not a
       confirmation**; set `REPEAT_WINDOW_DAYS=30`; watch the
