@@ -389,3 +389,89 @@ it runs on cds1 — and note the process error worth not repeating: round-3 pass
 was reviewing the file while round-3 pass B's fixes were being applied to it, so
 it reviewed a version that no longer exists. Freeze the target for the duration
 of a round.
+
+---
+
+# Disposition (2026-08-20, owner call)
+
+**Bucket 2 stays.** The round-3 section above argued for collapsing to a
+two-bucket sort on the grounds that bucket 2 carries all the irreversible risk.
+That argument over-weighted a risk that is already largely defused: the owner had
+already decided to set `ABUSEIPDB_REPORT="false"` across the widen and its 48h
+baseline. During exactly the window where a misclassification could occur, the
+irreversible half of the consequence is switched off — a wrong sort costs a
+reversible ban, not a permanent public accusation.
+
+What replaces "delete bucket 2" is one cheap step, added to the widen procedure:
+**run `swatter shared-egress-audit` and read what the widen actually permed,
+before turning reporting back on.** That is the last point at which a wrong perm
+is still free to fix, it takes minutes rather than a thousand rows, and it
+catches the same class of mistake the bucket-2 machinery exists to prevent.
+
+The five bugs were still worth finding — the script would otherwise have run
+unattended with all of them live.
+
+## Related fix, shipped separately
+
+The IPv6 trailing-newline defect this review surfaced in `_cidr_overlaps_file`
+was **not** limited to that one function. Six places in swatter read an
+operator-editable file with a bare `while IFS= read -r`, silently dropping a
+final line that lacks a trailing newline while every validator (awk- or
+grep-based) still passes the file:
+
+- `lib/allowlist.sh` — the IPv6 branches of `_ip_in_cidr_file` and
+  `_cidr_overlaps_file`. Affects `allow.cidr`, `cloudflare.cidr`,
+  `shared-egress.cidr`, `monitoring.cidr`. The code's own comment calls the
+  Cloudflare case "the catastrophic case".
+- `lib/asn.sh` — `HOSTING_ASNS_FILE` and `SHARED_EGRESS_ASNS_FILE`. cds1's
+  shared-egress ASN list is a **single** operator-added line (`206092`), so
+  losing it disables that arm entirely while `test-config` still reports it live.
+- `lib/origin_lock.sh` — the Cloudflare range loader and the two allow/monitoring
+  readers. In DROP mode a dropped range means legitimate edge traffic is
+  firewalled off.
+
+All six now use the house idiom `|| [[ -n "$line" ]]`, which
+`lib/common.sh:618-621` already documented and used for exactly this reason.
+`test/trailing_newline_test.sh` covers it and is mutation-verified: reverting the
+`allowlist.sh` fix turns two cases red.
+
+The `block_cf.sh` loops over `${STATE_DIR}/cf-rules.tsv` were left alone
+deliberately — swatter writes that file itself and always terminates it.
+
+## Gate result on the library fix
+
+Reviewed by `grok-4.6` and `grok-4.5` before commit. **No Blockers on the idiom
+itself** — both confirmed it is correct at all seven sites (it is seven, not the
+six first claimed): at EOF the second `read` clears the variable, so there is no
+stale re-iteration, and every loop body strips and `continue`s on empty. Four
+Majors between them, all fixed:
+
+- **The new test was theater.** It reimplemented the fixed read-loop inline
+  instead of calling `swatter_is_shared_egress`, so reverting the `lib/asn.sh`
+  fix left it green. It now drives the production matcher with a stubbed
+  resolver and is mutation-red.
+- **The origin-lock guard did not block the case its own comment named.**
+  `swatter_is_valid_ip_or_cidr` accepts `104.16.0.0/1` — a truncated `/13` is
+  syntactically valid. Shape checking alone was never going to close it; the fix
+  is a prefix floor (`/8` v4, `/19` v6), and the floor is pinned by a test so a
+  later "tighten it to /32" cannot drop the compiled `2a06:98c0::/29` fallback.
+- **Validation was asymmetric across the origin-lock readers.** The preamble now
+  validates too. The teardown deliberately does **not**, and says so: it must be
+  at least as permissive as whatever installed the rules, or a range added by an
+  older version becomes undeletable and lingers in INPUT.
+- **The new floors were an unvalidated numeric knob in an arithmetic context** —
+  the exact defect class this repo already has a written rule about, and the same
+  shape as the v2.15.0 Blocker. `OL_MIN_PREFIX4=abc` aborted `_ol_load_ranges`
+  under `set -u`, on a path that also runs from `_ol_preamble_family` after DROP
+  may already be installed. Guarded per `lib/common.sh:639-641` and covered.
+
+Worth stating plainly: three of those four were defects in the *fix* and its
+*test*, not in the original code. A change small enough to feel obvious still
+produced a knob that could abort the origin lock mid-apply.
+
+Left deliberately: `lib/block_cf.sh`'s loops over `${STATE_DIR}/cf-rules.tsv`.
+Swatter writes that file itself and always newline-terminates it, so only a
+killed partial append or a hand-edit could bite — but `_cf_ref_exists` is awk and
+*would* see such a line while the upsert/sweep loops drop it, which by that
+file's own comment means "an unsweepable permanent ban". A defensible scope cut,
+not a proof of safety.

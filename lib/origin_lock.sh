@@ -46,14 +46,60 @@ _ol_mode()     { printf '%s' "${ORIGIN_LOCK:-off}"; }
 
 # Read the CF ranges file, split into v4 / v6 CIDR lists on stdout via globals.
 # Sets _OL_V4 and _OL_V6 (newline-separated). Returns 1 if the file is missing.
+# _ol_range_ok <cidr> : 0 if this line may enter the lock's allowed set.
+# Shape AND a prefix floor. Cloudflare's widest v4 range is /13; on the v6 side
+# the compiled fallback carries 2a06:98c0::/29 (lib/allowlist.sh:20), so the v6
+# floor must stay at or below /29 — do NOT "tighten it to 32", that would drop a
+# real edge range. Logs and rejects the single bad line rather than failing the
+# whole file: one truncated entry must not take the other ranges down with it.
+#
+# VALIDATED, per the repo rule on numeric knobs: these are read from the
+# environment/conf, and bash re-resolves a non-numeric string in an arithmetic
+# context as a VARIABLE NAME, which aborts under `set -u`. _ol_range_ok runs from
+# _ol_preamble_family too, i.e. potentially AFTER the DROP rule is installed, so
+# an abort there is the worst possible moment. Same guard as lib/common.sh:639-641.
+_OL_MIN_PREFIX4="${OL_MIN_PREFIX4:-8}"
+_OL_MIN_PREFIX6="${OL_MIN_PREFIX6:-19}"
+[[ "$_OL_MIN_PREFIX4" =~ ^[0-9]+$ ]] || _OL_MIN_PREFIX4=8
+[[ "$_OL_MIN_PREFIX6" =~ ^[0-9]+$ ]] || _OL_MIN_PREFIX6=19
+_ol_range_ok() {
+    local c="$1" plen
+    if ! swatter_is_valid_ip_or_cidr "$c"; then
+        log_warn "origin-lock: ignoring malformed range: ${c}"; return 1
+    fi
+    [[ "$c" == */* ]] || return 0          # bare address is a /32 or /128
+    plen="${c#*/}"
+    [[ "$plen" =~ ^[0-9]+$ ]] || { log_warn "origin-lock: ignoring bad prefix: ${c}"; return 1; }
+    plen=$(( 10#$plen ))
+    if [[ "$c" == *:* ]]; then
+        (( plen >= _OL_MIN_PREFIX6 )) || {
+            log_warn "origin-lock: ignoring over-broad v6 range (/${plen} < /${_OL_MIN_PREFIX6}): ${c}"; return 1; }
+    else
+        (( plen >= _OL_MIN_PREFIX4 )) || {
+            log_warn "origin-lock: ignoring over-broad v4 range (/${plen} < /${_OL_MIN_PREFIX4}): ${c}"; return 1; }
+    fi
+    return 0
+}
+
 _ol_load_ranges() {
     local f="${CLOUDFLARE_IPS_FILE}"
     _OL_V4=""; _OL_V6=""
     [[ -s "$f" ]] || return 1
     local line
-    while IFS= read -r line; do
+    # `|| [[ -n "$line" ]]`: dropping a final line with no trailing newline here
+    # removes a Cloudflare range from the origin lock's allowed set, which in
+    # DROP mode means legitimate edge traffic is firewalled off.
+    while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line%%#*}"; line="${line//[[:space:]]/}"
         [[ -z "$line" ]] && continue
+        # Validate every line, not just trust the file. This loader feeds the
+        # cf_origin ipset, so a malformed or TRUNCATED entry is a bypass: a
+        # partial download ending "104.16.0.0/1" instead of "/13" is still a
+        # syntactically VALID CIDR (swatter_is_valid_ip_or_cidr accepts /0..) and
+        # would admit a huge swath of the internet past the lock. Shape alone is
+        # therefore not enough — the prefix floor is what actually closes it.
+        # Honouring the final line must not mean honouring a half-written one.
+        if ! _ol_range_ok "$line"; then continue; fi
         if [[ "$line" == *:* ]]; then _OL_V6+="${line}"$'\n'
         else _OL_V4+="${line}"$'\n'; fi
     done < "$f"
@@ -202,9 +248,17 @@ _ol_preamble_family() {
     _ol_ensure "$ipt" -i lo -p tcp -m multiport --dports "$ports" -j ACCEPT
     for f in "${OPERATOR_ALLOW_FILE:-}" "${MONITORING_RANGES_FILE:-}"; do
         [[ -n "$f" && -f "$f" ]] || continue
-        while IFS= read -r cidr; do
+        # `|| [[ -n "$cidr" ]]`: a final line with no trailing newline must
+        # still be honoured, or the origin lock silently loses that range.
+        while IFS= read -r cidr || [[ -n "$cidr" ]]; do
             cidr="${cidr%%#*}"; cidr="${cidr//[[:space:]]/}"
             [[ -z "$cidr" ]] && continue
+            # Same guard as the CF loader, and for the same reason: now that an
+            # unterminated final line is honoured, a garbage one would be handed
+            # to `iptables -s`, whose failure increments _OL_APPLY_ERRS and tears
+            # the whole lock down. Honouring the last line needs a reject path
+            # beside it on EVERY operator-editable file, not just the CF list.
+            _ol_range_ok "$cidr" || continue
             # v6 CIDRs only into ip6tables, v4 only into iptables.
             if [[ "$ipt" == "ip6tables" && "$cidr" != *:* ]]; then continue; fi
             if [[ "$ipt" == "iptables"  && "$cidr" == *:* ]]; then continue; fi
@@ -258,11 +312,19 @@ _ol_teardown_family() {
     local cidr f
     for f in "${OPERATOR_ALLOW_FILE:-}" "${MONITORING_RANGES_FILE:-}"; do
         [[ -n "$f" && -f "$f" ]] || continue
-        while IFS= read -r cidr; do
+        # `|| [[ -n "$cidr" ]]`: a final line with no trailing newline must
+        # still be honoured, or the origin lock silently loses that range.
+        while IFS= read -r cidr || [[ -n "$cidr" ]]; do
             cidr="${cidr%%#*}"; cidr="${cidr//[[:space:]]/}"
             [[ -z "$cidr" ]] && continue
             if [[ "$ipt" == "ip6tables" && "$cidr" != *:* ]]; then continue; fi
             if [[ "$ipt" == "iptables"  && "$cidr" == *:* ]]; then continue; fi
+            # DELIBERATELY no _ol_range_ok here, unlike the preamble. Teardown
+            # must be at least as permissive as whatever ADDED the rules, or it
+            # leaks them: a range installed by a version predating the guard (or
+            # by a since-tightened floor) would become undeletable and linger in
+            # INPUT forever. A bogus -D simply fails and is swallowed, so the
+            # permissive direction costs nothing here and the strict one bites.
             # Loop -D like the core rules above: teardown-first standalone apply
             # re-adds these every run, so a single -D would let duplicates from
             # older applies accumulate. Delete until none remain (capped).

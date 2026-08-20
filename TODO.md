@@ -436,7 +436,18 @@ implies. No customer IPs, no vhost mappings.
       against that, never against gate C's band. `PERM_RATE_ALERT_*` only
       notifies — a silent tripwire is not a green light, and ladder perms keep
       landing every `*/5` while you wait.
-- [ ] **After the 48h baseline reads clean — restore `ABUSEIPDB_REPORT="true"`.**
+- [ ] **Before restoring reporting — run `swatter shared-egress-audit` and read
+      what the widen actually permed.** This is the cheap safety net that makes
+      the bucket-2 risk acceptable, and it is the LAST point at which a wrong
+      perm is still free to fix. While `ABUSEIPDB_REPORT` is false, a
+      misclassified shared exit costs a reversible ban; once reporting is back
+      on, the same mistake is a permanent public accusation with no delete API.
+      Minutes of work, and it catches the whole class the review scheme's
+      bucket 2 is designed around. Owner call 2026-08-20: keep bucket 2 rather
+      than collapsing to a two-bucket sort — the freeze already removes the
+      irreversible half of the risk during exactly the window it exists in.
+- [ ] **After the 48h baseline reads clean AND the audit is clean — restore
+      `ABUSEIPDB_REPORT="true"`.**
       Confirm with `test-config`. Nothing replays: the arm has no cursor, so the
       perms placed during the freeze are simply never reported, which is the
       accepted cost of the decision. If the baseline does *not* read clean, the

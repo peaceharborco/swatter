@@ -51,7 +51,10 @@ swatter_asn_is_hosting() {
     [[ -f "${HOSTING_ASNS_FILE:-}" ]] || return 1
     asn="$(swatter_asn_resolve "$ip")" || return 1
     [[ -n "$asn" ]] || return 1
-    while IFS= read -r line; do
+    # `|| [[ -n "$line" ]]`: honour a final line with no trailing newline. See
+    # the note on the shared-egress reader below — same hazard, same idiom, and
+    # HOSTING_ASNS_FILE is operator-editable too.
+    while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line%%#*}"; fasn="$(printf '%s' "$line" | tr -d ' ')"
         [[ -z "$fasn" ]] && continue
         if [[ "$fasn" == "$asn" ]]; then
@@ -150,7 +153,11 @@ swatter_is_shared_egress() {
     _swatter_shared_egress_asns_usable || return 1
     asn="$(swatter_asn_resolve "$ip")" || return 1
     [[ -n "$asn" ]] || return 1
-    while IFS= read -r line; do
+    # `|| [[ -n "$line" ]]`: shared-egress-asns.txt is frequently a SINGLE
+    # operator-added line. Hand-edited without a trailing newline, the usability
+    # check (grep) still passes it while this loop never yields it — the arm
+    # reports itself live and matches nothing.
+    while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line%%#*}"; fasn="$(printf '%s' "$line" | tr -d ' ')"
         [[ -z "$fasn" ]] && continue
         if [[ "$fasn" == "$asn" ]]; then

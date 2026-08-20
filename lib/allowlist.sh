@@ -93,7 +93,13 @@ _ip_in_cidr_file() {
     if [[ "$ip" == *:* ]]; then
         local ipx pfx net plen netx
         ipx="$(_ipv6_expand "$ip")" || return 1
-        while IFS= read -r pfx; do
+        # `|| [[ -n "$pfx" ]]`: a final line with NO trailing newline must still
+        # be matched. The IPv4 branch below parses with awk, which reads it; a
+        # bare `while read` silently DROPS it, so an operator-edited file whose
+        # last line is IPv6 would lose that range while every validator still
+        # passes the file. Same idiom and same reason as swatter_cidr_list_ok
+        # (lib/common.sh:618-621).
+        while IFS= read -r pfx || [[ -n "$pfx" ]]; do
             pfx="${pfx%%#*}"; pfx="${pfx//[[:space:]]/}"
             [[ -z "$pfx" || "$pfx" != *:* ]] && continue
             net="${pfx%%/*}" plen="${pfx##*/}"
@@ -148,7 +154,9 @@ _cidr_overlaps_file() {
         plen="${plen:-128}"
         [[ "$plen" =~ ^[0-9]+$ ]] || return 1
         plen=$(( 10#$plen )); (( plen <= 128 )) || return 1
-        while IFS= read -r pfx; do
+        # See the note in _ip_in_cidr_file: a missing final newline must not
+        # drop the last IPv6 prefix. cloudflare.cidr is the catastrophic case.
+        while IFS= read -r pfx || [[ -n "$pfx" ]]; do
             pfx="${pfx%%#*}"; pfx="${pfx//[[:space:]]/}"
             [[ -z "$pfx" || "$pfx" != *:* ]] && continue
             net="${pfx%%/*}" nplen="${pfx##*/}"
