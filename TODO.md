@@ -33,8 +33,10 @@ indistinguishable in the error log.
 
 ## ✅ Release log — 2026-08-12 (v2.14.0 → v2.15.0 → v2.15.1)
 
-Three releases in one day. cds1 runs **v2.15.1**; `bin/swatter`, `lib/errors.sh`
-and `lib/report.sh` all sha256-match the tag (verified 2026-08-13).
+Three releases in one day. At the time, cds1 ran **v2.15.1**; `bin/swatter`,
+`lib/errors.sh` and `lib/report.sh` all sha256-matched the tag (verified
+2026-08-13). **cds1 now runs v2.16.1** (`swatter --version`, 2026-08-20) — same
+as `main` at `0a7c7f5`, so the perm-rate tripwire fixes are live.
 
 - **v2.14.0** — the fan-out gate. See the CLOSED section at the top of this file.
 - **v2.15.0** — outage corroboration. The errors plane reads the affected
@@ -68,25 +70,58 @@ locally observed and stay local. `install.sh` never overwrites the live file, so
 the divergence is stable — but it also means a widened default never reaches an
 existing host. Diff `.example` after any upgrade.
 
-**Both post-deploy watch items are still OPEN — no result has been recorded.**
+**Both post-deploy watch items are now CLOSED** — confirmed 2026-08-20 by reading
+a real digest body (`swatter report 24h --print` on cds1, read-only).
 
-- [ ] **v2.14.0 fan-out gate — unconfirmed.** The `get_locale()` cluster puts
-      exactly 4 accounts inside a 24h window, the threshold with zero margin.
-      Digests ran 08-12 and 08-13, both sent, and **neither graded RED** (no SMS
-      line in `report.log`). That is most likely the gate correctly finding
-      nothing, but it has not been confirmed by reading a digest body.
-- [ ] **v2.15.1 corroboration has never demonstrably run against a real fatal
-      cluster in production.** Deployed 08-12 17:52 UTC; exactly one digest since
-      (08-13 11:00:03). The evidence line, the per-account classification and the
-      🔥 escalation are all unproven on live data. `test-config` reports
-      `corroboration: on, max span 3600s`, so it is armed and waiting for a
-      cluster to land. Read the next digest that carries fatals before trusting
-      the feature.
+- [x] **v2.14.0 fan-out gate — confirmed running.** The 08-20 digest prints a
+      *"Scanner-induced FATALs (under both the repeat and account-spread gates —
+      no outage signal)"* block holding two entries — `condodelsol`
+      `get_locale()` and `kauaicontainer` `ABSPATH` — while a third, unrelated
+      fatal passed through and graded the report RED. The gate demonstrably ran,
+      separated scanner noise from a genuine fatal, and did not blanket-suppress.
+      Residual, deliberately not carried as a checkbox: the specific zero-margin
+      case that prompted the watch — `get_locale()` across exactly 4 accounts in
+      one 24h window — has not recurred, so the threshold edge itself is still
+      unexercised. Nothing to do unless it fires.
+- [x] **v2.15.1 corroboration — confirmed on live data.** The 08-20 digest
+      carries the evidence line verbatim: *"1 served failure(s) here: 1 to
+      outside clients, 0 to the server itself (wp-cron or a loopback call), 0 to
+      known bots, 0 with no user agent. Someone outside saw this."* That
+      classification is what escalated the lamp to 🔥 and fired the SMS. The
+      domlog lookup, the per-account classification and the escalation are all
+      proven end-to-end.
 
-## A failed send spends the alert's dedup key (open 2026-08-15) — SPEC READY
+**What the 08-20 RED actually was — a false alarm with a clean cause, worth
+recording because the next one will look identical.** The genuine fatal was
+`php/sandpointlife`: `plugin.php:26` requiring `class-wp-filter-sentinel.php`,
+which does not exist in any WordPress before 7.1. That reads exactly like a core
+file injection, and it isn't one — the file is genuine 7.1 core
+(`final class WP_Filter_Sentinel {}`, `@since 7.1.0`), `version.php` now reads
+`7.1`, and `plugin.php`, `version.php` and the sentinel all carry mtime
+`2026-08-20 01:25:06`, the same second as the fatal. It is the WordPress 7.1
+auto-update mid-flight: the new `plugin.php` landed before its new sibling, and
+one outside request fell into a seconds-wide window. Corroboration was right that
+someone outside saw it; there was nothing to fix. **A core auto-update is a
+recurring source of one-request 🔥 REDs** — check file mtimes against the fatal's
+timestamp before treating a missing-core-file fatal as either an outage or an
+injection.
+
+## A failed send spends the alert's dedup key — PARKED 2026-08-20 (owner call)
+
+**Owner decision 2026-08-20: parked, not scheduled.** The bug is real and the
+analysis below stands, but firing it requires a delivery failure to coincide with
+the exact minutes an alert condition first trips — long odds, and the payoff is a
+retry of an alert whose underlying condition is still visible in the digest, the
+decision log and `report.log`. Not worth changing the return contract of four
+functions that carry every alert this tool sends. **Revisit if a delivery failure
+is ever actually observed** — a non-2xx Twilio line or a missing `alerts: SMS
+sent` on a night that graded RED. Until then this is a known, accepted gap.
+Twilio itself is configured and demonstrably working: `report.log` shows
+`alerts: SMS sent … via Twilio (201)` on both 2026-08-18 and 2026-08-20.
 
 **Spec:** `docs/superpowers/specs/2026-08-15-notify-delivery-failure-suppresses-retry-design.md`
-(rev 1). Nothing implemented yet.
+(rev 1). Nothing implemented yet — the spec stays ready so the work is cheap to
+pick up if the trigger above ever lands.
 
 `lib/notify.sh` writes the rate-limit marker BEFORE sending, and no channel reports
 whether it succeeded — every `_notify_*` returns 0 for "sent", "failed" and "not
@@ -127,9 +162,9 @@ whatever commit lands this.
 
 ## ⏭️ NEXT PICKUP: gate D
 
-**Everything is unfrozen and deployed as of 2026-08-11.** cds1 runs **v2.15.1**
-(deployed 2026-08-12, sha-verified 2026-08-13; this line read "v2.13.0" until
-then — three releases shipped on 08-12, see the release log below), the
+**Everything is unfrozen and deployed as of 2026-08-11.** cds1 runs **v2.16.1**
+(confirmed 2026-08-20; this line read "v2.15.1" until then, and "v2.13.0" before
+that — see the release log below), the
 shared-egress cap is live, the WARP/shared-VPN cohort is remediated **for IPv4
 only** (the 2026-08-13 ASN sweep found WARP IPv6 was never capped — see the
 consumer-VPN section), and **both** publication arms are on: `SWARM_PUBLISH="true"` and `ABUSEIPDB_REPORT="true"`
