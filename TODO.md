@@ -234,10 +234,80 @@ saved list the gate says never to review.
       triage the review from `escalate-preview`, not `top`; and the same run
       surfaced that the candidate population has grown **1.6× in 19 days** at
       window=7 — see the ⚠️ sizing note, the review is likely bigger than 615.
-- [ ] **Decide how the 615-row review gets recorded** and who does the
-      allowlisting. A sizing run of `escalate-preview --window 30` now is fine to
-      scope the hours — but the list that is actually reviewed must be
-      regenerated after the floor.
+- [x] **How the review gets recorded — DECIDED 2026-08-20.** Scheme below. Still
+      open and **not mine to settle: who does the bucket-3 judgement** — the
+      enrichment, the sort and the sample audit can be automated, but the
+      customer-identity calls need someone who knows the customers.
+
+#### Gate D review — recording scheme
+
+**Where it lives: `/root/gate-d-review/` on cds1, root-only, never committed.**
+The working set maps customer IPs to vhosts, and this is a public repo — same
+call as the 2026-08-04 redaction. The repo gets aggregates and method; the
+concrete rows stay on the box beside the allowlist and the ledger they came from.
+
+Four files, timestamped to one review round:
+
+- **`preview-<utc>.tsv`** — the raw, post-floor `escalate-preview --window 30`
+  output, four columns as documented (`ip`, `temps_prior`, `last_temp_utc`,
+  `status`). **Immutable — never edited.** This is what makes "which list was
+  reviewed" answerable later, and it is the gate's fresh list; editing it in
+  place destroys both properties.
+- **`enriched-<utc>.tsv`** — preview columns plus ASN, forward-confirmed PTR, top
+  vhost, 2xx fraction, UA presence/rotation, intel verdict, shared-egress match,
+  already-allowlisted flag.
+- **`decisions-<utc>.tsv`** — append-only: `ip, bucket, verdict, reason,
+  reviewer, utc`. Verdicts: `allow` / `ban-ok` / `defer`.
+- **`NOTES.md`** — names the authoritative preview file and records the
+  sample-audit result.
+
+**Three buckets, sorted mechanically, and the sort fails toward human review.**
+
+1. **Inert** — already allowlisted, already shared-egress capped, forward-confirmed
+   crawler, RFC1918/loopback. These *cannot* perm. Count them; do not review them.
+2. **Corroborated-hostile** — hard external intel (`spamhaus:drop`,
+   `abuseipdb:confidence100`) **and** zero 2xx **and** no browser UA. Not reviewed
+   row by row. Instead **sample 25–30 at random and audit them properly**, exactly
+   as the 2026-08-01 `scanner_profile` audit did (63 audited from raw domlogs, 0
+   false positives). **One false positive in the sample collapses the whole bucket
+   into bucket 3.**
+3. **Human review** — everything else, *plus anything the enrichment could not
+   classify*: residential or mobile ASN, a browser UA, any 2xx, appearance on a
+   customer vhost, weak or absent intel, or `request_flood` as the decisive rule.
+
+Unclassifiable never lands in bucket 2. That is the same fail direction the rest
+of this plane uses — toward the louder reading, which here means a human looks.
+
+**Why this is a defensible reduction and not a corner cut**, from measurements
+already in this file: the backlog is **97% hard-corroborated**, and false
+positives cluster precisely where corroboration is *absent*; all **five** known
+FPs in the tool's history came from `request_flood`, whose lifetime perm record is
+**0 for 2**; and the one cohort ever audited exhaustively (63 `scanner_profile`
+rows) held zero. So bucket 3 should be tens of rows, not a thousand. **The job is
+a ~1,000-row sort and a ~50-row judgement** — size the calendar against the sort
+being cheap and the judgement being slow, not the reverse.
+
+**Applying a verdict — the order matters and getting it backwards is silent:**
+
+- `allow` on a candidate carrying **no live ban** → `swatter allow <ip> "<who> -
+  <why> - verified <date>"`. That matches the 10 existing entries' format; the
+  command appends its own UTC stamp and is idempotent (`already allowed:`).
+- `allow` on a candidate that **currently holds a temp** → **`swatter unblock`
+  first, then `swatter allow`.** The unblock is what resets the ladder count (the
+  2026-07-27 precedent, and README's "`unblock`, not `allow`, clears a false
+  positive"). Allow alone leaves the count intact and the IP simply re-escalates.
+- Verify every unblock on **both planes** — `swatter list perm`, `swatter list
+  cf`, `csf -g <ip>`. The exit code is not enough (`swatter_store_unblock` runs
+  before the failure check, so a partial backend failure still clears
+  `offenders.perm` and *looks* remediated).
+
+**Resuming:** `decisions-<utc>.tsv` is append-only and keyed by IP, so a session
+resumes by diffing enriched against decided. Nothing depends on remembering where
+you stopped — which matters, because this is explicitly a multi-session job.
+
+**What comes back into the repo when the review closes:** bucket counts, the
+sample-audit result, how many IPs were allowlisted, and any rule change the review
+implies. No customer IPs, no vhost mappings.
 
 **Mon 08-24 → Wed 08-26 (before 15:40 PDT) — hold**
 
