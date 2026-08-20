@@ -234,10 +234,32 @@ saved list the gate says never to review.
       triage the review from `escalate-preview`, not `top`; and the same run
       surfaced that the candidate population has grown **1.6× in 19 days** at
       window=7 — see the ⚠️ sizing note, the review is likely bigger than 615.
-- [x] **How the review gets recorded — DECIDED 2026-08-20.** Scheme below. Still
-      open and **not mine to settle: who does the bucket-3 judgement** — the
-      enrichment, the sort and the sample audit can be automated, but the
-      customer-identity calls need someone who knows the customers.
+- [x] **How the review gets recorded — DECIDED 2026-08-20.** Scheme below.
+- [x] **Review rule corrected 2026-08-20** — "VPN exits get *allowlisted*" was
+      wrong for shared exits and would have had the review never-blocking a
+      consumer VPN pop for every subscriber on it. See "allowlist vs
+      shared-egress" in the scheme. README and RUNBOOK were checked and were
+      already correct; the bad wording was only in this procedure.
+
+**Still open in this block — two, and both want settling before Wednesday:**
+
+- [ ] **Who does the bucket-3 judgement.** Not mine to settle. The enrichment,
+      the sort and the sample audit can be automated; the customer-identity calls
+      need someone who knows the customers. If that is one person, the calendar
+      after 08-27 is theirs, not the floor's.
+- [ ] **Build the enrichment + sort tooling now — this is the highest-value
+      pre-floor task and nothing about it is freshness-sensitive.** The scheme
+      wants ASN, forward-confirmed PTR, top vhost, 2xx fraction, UA
+      presence/rotation, intel verdict, shared-egress match and
+      already-allowlisted flag per row. Written on 08-26 that is an hour of
+      pressure on the one day that matters; written now it makes the sort a *run*
+      rather than a *build*. Test it against the **window=7** preview already
+      captured (201 rows, 2026-08-20) — that is not the gate's list, so using it
+      as a fixture breaks no rule.
+      ⚠️ **This is code.** If it lands on cds1 to run against real data it goes
+      through `/grok` first, like anything else that reaches the host — a
+      read-only analysis script that mis-classifies a row silently feeds the
+      wrong bucket, which is precisely the failure the review exists to prevent.
 
 #### Gate D review — recording scheme
 
