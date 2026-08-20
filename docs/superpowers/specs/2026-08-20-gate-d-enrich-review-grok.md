@@ -181,3 +181,101 @@ step earlier: tests-equivalent checks passed (`bash -n` clean, `shellcheck -S
 warning` clean, the awk pass verified against fixtures), and none of that touched
 a single Blocker above. The fixtures were written by the code's author and shared
 its blind spots. Real data and a second model found everything.
+
+---
+
+# Round 2 — the rewrite, reviewed (2026-08-20)
+
+The redesign above was implemented and re-gated. **Both models returned HOLD
+again.** Round-1 B1/B3/B4/B5 were confirmed *actually* fixed (not merely
+commented as fixed) — but round 2 found a new route to the same destination.
+
+## The pattern worth naming
+
+Three rounds of review have now found **three distinct mechanisms that end in the
+same place**: a shared-egress address (cds1's ASN-only AS206092 cohort, or the
+CIDR-only WARP pool) reaching bucket 2, where no human reads it, and being
+permanently reported to AbuseIPDB — *against an address the enforcer itself would
+refuse to perm.*
+
+1. **Round 1:** the ASN arm never ran at all (config never loaded → `SWATTER_HAVE_DNS` unset).
+2. **Round 2 `[4.5-b]`:** the ASN arm ran but parsed a multi-origin Cymru answer
+   (`"206092 13335 | …"`) into the nonsense ASN `20609213335`, matching nothing.
+3. **Round 2 `[4.6-a]`:** the ASN arm ran and parsed correctly, but a *missing or
+   unreadable* `shared-egress-asns.txt` was indistinguishable from "this ASN is
+   not listed" — and a rejected CIDR file likewise only disabled matching rather
+   than forcing review.
+
+Each was a different bug. All three had one shape: **an absence of evidence being
+read as evidence of absence**, on the one predicate whose failure is
+irreversible. That is the repo's own documented fail-direction rule
+(`CLAUDE.md`: *"a lookup that could not read its evidence must never report
+absence"*) being violated three ways in one file.
+
+## Round-2 Blockers, and the fixes
+
+- **`[4.5-b B1]` multi-origin ASN concatenation.** Production takes the first
+  field before `|` and then *its first token* (`lib/asn.sh:40-42`); the rewrite
+  stripped all whitespace instead. Fixed to mirror production exactly.
+- **`[4.5-b B2]` publish not pairwise-atomic.** Two `mv` calls; a kill between
+  them paired a new `enriched.tsv` with the previous run's `buckets.txt` — stale
+  audit sample against a different list, the round-1 B5 failure wearing a new
+  hat. Fixed by deleting the old report *before* publishing, so a crash leaves an
+  obviously-incomplete directory rather than a quietly wrong one.
+- **`[4.6-a B1]` "could not tell" only inverted for a failed `dig`.** The whole
+  point of the rewrite, wired to exactly one of its several failure paths. Fixed
+  with a single `se_evaluable` gate computed once per run from swatter's own
+  `_swatter_shared_egress_cidr_usable` and `_swatter_shared_egress_asns_usable`:
+  unless shared-egress is enabled **and** both arms are usable, no row may reach
+  bucket 2 at all and every non-inert candidate goes to bucket 3. It also skips
+  ASN lookups entirely in that case — there is nothing they could decide.
+
+## Round-2 Majors folded in
+
+- **`[4.6-a M1]`** `_inert_reason` returned early on a failed `mktemp`, skipping
+  the operator-allow / monitoring / `csf.allow` / server-self legs for *every*
+  candidate whenever `OPERATOR_IPS` was set. Production falls through. Fixed.
+- **`[4.6-a M1]`** the crawler-omission *justification* was factually wrong:
+  `swatter_is_never_block` runs at apply time (`lib/score.sh:232-237`), not at
+  scoring, so a crawler whose forward-confirm failed *can* accrue temps and
+  appear in the preview. The omission is still safe — a real crawler sends a UA,
+  so `uapres > 0` and it cannot satisfy the bucket-2 predicate — but the comment
+  is now corrected rather than left as a trap for the next reader.
+- **`[4.5-b M3]`** an attacker-controlled PTR was passed straight back as `dig`
+  argv, so a value like `-f/etc/hosts` becomes a flag and dig reads that file as
+  root. Now charset-validated before it is ever an argument.
+- **`[4.6-a M2]`** the domlog glob is filtered to regular files
+  (`lib/ingest.sh:181-182`); one cPanel subdirectory otherwise tripped the
+  degraded-read guard and collapsed the sort into a ~1000-row human review.
+- **`[4.6-a M4]`** the ledger query uses `GROUP_CONCAT` so a same-`ts` dual-plane
+  twin cannot overwrite a `request_flood` reason and silently drop its veto.
+- Minors: case-insensitive `::ffff:` unwrap; `intel_ok` set correctly on a
+  missing DB; `SHARED_EGRESS_ENABLE=false` now forces review rather than
+  clearing rows.
+
+## Also found by Claude, not by either model
+
+- **The script requires bash 4+** (swatter's helpers use `${var,,}`,
+  `lib/allowlist.sh:39`). An early smoke test ran under macOS `/bin/bash` 3.2,
+  where that is a "bad substitution" error — and without `-e` the function limps
+  on with an empty value, quietly weakening `_inert_reason`'s private/loopback
+  match. A version guard now fails loudly. Worth recording because the test
+  *passed* while silently skipping every lowercase path.
+- **304 and 206 are successful deliveries.** The first lines of a real cds1
+  customer log are `304`s — a human browsing with a warm cache. Counting only
+  `2xx` as "served" understates delivery on exactly the rows that matter.
+- **"No browser UA" is not "not a legitimate client."** One real customer log
+  yielded Inoreader, FreshRSS, a named article feed, and GroupMe/WhatsApp
+  link-preview fetchers, none matching a browser regex. The 2026-08-01 audit's
+  actual measurement was *UA absent on every request* (43 of 63), which is what
+  the predicate now uses.
+
+## Status
+
+Round-2 findings are folded in and each fix is verified against fixtures that
+reproduce the failure: an unreadable ASN list moves the one bucket-2 row to
+bucket 3 and empties bucket 2; a poisoned `/0` CIDR line does the same; a
+request path containing a space is correctly seen as served; a malformed line
+forces review; an invalid candidate never reaches `dig`.
+
+**Round 3 is running.** This script does not run on cds1 until it clears.
