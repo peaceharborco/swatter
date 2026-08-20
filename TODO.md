@@ -247,19 +247,45 @@ saved list the gate says never to review.
       the sort and the sample audit can be automated; the customer-identity calls
       need someone who knows the customers. If that is one person, the calendar
       after 08-27 is theirs, not the floor's.
-- [ ] **Build the enrichment + sort tooling now — this is the highest-value
-      pre-floor task and nothing about it is freshness-sensitive.** The scheme
-      wants ASN, forward-confirmed PTR, top vhost, 2xx fraction, UA
-      presence/rotation, intel verdict, shared-egress match and
-      already-allowlisted flag per row. Written on 08-26 that is an hour of
-      pressure on the one day that matters; written now it makes the sort a *run*
-      rather than a *build*. Test it against the **window=7** preview already
-      captured (201 rows, 2026-08-20) — that is not the gate's list, so using it
-      as a fixture breaks no rule.
-      ⚠️ **This is code.** If it lands on cds1 to run against real data it goes
-      through `/grok` first, like anything else that reaches the host — a
-      read-only analysis script that mis-classifies a row silently feeds the
-      wrong bucket, which is precisely the failure the review exists to prevent.
+- [ ] **Build the enrichment + sort tooling — FIRST DRAFT WRITTEN AND KILLED AT
+      THE GATE 2026-08-20. Needs a rewrite, not a patch.**
+      **Review:** `docs/superpowers/specs/2026-08-20-gate-d-enrich-review-grok.md`
+      — `grok-4.6` + `grok-4.5`, both **HOLD**, five Blockers. The draft is
+      deliberately **not committed**: a known-unsafe script in a public tree is a
+      landmine, and the rewrite starts from the review, not from the draft.
+
+      The one worth carrying in your head, because it is this repo's own defect
+      class wearing new clothes: the draft never called `swatter_load_config` /
+      `swatter_check_deps`, so `SWATTER_HAVE_DNS` was unset, so
+      `swatter_asn_resolve` returned 1 every time, so the **ASN arm of
+      shared-egress never fired**. cds1's `shared-egress-asns.txt` holds exactly
+      one entry — **206092, ASN-only, not covered by the CIDR file**. So the very
+      cohort the 08-11 sweep found and capped could not reach bucket 1, and a
+      scanner-shaped member with `abuseipdb:confidence100` lands in bucket 2,
+      which no human reads — an irreversible public report **against an address
+      the enforcer itself would refuse to perm**. Hard intel cannot save you
+      there: a shared VPN exit earns maximum AbuseIPDB confidence precisely
+      *because* many unrelated people use it.
+
+      Two structural lessons for the rewrite, both in the review's "the fix is a
+      redesign" section:
+      - **Reusing a swatter function without reproducing its preconditions is not
+        reuse.** The enforcer calls those matchers with config loaded and deps
+        checked; the draft called the same names in a different world.
+      - **The enforcement fail direction is the WRONG one for this sort.**
+        `swatter_is_shared_egress` fails open so DNS cannot become an
+        availability lever on the ladder — correct for banning, backwards for
+        classifying. A lookup that could not tell must go to bucket 3.
+
+      Still true and still the reason to do this before the floor: written on
+      08-26 it is an hour of pressure on the one day that matters. Test against
+      the **window=7** preview already captured (201 rows, 2026-08-20) — not the
+      gate's list, so it breaks no rule as a fixture.
+      ⚠️ **It rides `/grok` again before it runs on cds1.** The first draft was
+      `bash -n` clean, `shellcheck -S warning` clean, and verified against
+      hand-written fixtures — and not one of those touched a single Blocker. The
+      fixtures shared the author's blind spots, which is the whole reason a second
+      model reads it.
 
 #### Gate D review — recording scheme
 
