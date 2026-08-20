@@ -227,9 +227,13 @@ saved list the gate says never to review.
       gate D section. **Nothing to do today** — the flip is step 1 of the widen
       block below, because until the window is actually 30d there is no risk to
       cover and an early flip only forfeits ~21 legitimate reports/day.
-- [ ] **Re-baseline any `swatter top` triage notes taken before 2026-07-27** —
-      the open precondition further down. Independent of the floor, and it feeds
-      the review, so it wants to be done before the review starts, not during it.
+- [x] **Re-baseline the pre-2026-07-27 `swatter top` triage notes — DONE
+      2026-08-20; nothing needed correcting.** Full audit and the re-baselined
+      picture are in the precondition further down. Two things worth carrying
+      forward: `top` is now entirely settled cases (all 20 rows `PERM=1`), so
+      triage the review from `escalate-preview`, not `top`; and the same run
+      surfaced that the candidate population has grown **1.6× in 19 days** at
+      window=7 — see the ⚠️ sizing note, the review is likely bigger than 615.
 - [ ] **Decide how the 615-row review gets recorded** and who does the
       allowlisting. A sizing run of `escalate-preview --window 30` now is fine to
       scope the hours — but the list that is actually reviewed must be
@@ -812,16 +816,59 @@ population at window=30 is **615** (64 at-bar, 551 one-away) against **125** at
 window=7 — 4.9×, not the ~3× "triples" language used throughout this section.
 The human-review step in gate D is therefore a 615-row job, not a 300-row one.
 
+**⚠️ Treat 615 as a floor, not the number — it is stale and the population is
+growing.** Re-measured 2026-08-20: `escalate-preview --window 7` now reports
+**201** candidates (15 at-bar, 186 one-away) against the **125** measured
+2026-08-01. That is **1.6× in 19 days** at the same window. If window=30 has
+moved anything like proportionally the review is closer to **~1,000 rows** than
+615. That is an extrapolation from the 7d arm, not a measurement — the real
+number only exists after the post-floor `--window 30` run — but plan capacity
+against the larger figure, because discovering it on the 27th is how a review
+gets rushed. **Do not pre-run `--window 30` to settle this**; a preview generated
+before the floor is the saved list the gate forbids reviewing, and running it
+twice means reviewing it twice.
+
 Two items carried over as cds1-specific preconditions, still open:
 
-- [ ] **Re-baseline any triage notes taken from `swatter top` before
-      2026-07-27.** Its `OFFN`/`TEMP`/`PERM` columns used to include
-      report-mode activity, and cds1 ran report mode before enforce
-      (2026-06-12), so pre-fix numbers on that box are inflated by detections
-      that were never enforced. `top` is not the formal gate — `escalate-preview`
-      is — but the README and digest both train operators to triage from it.
-      `TEMP` is a LIFETIME enforced count, not the ladder's windowed number;
-      read `escalate-preview` for "how close is this IP to a perm."
+- [x] **Re-baseline any triage notes taken from `swatter top` before
+      2026-07-27 — DONE 2026-08-20. Nothing needed correcting.** Its
+      `OFFN`/`TEMP`/`PERM` columns used to include report-mode activity, and cds1
+      ran report mode before enforce (2026-06-12), so pre-fix numbers on that box
+      are inflated by detections that were never enforced. `top` is not the formal
+      gate — `escalate-preview` is — but the README and digest both train
+      operators to triage from it. `TEMP` is a LIFETIME enforced count, not the
+      ladder's windowed number; read `escalate-preview` for "how close is this IP
+      to a perm."
+
+      **What was audited, and why the answer is "none":**
+      - **Repo docs** — no surviving pre-07-27 note cites `top`-sourced
+        `OFFN`/`TEMP`/`PERM` figures. The 07-24 recidivism design derives its
+        numbers straight from the `actions` ledger with the `dry_run` flag
+        visible, and it already *corrects* a `top` artifact rather than inheriting
+        one ("every IP which reached perm shows `plane-upgrade` as its last
+        action" — an ordering artifact, disproved there by counter-example).
+      - **The live cds1 allowlist** (10 entries, each carrying a dated triage
+        note) — 4 predate 2026-07-27, all from 2026-06-10, i.e. written *during*
+        report mode. Every one is justified on **identity**, not on counts:
+        site owner, mobile user, confirmed-by-name. Identity triage does not read
+        the inflated columns, so none of them is contaminated. The 6 later
+        entries (07-27 and 08-08) are post-fix.
+
+      **The re-baselined picture, for whoever triages next.** `swatter top -n 20`
+      on 2026-08-20 returns 20 rows that **all carry `PERM=1`** — they are already
+      permanently banned, and 19 of 20 show `plane-upgrade` as `LAST`. `top` is
+      dominated by settled cases and answers "who has been worst", never "who is
+      about to escalate". The instrument that answers the second question, at the
+      live window, is:
+      ```
+      swatter escalate-preview --window 7   # 2026-08-20: 201 candidates
+                                            #   15 at-bar, 186 one-away
+      ```
+      Sanity check from that run, recorded because it is the shared-egress cap
+      visibly working: `104.28.208.56` sits **at-bar with 4 prior temps** and is
+      inside `104.28.0.0/16`, the WARP IPv4 range — so its next offense converts
+      to a ladder-max temp, not a perm. Two `104.28.x` rows are in the list; both
+      are capped. Confirmed against the live file, which holds all 11 ranges.
 - [x] **`monitoring.cidr` — CLOSED 2026-08-08. Correctly empty; do NOT
       populate it.** The precondition assumed monitors would be temp-banned by
       a 30-day ladder. Nothing that probes cds1 is ban-reachable:
