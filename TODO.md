@@ -210,6 +210,11 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       scheduled work — see its section below, and the dated run-up immediately
       after this list.
 
+> **Picking this up on the 26th? Read
+> `docs/handoff-2026-08-20-gate-d-widen.md` first.** It is the single
+> orientation document: the sequence, the commands, and the traps that will
+> bite. This section is the working record behind it.
+
 ### 📅 Run-up plan, 2026-08-20 → the floor
 
 Written 2026-08-20 (Thu). **The floor is Wed 2026-08-26 22:40 UTC = 15:40 PDT.**
