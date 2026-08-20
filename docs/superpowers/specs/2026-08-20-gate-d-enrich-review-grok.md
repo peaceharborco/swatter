@@ -279,3 +279,113 @@ request path containing a space is correctly seen as served; a malformed line
 forces review; an invalid candidate never reaches `dig`.
 
 **Round 3 is running.** This script does not run on cds1 until it clears.
+
+---
+
+# Round 3 (2026-08-20) — both models HOLD again, and the pattern is now the finding
+
+Round 3 confirmed every round-2 fix landed (both passes checked them individually
+rather than trusting the comments) and then found **two more Blockers, both
+independently reported by both models** — the strongest possible agreement
+signal. Both are now fixed and unit-tested.
+
+## The two round-3 Blockers
+
+**R3-B1 — the usability check and the matcher read the same file differently.**
+`_swatter_shared_egress_asns_usable` is `grep` (`lib/asn.sh:121-125`), which sees
+a final line with no trailing newline. `_asn_is_shared` used a bare
+`while IFS= read -r line`, which does not. **cds1's ASN file holds exactly one
+payload line — `206092`.** Hand-edit it without a trailing newline and the arm
+reports itself usable while matching nothing, so `se_evaluable=1` and the one
+cohort it exists to protect sails into bucket 2. Reproduced by both models and
+again here. `lib/common.sh:616-621` documents this exact footgun on the CIDR
+validator, in almost the same words: *"otherwise a poisoned last line … would be
+silently DROPPED and the list would falsely pass."* Fixed with the house idiom,
+in `_asn_is_shared` and in all four of this script's file-reading loops.
+
+**R3-B2 — multi-origin Cymru answers were only half-consumed.** Round 2 fixed
+concatenation by taking the first token, mirroring `lib/asn.sh:40-42`. But
+mirroring production is the **wrong contract here**: enforcement takes the first
+token and fails open (`lib/asn.sh:131-132`) because a missed ASN just means the
+ban proceeds. In this sort a missed ASN means an irreversible report. A prefix
+can have several origin ASNs, and `test/asn_test.sh:29-31` shows the production
+shape `"13335 15169 | …"` — numerically 13335 sorts first, and 13335 is
+*deliberately never listed*. So `"13335 206092"` parsed to `13335`, missed, and
+cleared the row. Now every TXT RR and every origin token is checked; any
+non-digit token makes the answer ambiguous and forces bucket 3.
+
+## Round-3 Majors folded in
+
+- awk's **exit status** was ignored — only stderr lines were counted — so a
+  signal-kill left a truncated traffic file with an empty error log and rows
+  classified on a partial read. Non-zero status now counts as a degraded read.
+- `request_flood` was only a veto when it sat on the `MAX(ts)` row; an older
+  flood under newer hard intel was invisible. Now queried across all history.
+- The enforcer already stamps `shared-egress=… perm-capped` on capped actions
+  (`lib/score.sh:264`) — free, authoritative, and previously ignored. It is now
+  an inert veto, checked *before* any live rematch, so a DNS answer that
+  disagrees with the ledger cannot undo it.
+- `se_evaluable` was an AND-gate that disabled the **ASN** arm when the **CIDR**
+  file was the one that died; production runs the arms independently
+  (`lib/asn.sh:145-151`). Split: either arm can mark a row inert, but *clearing*
+  a row for bucket 2 needs both.
+- `ACCESS_LOG` was never scanned though ingest always reads it
+  (`lib/ingest.sh:191`), so an IP whose only successes lived there read as
+  "served nothing".
+- `--conf` pointing at a missing file was a silent no-op (`swatter_load_config`
+  sources only if `-f` and never returns non-zero, so the `|| die` was dead).
+- The pass now prefers `gawk`, as ingest does (`lib/ingest.sh:19`).
+- Output carries an explicit caveat that `served=0` means "nothing in the live
+  logs", not "never served anything" — rotated logs are outside the scan while
+  the preview window is 7–30 days.
+
+## A latent bug in swatter itself, found on the way
+
+**`_cidr_overlaps_file`'s IPv6 branch (`lib/allowlist.sh:151`) is a bare
+`while IFS= read -r pfx`; the IPv4 branch is `awk`.** awk processes a final line
+with no trailing newline; the bash loop drops it. So for *any* CIDR policy file
+whose last line is IPv6 — `allow.cidr`, `cloudflare.cidr`, `shared-egress.cidr`,
+`monitoring.cidr` — losing the trailing newline silently removes that range while
+every validator still passes the file. The shipped `config/shared-egress.cidr`
+ends with `2a09:bac7::/32`, and the code's own comments call the Cloudflare case
+"the catastrophic case". **This is not fixed here — it is a swatter bug, tracked
+separately.** This script defends itself by refusing to trust a policy file with
+no trailing newline.
+
+## The pattern, stated plainly
+
+| Round | Mechanism reaching bucket 2 |
+|---|---|
+| 1 | ASN arm never ran (config never loaded → `SWATTER_HAVE_DNS` unset) |
+| 2a | Multi-origin answer concatenated into a nonsense ASN |
+| 2b | Unreadable/missing ASN list read as "not shared" |
+| 3a | Usable-but-newline-less file: validator sees it, matcher does not |
+| 3b | Multi-origin answer where the shared ASN is present but not first |
+
+**Five distinct bugs, one shape, one destination.** Every one was an absence of
+evidence being read as evidence of absence, on the single predicate whose failure
+is irreversible. Three independent review rounds each found at least one, and no
+round found the previous round's.
+
+That frequency is itself the most important finding in this document, and it
+raises a design question the fixes do not answer: **bucket 2 exists only to save
+review effort, and it is where all of the irreversible risk lives.** A two-bucket
+sort — inert vs. human — would eliminate this entire class by construction. The
+cost is a larger human review; the benefit is that no amount of subtle evidence
+mishandling can produce a permanent public accusation against an innocent
+address. That trade is the operator's to make, and it should be made before this
+tool runs, not after.
+
+## Status
+
+All round-3 findings are folded in and unit-tested (no-trailing-newline file →
+match still hits; multi-origin with the shared ASN second → hits; neither shared
+→ correctly misses; policy file without a trailing newline → arm marked unusable
+and bucket 2 forced empty). The script is now committed at
+`tools/gate-d/gate-d-enrich.sh`.
+
+**It has NOT been re-reviewed since these fixes.** A round 4 is required before
+it runs on cds1 — and note the process error worth not repeating: round-3 pass A
+was reviewing the file while round-3 pass B's fixes were being applied to it, so
+it reviewed a version that no longer exists. Freeze the target for the duration
+of a round.
