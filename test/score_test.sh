@@ -83,6 +83,77 @@ done
 emit_spread "$tmp/legit.log" "203.0.113.50" "GET /missing HTTP/1.1" 404 "Mozilla/5.0 (Macintosh)" 2
 assert_band "legit-visitor" "$(score_of example.com "$tmp/legit.log")" 0 49
 
+# --- 1b: mangled-srcset 404 storm is the SITE's bug, not a probe ------------
+# 2026-08-28 gate D review: broken srcset markup made browsers request the whole
+# srcset value as one URL, always 404. 17,829 such requests from 8,767 DISTINCT
+# client IPs across 35 hosted sites, overwhelmingly residential broadband with
+# ordinary consumer browser UAs. Nineteen real visitors were already temp-blocked,
+# six by rule=error_burst, one a live perm candidate. A real visitor must not be
+# banned for the site's own markup -- and the exemption must not become a
+# detection blind spot. Both review models broke the FIRST version of this fix;
+# the bypass strings they supplied are pinned below by name.
+HP="$tmp/honeypots.conf"; printf '/__trap_a7f3c1d9(/|$)\n' > "$HP"
+srcset_score() {  # srcset_score <path> <count> -> score or NONE
+    local pth="$1" cnt="$2" i
+    : > "$tmp/ss.tsv"
+    for (( i=1; i<=cnt; i++ )); do
+        printf '198.51.100.9\t%s\tGET\t%s\t404\t-\tcurl/8.0\n' \
+            $(( NOW_EPOCH - 300 + i )) "$pth" >> "$tmp/ss.tsv"
+    done
+    gawk -v NOW="$NOW_EPOCH" -v WINDOW=600 -v MIN_REQS=15 -v RATE_SAT=8 -v SCORE_WATCH=50 \
+         -v W_RATE=18 -v W_ERR_RATIO=16 -v W_ERR_BURST=12 -v W_FANOUT=12 -v W_BADPATH=22 \
+         -v W_UA=6 -v W_POST_FLOOD=8 -v W_NOVHOST=6 \
+         -v BADPATHS="${ROOT}/config/badpaths.conf" -v HONEYPOTS="$HP" \
+         -f "${ROOT}/lib/score.awk" "$tmp/ss.tsv" \
+      | awk -F'\t' 'NR==1{print $2; f=1} END{if(!f) print "NONE"}'
+}
+ss_band() { assert_band "$1" "$2" "$3" "$4"; }
+
+# The real production shapes must NOT score.
+ss_band "srcset-real-shape-not-banned" \
+  "$(srcset_score '/wp-content/uploads/2025/10/photo-768x576.jpg%20768w,%20https:/example.com/photo-900x675.jpg%20900w' 220)" 0 49
+# Single-candidate srcset has no trailing comma; density (sizes) descriptors use Nx.
+# Both are the same defect and were MISSED by the first version of the fix.
+ss_band "srcset-single-candidate-no-comma"  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w' 220)" 0 49
+ss_band "srcset-density-descriptor"         "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%202x,%20https:/e/y.jpg%203x' 220)" 0 49
+
+# --- the bypasses both models found in the first version of this fix --------
+# Each of these must STILL score. Named for the reviewer that supplied them.
+ss_band "bypass-badpath-prefix-dotfile"     "$(srcset_score '/.env/uploads/2025/10/x.jpg%20300w,' 220)" 75 100
+ss_band "bypass-git-config-prefix"          "$(srcset_score '/.git/config/uploads/2025/10/x.jpg%20300w,' 220)" 75 100
+ss_band "bypass-honeypot-prefix"            "$(srcset_score '/__trap_a7f3c1d9/uploads/2025/10/x.jpg%20300w,' 220)" 90 100
+ss_band "bypass-pathinfo-index-php"         "$(srcset_score '/index.php/uploads/2025/10/x.jpg%20300w,' 220)" 75 100
+ss_band "bypass-scanner-html-prefix"        "$(srcset_score '/scan/path-1.html/uploads/2025/10/x.jpg%20300w,' 220)" 75 100
+ss_band "bypass-shell-php-jpg"              "$(srcset_score '/wp-content/uploads/2025/10/shell.php.jpg%20768w,' 220)" 75 100
+ss_band "bypass-trailing-dotenv"            "$(srcset_score '/uploads/2025/10/x.jpg%20300w,/.env' 220)" 75 100
+ss_band "bypass-traversal-to-dotenv"        "$(srcset_score '/uploads/2025/10/../../../.env.jpg%20300w,' 220)" 75 100
+# The independent-substring hole: ext and descriptor must be ADJACENT.
+ss_band "bypass-nonadjacent-descriptor"     "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg,foo%20300w,' 220)" 75 100
+
+# --- controls: ordinary detection is untouched ------------------------------
+ss_band "plain-404-storm-still-scores"      "$(srcset_score '/nope-page' 220)" 75 100
+ss_band "bare-critical-badpath-still-floors" "$(srcset_score '/.env' 2)" 90 100
+ss_band "bare-honeypot-still-floors"        "$(srcset_score '/__trap_a7f3c1d9' 2)" 90 100
+
+# ...and the exemption is NEUTRAL, never a shield: a real probe run scores the
+# same padded or not. This is why the exempted request is dropped BEFORE reqs[]
+# rather than merely kept out of cerr[] -- err_ratio is nerr/n, so counting
+# padding in n while excluding it from nerr would be a dilution lever.
+: > "$tmp/probe_only.log"
+emit_spread "$tmp/probe_only.log" "203.0.113.81" "GET /nope-page HTTP/1.1" 404 "curl/8.0" 120
+BARE="$(score_of example.com "$tmp/probe_only.log")"
+: > "$tmp/probe_padded.log"
+PAD='/wp-content/uploads/2025/10/photo-768x576.jpg%20768w,%20https:/example.com/photo-900x675.jpg%20900w'
+emit_spread "$tmp/probe_padded.log" "203.0.113.82" "GET /nope-page HTTP/1.1" 404 "curl/8.0" 120
+emit_spread "$tmp/probe_padded.log" "203.0.113.82" "GET ${PAD} HTTP/1.1" 404 "curl/8.0" 440
+PADDED="$(score_of example.com "$tmp/probe_padded.log")"
+ss_band "probe-run-still-scores-when-padded" "$PADDED" 75 100
+if [[ "$BARE" == "$PADDED" ]]; then
+    printf 'PASS  %-30s padding is neutral (both %s)\n' "srcset-padding-is-neutral" "$BARE"; PASS=$((PASS+1))
+else
+    printf 'FAIL  %-30s bare=%s padded=%s\n' "srcset-padding-is-neutral" "$BARE" "$PADDED"; FAIL=$((FAIL+1))
+fi
+
 # --- 2: wp-login.php credential brute (HIGH bad-path, repeated, POST) --------
 : > "$tmp/wpbrute.log"
 emit_spread "$tmp/wpbrute.log" "45.146.165.10" "POST /wp-login.php HTTP/1.1" 200 "python-requests/2.31" 60
