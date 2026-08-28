@@ -206,10 +206,28 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       prunes the dir, so it grows one file per reported IP forever. It is an
       append-only ledger — do not read a file count as "recent activity".
       `ABUSEIPDB_REPORT_TTL` is unset → default 900s.
-- [ ] **Gate D** (floor **2026-08-26 22:40 UTC**) is now the only remaining
-      scheduled work — see its section below, and the dated run-up immediately
-      after this list.
+- [x] **Gate D review — DONE 2026-08-28.** All 1,118 candidates dispositioned
+      (`/root/gate-d-review/round-20260828T123856Z/decisions.tsv`). Bucket 2
+      collapsed into review: its "no UA on ANY request" predicate was false for
+      4 of 7 once the ROTATED archive was audited, not just live logs.
+- [ ] **THE WIDEN IS BLOCKED — do not run step 4 yet.** The review found two
+      false positives, both real people, and the second is an active fleet-wide
+      class: broken srcset markup makes browsers request the whole srcset value
+      as one URL (always 404). 17,829 requests, **8,767 distinct client IPs**,
+      35 sites, still running ~2,100/month; **19 real residential visitors are
+      already temp-blocked**, six by `rule=error_burst`. Widening 7d -> 30d gives
+      them four times as long to reach the 3-temp bar, and a perm is also a
+      permanent public AbuseIPDB accusation against a client's own visitor.
+      Swatter-side fix is committed (branch
+      `fix/gate-d-round5-and-srcset-false-positives`, `a729dd8`) but **NOT
+      deployed**; the WordPress markup bug is untouched.
+      **Read `docs/handoff-2026-08-28-gate-d-review-complete.md`.**
 
+> **2026-08-28: the review is COMPLETE and the widen is BLOCKED. Read
+> `docs/handoff-2026-08-28-gate-d-review-complete.md` FIRST** — it supersedes
+> the 08-20 handoff for everything through step 3 and explains why step 4 must
+> wait. The 08-20 document below is still correct for step 4 itself.
+>
 > **Picking this up on the 26th? Read
 > `docs/handoff-2026-08-20-gate-d-widen.md` first.** It is the single
 > orientation document: the sequence, the commands, and the traps that will
