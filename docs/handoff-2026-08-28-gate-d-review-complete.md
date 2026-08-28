@@ -12,8 +12,12 @@ The gate D review is done. All 1,118 candidates are dispositioned. **The widen
 did not happen and should not happen yet**, because the review found an active,
 fleet-wide source of false positives that the widen would multiply.
 
-Nothing on cds1 was changed: `REPEAT_WINDOW_DAYS` is still 7, `ABUSEIPDB_REPORT`
-is still `true`, no ban was placed or lifted, no config edited.
+**The ladder itself is untouched:** `REPEAT_WINDOW_DAYS` is still 7,
+`ABUSEIPDB_REPORT` is still `true`, and no ban was placed or lifted.
+
+Two changes WERE made to cds1 on 2026-08-28, both detailed below: `lib/score.awk`
+was deployed (the false-positive fix), and `AS137409` was added to
+`shared-egress-asns.txt`. Neither touches the widen.
 
 Work products are on cds1 under `/root/gate-d-review/round-20260828T123856Z/`
 (mode 0700): `enriched.tsv`, `buckets.txt`, `decisions.tsv` (1,077 rows),
@@ -106,7 +110,7 @@ bounds, and the exact thing gate D exists to catch.
 
 ---
 
-## 1. DONE — swatter no longer scores this class (committed, NOT deployed)
+## 1. DONE — swatter no longer scores this class (deployed 2026-08-28)
 
 Branch `fix/gate-d-round5-and-srcset-false-positives`, commit `a729dd8`.
 
