@@ -158,14 +158,27 @@ blocked a real attacker (`34.123.132.35`, `critical_badpath`).
 
 `sha256` of the installed file matches commit `a729dd8` exactly.
 
-**Prod is now v2.16.1 PLUS this one file.** `bin/swatter`, `lib/errors.sh`,
-`lib/report.sh`, `lib/ingest.sh`, `lib/allowlist.sh` and `lib/asn.sh` all still
-sha-match the `v2.16.1` tag; only `score.awk` differs. `CLAUDE.md` wants the
-final sha-verify to be *against a release tag*, and no tag contains this change
-yet — that step could not be completed as written. **Close the drift by cutting a
-release** (merge the branch, bump `SWATTER_VERSION`, tag, GitHub + GitLab), which
-was deliberately not done here because publishing to a public repo is
-outward-facing.
+**RELEASED as v2.17.0 and fully deployed, 2026-08-28.** The earlier state — prod
+running v2.16.1 plus one hand-copied file — is closed. `install/release.sh 2.17.0`
+tagged and published to GitHub and GitLab after all three CI checks went green.
+
+The release also carried `d396ad6`, the policy-file trailing-newline fix, which
+had been committed but deliberately left undeployed on 08-20 so that a rate
+anomaly could not be ambiguous. That reasoning no longer applies — the widen has
+not happened, so there is nothing to confound.
+
+Second deploy (`bin/swatter`, `lib/allowlist.sh`, `lib/asn.sh`,
+`lib/origin_lock.sh`) used the same surgical procedure: every staged file
+`bash -n` checked BEFORE anything was touched, cron held outside `/etc/cron.d`,
+backups in `/root/deploy-bak-20260828T173728Z/`, cron restored and verified.
+
+**All 32 installed files now sha-match the `v2.17.0` tag — zero drift.**
+`origin-lock` still reports `ranges ok` and **`/etc/csf/csfpre.sh` is byte-identical
+to before the deploy** (sha `5445ca24…`, 66 lines, 2 DROP/LOG rules), which was
+the thing to watch: `lib/origin_lock.sh` gained per-line range validation, and a
+too-aggressive prefix floor there could have dropped a real Cloudflare edge range
+from the lock. It did not. Shared-egress still resolves for WARP v4, WARP v6,
+`AS206092` and the new `AS137409`. The 17:40 scheduled enforce scan ran clean.
 
 ## 2. NOT DONE — the WordPress markup bug itself
 

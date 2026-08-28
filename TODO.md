@@ -220,9 +220,10 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       permanent public AbuseIPDB accusation against a client's own visitor.
       Swatter-side fix **DEPLOYED to cds1 2026-08-28 17:10 UTC** (surgical-scp
       of `lib/score.awk` only; sha-matches `a729dd8`; 17:15 enforce scan clean).
-      `AS137409` added to `shared-egress-asns.txt` the same day. Prod is now
-      v2.16.1 + one file — **cut a release to close that drift**. The WordPress
-      markup bug is still untouched.
+      `AS137409` added to `shared-egress-asns.txt` the same day. **Released as
+      v2.17.0 and fully deployed** — all 32 installed files sha-match the tag,
+      zero drift; the release also carried the previously-undeployed `d396ad6`.
+      The WordPress markup bug is still untouched.
       **Read `docs/handoff-2026-08-28-gate-d-review-complete.md`.**
 
 > **2026-08-28: the review is COMPLETE and the widen is BLOCKED. Read
