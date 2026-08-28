@@ -140,8 +140,28 @@ Verified on real production data per `CLAUDE.md`:
 strings are each pinned by name and fail against the broken version. `make test`
 green, CI lint clean.
 
-**It is committed but NOT deployed. cds1 still runs the old scorer**, so the 19
-visitors are still exposed today.
+**DEPLOYED to cds1 2026-08-28 17:10 UTC.** Surgical-scp of `lib/score.awk` only,
+per `CLAUDE.md`: staged from the live install, `/etc/cron.d/swatter` held OUTSIDE
+`/etc/cron.d` at `/root/cron-hold-20260828/` during the swap, waited for any
+in-flight scan, atomic `mv` into place, cron restored (both cron files verified
+back with original timestamps, hold dir removed). Live file backed up to
+`/root/score.awk.bak-20260828T171018Z`.
+
+Post-deploy verification: `test-config` healthy and posture unchanged (enforce,
+ladder ARMED, 2 ASNs, origin-lock drop, AbuseIPDB still on); `scan --dry-run`
+clean; and the 17:15 scheduled `enforce` scan ran with no errors and correctly
+blocked a real attacker (`34.123.132.35`, `critical_badpath`).
+
+`sha256` of the installed file matches commit `a729dd8` exactly.
+
+**Prod is now v2.16.1 PLUS this one file.** `bin/swatter`, `lib/errors.sh`,
+`lib/report.sh`, `lib/ingest.sh`, `lib/allowlist.sh` and `lib/asn.sh` all still
+sha-match the `v2.16.1` tag; only `score.awk` differs. `CLAUDE.md` wants the
+final sha-verify to be *against a release tag*, and no tag contains this change
+yet — that step could not be completed as written. **Close the drift by cutting a
+release** (merge the branch, bump `SWATTER_VERSION`, tag, GitHub + GitLab), which
+was deliberately not done here because publishing to a public repo is
+outward-facing.
 
 ## 2. NOT DONE — the WordPress markup bug itself
 
@@ -188,13 +208,14 @@ should stop being described as "empty = healthy" — it is not empty.
 
 ## Recommended order from here
 
-1. Deploy the scorer fix to cds1 (surgical-scp per `CLAUDE.md`: stage from the
-   live install, validate `test-config` + `scan --dry-run` against the real conf,
-   hold cron **outside** `/etc/cron.d`, install, restore cron, sha-verify). This
-   stops real visitors being blocked and is the only item with live harm.
-2. Add `AS137409`.
-3. Fix the srcset markup on the fleet.
-4. Only then: step 4 of the 08-20 handoff (freeze AbuseIPDB, `REPEAT_WINDOW_DAYS=30`,
+1. ~~Deploy the scorer fix to cds1.~~ **DONE 2026-08-28 17:10 UTC.**
+2. ~~Add `AS137409`.~~ **DONE 2026-08-28** — all four `85.203.23.x` addresses now
+   resolve as `AS137409(GSL Networks…)` shared egress, verified end-to-end with
+   DNS armed; `206092` control still resolves and an ordinary attacker still does
+   not. Backup at `/etc/swatter/shared-egress-asns.txt.bak-20260828`.
+3. **Cut a release** to close the v2.16.1 + one-file drift described above.
+4. Fix the srcset markup on the fleet.
+5. Only then: step 4 of the 08-20 handoff (freeze AbuseIPDB, `REPEAT_WINDOW_DAYS=30`,
    48h baseline, `shared-egress-audit`, restore reporting).
 
 Re-run `escalate-preview` fresh at that point. This preview is now days old, and

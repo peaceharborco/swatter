@@ -218,9 +218,11 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       already temp-blocked**, six by `rule=error_burst`. Widening 7d -> 30d gives
       them four times as long to reach the 3-temp bar, and a perm is also a
       permanent public AbuseIPDB accusation against a client's own visitor.
-      Swatter-side fix is committed (branch
-      `fix/gate-d-round5-and-srcset-false-positives`, `a729dd8`) but **NOT
-      deployed**; the WordPress markup bug is untouched.
+      Swatter-side fix **DEPLOYED to cds1 2026-08-28 17:10 UTC** (surgical-scp
+      of `lib/score.awk` only; sha-matches `a729dd8`; 17:15 enforce scan clean).
+      `AS137409` added to `shared-egress-asns.txt` the same day. Prod is now
+      v2.16.1 + one file — **cut a release to close that drift**. The WordPress
+      markup bug is still untouched.
       **Read `docs/handoff-2026-08-28-gate-d-review-complete.md`.**
 
 > **2026-08-28: the review is COMPLETE and the widen is BLOCKED. Read
