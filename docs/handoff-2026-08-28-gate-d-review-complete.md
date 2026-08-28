@@ -76,10 +76,19 @@ which always 404s. Fleet-wide:
 ```
 
 **35 hosted sites**, spanning customer sites and several of Peace Harbor's own
-internal hosts. The single worst accounts for 10,889 of the hits; the next four
-carry 400–1,700 each. Referer is each site's homepage. The site list is
-deliberately not written here — this repo is public. Regenerate it on cds1 with
-the `zgrep` above piped through `zgrep -l`.
+internal hosts. Referer is each site's homepage. The site list is deliberately not
+written here — this repo is public. Regenerate it on cds1 with the `zgrep` above
+piped through `zgrep -l`.
+
+**Correction on the numbers, 2026-08-28:** the single worst site accounted for
+10,889 hits — 61% of the total — and it is being **retired** (the owner is
+concluding operations; it now serves a deliberate offline page). It is therefore
+out of remediation scope, and the totals above overstate what is left.
+
+**In-scope reality: 34 sites, 6,940 requests, 4,985 distinct client IPs**, with
+2026 running `Jan 1348 · Feb 1165 · Mar 607 · Apr 969 · May 370 · Jun 261 ·
+Jul 176 · Aug 579`. Smaller than the headline, still live, and August rose after
+falling for six months — so it is not fixing itself. The widen stays blocked.
 
 Monthly volume shows it is **current, not historical**:
 
