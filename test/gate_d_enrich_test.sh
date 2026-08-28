@@ -160,6 +160,26 @@ env PATH="$TMP/bin:$PATH" SWATTER_CONF="$TMP/etc/swatter.conf" \
 check "over-broad-never-block-file-refuses-to-run" "$r" "refused"
 : > "$TMP/etc/allow.cidr"
 
+# --- R5 real-data: a comments-only never-block file must NOT abort the run --
+# Found by dry-running against cds1: monitoring.cidr ships as an all-comments
+# header block. `-s` is true, comment-stripping leaves nothing, and
+# swatter_intel_cidr_feed_ok fails on empty input -- so the round-4 guard
+# aborted the entire gate D review on a stock, healthy file.
+cp "$TMP/etc/monitoring.cidr" "$TMP/etc/monitoring.cidr.bak" 2>/dev/null || true
+printf '# monitoring ranges -- one per line\n# (operator populates; none set)\n#\n' \
+    > "$TMP/etc/monitoring.cidr"
+env PATH="$TMP/bin:$PATH" SWATTER_CONF="$TMP/etc/swatter.conf" \
+    "$BASH_BIN" "$SCRIPT" --preview "$TMP/preview.tsv" --libdir "$REPO/lib" \
+    --out "$TMP/outmc" >/dev/null 2>&1 && rmc=ran || rmc=refused
+check "R5-comments-only-never-block-file-still-runs" "$rmc" "ran"
+# ...but a real over-broad entry in the same file must still refuse.
+printf '# header\n0.0.0.0/0\n' > "$TMP/etc/monitoring.cidr"
+env PATH="$TMP/bin:$PATH" SWATTER_CONF="$TMP/etc/swatter.conf" \
+    "$BASH_BIN" "$SCRIPT" --preview "$TMP/preview.tsv" --libdir "$REPO/lib" \
+    --out "$TMP/outmc2" >/dev/null 2>&1 && rmc2=ran || rmc2=refused
+check "R5-overbroad-entry-in-commented-file-still-refuses" "$rmc2" "refused"
+: > "$TMP/etc/monitoring.cidr"
+
 # --- A-M2: report-mode activity must not drive a real classification -------
 # A dry_run=1 row is a detection that was never enforced. If it becomes MAX(ts)
 # it can supply the hard-intel that sends a row into bucket 2 — a pile no human
@@ -172,6 +192,147 @@ b="$(run)"; check "report-mode-row-cannot-supply-hard-intel" "$b" "3"
 sqlite3 "$TMP/state/swatter.db" "DELETE FROM actions;
   INSERT INTO actions(ip,ts,action,reason,dry_run) VALUES
     ('198.51.100.7',100,'temp','score=91 intel=abuseipdb:confidence100(100) rule=critical_badpath',0);"
+
+# =========================================================================
+# ROUND 5 — findings from the fifth pass (grok-4.6 correctness / grok-4.5
+# red-team, both HOLD on the same B1). Both models noted the suite structurally
+# could not catch B1: every fixture used a one-line IPv4 CIDR file, so the
+# last-entry probe always happened to exercise the IPv4 matcher.
+# =========================================================================
+
+# --- R5-B1: dual-stack CIDR file, IPv6 last, IPv4 matcher broken ----------
+# The probe must not certify the CIDR arm on the strength of ONE address
+# family. Shipped config/shared-egress.cidr ends with a v6 range, so the v4
+# awk matcher -- WARP v4's only protection, since AS13335 is deliberately off
+# the ASN list -- went unprobed. Break v4 matching only; a WARP v4 row must
+# still refuse to reach bucket 2.
+printf '104.28.0.0/16  # WARP v4\n2a09:bac7::/32  # WARP v6 (LAST)\n' > "$TMP/etc/shared-egress.cidr"
+printf 'ip\ttemps_prior\tlast_temp_utc\tstatus\n104.28.196.52\t3\t2026-08-19 10:00:00\tat-bar\n' \
+    > "$TMP/preview5.tsv"
+printf '104.28.196.52 - - [19/Aug/2026:10:00:01 +0000] "GET /.env HTTP/1.1" 404 1 "-" "-"\n' \
+    > "$TMP/domlogs/example.com-ssl_log"
+sqlite3 "$TMP/state/swatter.db" "DELETE FROM actions;
+  INSERT INTO actions(ip,ts,action,reason,dry_run) VALUES
+    ('104.28.196.52',100,'temp','score=91 intel=abuseipdb:confidence100(100) rule=critical_badpath',0);"
+# A gawk that works for the traffic pass but an `awk` that fails for the
+# library's IPv4 matcher is exactly the divergence the models reproduced.
+cat > "$TMP/bin/awk" <<'BADAWK'
+#!/usr/bin/env bash
+for a in "$@"; do case "$a" in ipint=*) exit 1;; esac; done
+exec /usr/bin/awk "$@"
+BADAWK
+chmod +x "$TMP/bin/awk"
+b5="$(env PATH="$TMP/bin:$PATH" SWATTER_CONF="$TMP/etc/swatter.conf" \
+      "$BASH_BIN" "$SCRIPT" --preview "$TMP/preview5.tsv" --libdir "$REPO/lib" \
+      --out "$TMP/out5" >/dev/null 2>&1; \
+      awk -F'\t' 'NR>1 && $1=="104.28.196.52"{print $19"/"$20; exit}' "$TMP/out5/enriched.tsv" 2>/dev/null)"
+# Pin the REASON, not just the bucket [4.6-a m3]: scan_errs or have_traffic==0
+# would also yield 3, so a bare bucket check could pass for the wrong reason.
+check "R5-dual-stack-v4-matcher-broken-cannot-reach-bucket-2" "$b5" "3/shared-egress-not-evaluable"
+rm -f "$TMP/bin/awk"
+
+# Same file shape, matchers healthy: WARP v4 must be INERT, not merely reviewed.
+b5="$(env PATH="$TMP/bin:$PATH" SWATTER_CONF="$TMP/etc/swatter.conf" \
+      "$BASH_BIN" "$SCRIPT" --preview "$TMP/preview5.tsv" --libdir "$REPO/lib" \
+      --out "$TMP/out5b" >/dev/null 2>&1; \
+      awk -F'\t' 'NR>1 && $1=="104.28.196.52"{print $19; exit}' "$TMP/out5b/enriched.tsv" 2>/dev/null)"
+check "R5-dual-stack-healthy-warp-v4-is-inert" "$b5" "1"
+printf '104.28.0.0/16  # WARP v4\n' > "$TMP/etc/shared-egress.cidr"
+
+# --- R5-M1 (4.6-a): RFC6598 CGNAT is shared by construction ---------------
+printf 'ip\ttemps_prior\tlast_temp_utc\tstatus\n100.64.1.8\t3\t2026-08-19 10:00:00\tat-bar\n' \
+    > "$TMP/preview6.tsv"
+printf '100.64.1.8 - - [19/Aug/2026:10:00:01 +0000] "GET /.env HTTP/1.1" 404 1 "-" "-"\n' \
+    > "$TMP/domlogs/example.com-ssl_log"
+sqlite3 "$TMP/state/swatter.db" "DELETE FROM actions;
+  INSERT INTO actions(ip,ts,action,reason,dry_run) VALUES
+    ('100.64.1.8',100,'temp','score=91 intel=abuseipdb:confidence100(100) rule=critical_badpath',0);"
+b6="$(env PATH="$TMP/bin:$PATH" SWATTER_CONF="$TMP/etc/swatter.conf" \
+      "$BASH_BIN" "$SCRIPT" --preview "$TMP/preview6.tsv" --libdir "$REPO/lib" \
+      --out "$TMP/out6" >/dev/null 2>&1; \
+      awk -F'\t' 'NR>1 && $1=="100.64.1.8"{print $19; exit}' "$TMP/out6/enriched.tsv" 2>/dev/null)"
+check "R5-cgnat-rfc6598-is-inert" "$b6" "1"
+
+# --- R5-B2 (4.6-a), re-review B1 (4.5-b): EVERY mapped spelling -----------
+# The first fix matched two literal spellings; 4.5-b reproduced four more that
+# still reached bucket 2. lib/ingest.sh:33-34 unwraps only the compact form, so
+# these are exactly the spellings the ledger preserves. Give each one the full
+# bucket-2 setup (hard intel + matching traffic + no UA) so a miss really would
+# land in 2, not merely fail for lack of evidence.
+for mapped in '0:0:0:0:0:ffff:104.28.1.1' '::ffff:104.28.1.1' \
+              '0000:0000:0000:0000:0000:ffff:104.28.1.1' '0::ffff:104.28.1.1' \
+              '0:00:0:0:0:ffff:104.28.1.1' '0000::ffff:104.28.1.1'; do
+    printf 'ip\ttemps_prior\tlast_temp_utc\tstatus\n%s\t3\t2026-08-19 10:00:00\tat-bar\n' \
+        "$mapped" > "$TMP/preview7.tsv"
+    printf '%s - - [19/Aug/2026:10:00:01 +0000] "GET /.env HTTP/1.1" 404 1 "-" "-"\n' \
+        "$mapped" > "$TMP/domlogs/example.com-ssl_log"
+    sqlite3 "$TMP/state/swatter.db" "DELETE FROM actions;
+      INSERT INTO actions(ip,ts,action,reason,dry_run) VALUES
+        ('$mapped',100,'temp','score=91 intel=abuseipdb:confidence100(100) rule=critical_badpath',0);"
+    rm -rf "$TMP/out7"
+    env PATH="$TMP/bin:$PATH" SWATTER_CONF="$TMP/etc/swatter.conf" \
+        "$BASH_BIN" "$SCRIPT" --preview "$TMP/preview7.tsv" --libdir "$REPO/lib" \
+        --out "$TMP/out7" >/dev/null 2>&1
+    w7="$(awk -F'\t' 'NR>1{print $19; exit}' "$TMP/out7/enriched.tsv" 2>/dev/null)"
+    check "R5-mapped-never-bucket-2 [$mapped]" "$w7" "3"
+done
+printf '198.51.100.7 - - [19/Aug/2026:10:00:01 +0000] "GET /.env HTTP/1.1" 404 1 "-" "-"\n' \
+    > "$TMP/domlogs/example.com-ssl_log"
+sqlite3 "$TMP/state/swatter.db" "DELETE FROM actions;
+  INSERT INTO actions(ip,ts,action,reason,dry_run) VALUES
+    ('198.51.100.7',100,'temp','score=91 intel=abuseipdb:confidence100(100) rule=critical_badpath',0);"
+
+# --- R5-M2 (both models): a row that does not parse must not vanish -------
+# A 5-column row is still a CANDIDATE (first 4 fields taken), so it must be
+# bucketed normally, not dropped. A 2-column line cannot be, so it must appear
+# as a visible bucket-3 row -- never vanish, and never abort the run.
+printf 'ip\ttemps_prior\tlast_temp_utc\tstatus\n198.51.100.7\t3\t2026-08-19 10:00:00\tat-bar\ntruncated-line\n\n# an operator annotation\n' \
+    > "$TMP/preview8.tsv"
+rm -rf "$TMP/out8"
+env PATH="$TMP/bin:$PATH" SWATTER_CONF="$TMP/etc/swatter.conf" \
+    "$BASH_BIN" "$SCRIPT" --preview "$TMP/preview8.tsv" --libdir "$REPO/lib" \
+    --out "$TMP/out8" >/dev/null 2>&1 && r8=ran || r8=refused
+check "R5-annotated-preview-still-runs" "$r8" "ran"
+n8="$(awk -F'\t' 'NR>1' "$TMP/out8/enriched.tsv" 2>/dev/null | wc -l | tr -d ' ')"
+check "R5-unparsed-line-emitted-not-dropped" "$n8" "2"
+u8="$(awk -F'\t' 'NR>1 && $20 ~ /^unparsed-preview-line/{print $19; exit}' "$TMP/out8/enriched.tsv" 2>/dev/null)"
+check "R5-unparsed-line-is-bucket-3" "$u8" "3"
+c8="$(grep -o 'COMPLETE [0-9]*/[0-9]*' "$TMP/out8/buckets.txt" 2>/dev/null | head -1)"
+check "R5-complete-counts-include-unparsed" "$c8" "COMPLETE 2/2"
+
+# --- R5-m3 (both models): a poisoned cloudflare.cidr must not inert all ---
+printf '198.51.100.0/24 # not a Cloudflare range\n' > "$TMP/etc/cloudflare.cidr"
+r9="$(env PATH="$TMP/bin:$PATH" SWATTER_CONF="$TMP/etc/swatter.conf" \
+    "$BASH_BIN" "$SCRIPT" --preview "$TMP/preview.tsv" --libdir "$REPO/lib" \
+    --out "$TMP/out9" 2>&1 >/dev/null | grep -c 'documentation address')"
+# Assert the SPECIFIC guard fired [4.6-a m3]: a bare exit-code check would pass
+# on any unrelated die (bad conf, missing lib, broken awk).
+check "R5-poisoned-cloudflare-file-refuses-to-run" "$r9" "1"
+
+# 4.6-a M1: a narrow-but-implausible range evades the documentation canary.
+printf '0.0.0.0/1 # poison that misses every canary\n' > "$TMP/etc/cloudflare.cidr"
+r10="$(env PATH="$TMP/bin:$PATH" SWATTER_CONF="$TMP/etc/swatter.conf" \
+    "$BASH_BIN" "$SCRIPT" --preview "$TMP/preview.tsv" --libdir "$REPO/lib" \
+    --out "$TMP/out10" 2>&1 >/dev/null | grep -c 'implausibly broad')"
+check "R5-overbroad-cloudflare-range-refuses-to-run" "$r10" "1"
+
+# ...and a REAL Cloudflare-shaped list (widest /13 and /29) must NOT trip it.
+printf '104.16.0.0/13\n172.64.0.0/13\n162.158.0.0/15\n2a06:98c0::/29\n' > "$TMP/etc/cloudflare.cidr"
+env PATH="$TMP/bin:$PATH" SWATTER_CONF="$TMP/etc/swatter.conf" \
+    "$BASH_BIN" "$SCRIPT" --preview "$TMP/preview.tsv" --libdir "$REPO/lib" \
+    --out "$TMP/out11" >/dev/null 2>&1 && r11=ran || r11=refused
+check "R5-real-cloudflare-widths-still-run" "$r11" "ran"
+: > "$TMP/etc/cloudflare.cidr"
+
+# --- R5-m1 (4.6-a): a redirect is a served response ------------------------
+sqlite3 "$TMP/state/swatter.db" "DELETE FROM actions;
+  INSERT INTO actions(ip,ts,action,reason,dry_run) VALUES
+    ('198.51.100.7',100,'temp','score=91 intel=abuseipdb:confidence100(100) rule=critical_badpath',0);"
+printf '198.51.100.7 - - [19/Aug/2026:10:00:01 +0000] "GET /.env HTTP/1.1" 404 1 "-" "-"\n198.51.100.7 - - [19/Aug/2026:10:00:03 +0000] "GET /x HTTP/1.1" 301 0 "-" "-"\n' \
+    > "$TMP/domlogs/example.com-ssl_log"
+b="$(run)"; check "R5-301-counts-as-served" "$b" "3"
+printf '198.51.100.7 - - [19/Aug/2026:10:00:01 +0000] "GET /.env HTTP/1.1" 404 1 "-" "-"\n' \
+    > "$TMP/domlogs/example.com-ssl_log"
 
 # --- read-only: nothing written under STATE_DIR beyond our own fixture ----
 extra="$(find "$TMP/state" -type f ! -name 'swatter.db' | wc -l | tr -d ' ')"

@@ -142,6 +142,18 @@ source "${LIBDIR}/asn.sh" || die "failed to source asn.sh"
 
 AWK="$(command -v gawk || command -v awk)"
 [[ -n "$AWK" ]] || die "no awk found"
+# ROUND 5 (Claude-side sweep): `command -v` proves the binary EXISTS, not that it
+# WORKS — the same "trusted a validator instead of probing the matcher" mistake
+# round 4 fixed for the shared-egress arms. A present-but-broken gawk (a stale
+# Homebrew symlink to a removed Cellar path is the common one) is selected here
+# and then fails every awk stage; observed live, it turned 16 green tests into 14
+# failures. Probe it, and fall back to the other awk rather than dying.
+if ! printf 'x\n' | "$AWK" -v v=1 '{ if (v==1) print "ok" }' 2>/dev/null | grep -qx ok; then
+    note "NOTE: ${AWK} is present but did not execute a trivial program; falling back"
+    AWK="$(command -v awk)"
+    [[ -n "$AWK" ]] && printf 'x\n' | "$AWK" -v v=1 '{ if (v==1) print "ok" }' 2>/dev/null | grep -qx ok \
+        || die "no working awk found (tried gawk and awk)"
+fi
 [[ "$AWK" == *gawk ]] || note "NOTE: gawk not found, using ${AWK}; ingest parses with gawk (lib/ingest.sh:19)"
 
 DB="${STATE_DIR:-/var/lib/swatter}/swatter.db"
@@ -165,6 +177,16 @@ esac
 # Found by the Claude-side sweep, not by either model.
 for _nb in "${OPERATOR_ALLOW_FILE:-}" "${MONITORING_RANGES_FILE:-}"; do
     [[ -s "$_nb" ]] || continue
+    # ROUND 5 (real-data dry run against cds1): `-s` is true for a file that is
+    # nothing but comments, and swatter_intel_cidr_feed_ok FAILS on empty input
+    # — so this guard aborted the whole run on cds1's stock monitoring.cidr,
+    # which ships as a header block with every vendor range commented out. A
+    # file with no entries cannot mark anything inert, which is precisely the
+    # harm this guard exists to prevent, so it is safe and must not die. Only
+    # a file that actually HAS entries is worth validating.
+    # Fixtures never had this shape; production did. This is why the release
+    # sequence dry-runs against real prod data (CLAUDE.md).
+    [[ -n "$(sed 's/#.*//' "$_nb" | tr -d '[:space:]')" ]] || continue
     if ! sed 's/#.*//' "$_nb" \
          | INTEL_FEED_MIN_PREFIX4="${SHARED_EGRESS_MIN_PREFIX4:-16}" \
            INTEL_FEED_MIN_PREFIX6="${SHARED_EGRESS_MIN_PREFIX6:-32}" \
@@ -174,6 +196,55 @@ for _nb in "${OPERATOR_ALLOW_FILE:-}" "${MONITORING_RANGES_FILE:-}"; do
      nothing. Fix the file before running."
     fi
 done
+
+# ROUND 5 [4.6-a m3 / 4.5-M1, both models]: the loop above covers operator-allow
+# and monitoring, but _inert_reason consults CLOUDFLARE_IPS_FILE *first* for
+# every candidate. A poisoned or truncated cloudflare.cidr (a MITM'd refresh, a
+# hand-edit, a 0.0.0.0/0) marks every row inert:cloudflare-range and the report
+# reads "N inert, 0 to review" — a clean-looking run that examined nothing.
+#
+# It canNOT use the width test above. Cloudflare's REAL published list is
+# legitimately wider than SHARED_EGRESS_MIN_PREFIX allows — cds1 carries
+# 104.16.0.0/13, 104.24.0.0/14, 162.158.0.0/15, 172.64.0.0/13 and
+# 2a06:98c0::/29 — so reusing swatter_intel_cidr_feed_ok here would abort every
+# run on a perfectly healthy file. That was the fix one reviewer proposed; it is
+# wrong. Probe the matcher instead, the same way the shared-egress arms are
+# probed: a correct Cloudflare list must NOT contain reserved documentation
+# space. If it matches TEST-NET, it is not a Cloudflare list.
+if [[ -s "${CLOUDFLARE_IPS_FILE:-}" ]]; then
+    # Leg 1 — width floor. ROUND 5 re-review [4.6-a M1]: the canary alone was
+    # not enough. A body of `0.0.0.0/1` (or `1.0.0.0/8`) evades ALL FOUR
+    # documentation canaries — verified — while still marking WARP v4 and half
+    # the IPv4 internet inert:cloudflare-range.
+    # The floor must be tuned to Cloudflare's REAL shape, not to
+    # SHARED_EGRESS_MIN_PREFIX: cds1's genuine list is widest at /13 (v4) and
+    # /29 (v6), so reusing the shared-egress thresholds (/16, /32) would abort
+    # every run on a healthy file. /10 and /24 leave several bits of margin
+    # above the real values while still catching /0, /1 and /8.
+    _cf_bad="$(sed 's/#.*//' "${CLOUDFLARE_IPS_FILE}" 2>/dev/null | tr -d '[:blank:]' \
+        | "$AWK" -F/ 'NF==2 && $2 ~ /^[0-9]+$/ {
+              if ($1 ~ /\./) { if ($2+0 < 10) print $0 }
+              else if ($1 ~ /:/) { if ($2+0 < 24) print $0 }
+          }' | head -3 | tr '\n' ' ')"
+    if [[ -n "${_cf_bad// /}" ]]; then
+        die "${CLOUDFLARE_IPS_FILE} contains an implausibly broad range: ${_cf_bad}
+     Cloudflare's real published list is widest at /13 (v4) and /29 (v6). _inert_reason
+     consults this file for EVERY candidate, so a range this wide would mark rows
+     inert:cloudflare-range wholesale and the review would report a clean run having
+     examined nothing. Refresh it before running."
+    fi
+    # Leg 2 — documentation canary. Catches a file that is the right WIDTH but
+    # the wrong CONTENT (a test fixture, another provider's list, a truncation
+    # that happens to be narrow).
+    for _canary in 192.0.2.1 198.51.100.1 203.0.113.1 2001:db8::1; do
+        if _cidr_overlaps_file "$_canary" "${CLOUDFLARE_IPS_FILE}" 2>/dev/null; then
+            die "${CLOUDFLARE_IPS_FILE} matches reserved documentation address ${_canary}.
+     That file cannot be a real Cloudflare range list, and _inert_reason checks it
+     for EVERY candidate — every row would be marked inert:cloudflare-range and the
+     review would report a clean run having examined nothing. Refresh it before running."
+        fi
+    done
+fi
 
 CAND="${OUT}/candidates.tsv"
 TRAFFIC="${OUT}/traffic.tsv"
@@ -190,10 +261,43 @@ DECISIONS="${OUT}/decisions.tsv"
 rm -f -- "$ENRICHED" "$BUCKETS"
 
 # ------------------------------------------------------------ phase 1: parse
-"$AWK" -F'\t' 'NF==4 && $1!="ip" && $1!="" { print }' "$PREVIEW" > "$CAND"
+# ROUND 5 (both models): a row that is not NF==4 was silently discarded here, and
+# the completeness gate at the end compares enriched rows to $CAND — never to the
+# input. So a preview with a fifth column, a lost field or a trailing tab lost
+# those IPs from every bucket while the report still ended "COMPLETE n/n". A
+# vanished row is worse than a misfiled one: nothing reports it.
+#
+# ROUND 5 re-review [4.5-b M2]: the first fix for that was a `die`, which traded
+# the vanishing row for a DENIAL OF REVIEW — one stray annotation, a trailing
+# tab, or an Excel-touched copy of a valid 1,118-row preview would abort the
+# whole gate before a single row was bucketed. That is the same class of mistake
+# as the cloudflare width-check this round deliberately avoided. A line we cannot
+# parse is just another thing we could not evidence, and the invariant already
+# has the answer for that: it goes to bucket 3 where a human looks.
+#
+# Header only on line 1 (a data row whose first field is literally "ip" is not a
+# header and must not be silently eaten). Blank and #-comment lines are not lost
+# rows and are neither counted nor emitted.
+"$AWK" -F'\t' -v unp="${CAND}.unparsed" '
+    NR==1 && $1=="ip" { next }
+    $0 ~ /^[[:space:]]*$/ { next }
+    $0 ~ /^[[:space:]]*#/ { next }
+    NF>=4 && $1!="" { print $1 "\t" $2 "\t" $3 "\t" $4; next }
+    { print NR "\t" $0 > unp }
+' "$PREVIEW" > "$CAND"
 n_cand=$(wc -l < "$CAND" | tr -d ' ')
+n_unp=0
+[[ -f "${CAND}.unparsed" ]] && n_unp=$(wc -l < "${CAND}.unparsed" | tr -d ' ')
 (( n_cand > 0 )) || die "no candidate rows parsed from ${PREVIEW}"
-note "parsed ${n_cand} candidates"
+if (( n_unp > 0 )); then
+    note "WARNING: ${n_unp} preview line(s) did not parse as a candidate row."
+    note "         They are NOT dropped — each is emitted as a bucket-3 row so it is"
+    note "         counted and a human sees it. Lines:"
+    while IFS=$'\t' read -r _ln _rest || [[ -n "${_ln:-}" ]]; do
+        [[ -n "${_ln:-}" ]] && note "           line ${_ln}: ${_rest}"
+    done < "${CAND}.unparsed"
+fi
+note "parsed ${n_cand} candidates (${n_unp} unparsed line(s) routed to bucket 3)"
 
 # ------------------------------------------------- phase 2: one domlog pass
 # ONE pass over every domlog. Errors are NOT swallowed: a file we could not read
@@ -210,7 +314,13 @@ note "parsed ${n_cand} candidates"
 # into a ~1000-row human review.
 _logfiles=()
 # shellcheck disable=SC2086
-for _f in $GLOB; do [[ -f "$_f" ]] && _logfiles+=("$_f"); done
+# ROUND 5 [4.5-m4]: a log file whose name begins with "-" is parsed by awk as
+# an OPTION, not a path. `--` does not help: for an inline program awk stops
+# option parsing at the program text, so a trailing `--` is taken as a filename
+# and its "can't open file" lands in .scan_err — which trips the degraded-read
+# guard and collapses the whole sort to bucket 3. (Verified: adding `--` here
+# did exactly that.) Normalise the path instead.
+for _f in $GLOB; do [[ -f "$_f" ]] || continue; [[ "$_f" == -* ]] && _f="./$_f"; _logfiles+=("$_f"); done
 # ingest also always reads ACCESS_LOG (lib/ingest.sh:191, default
 # lib/common.sh:45). Omitting it meant an IP whose only successful responses
 # live in the shared access log read as "served nothing" — bucket-2 eligible on
@@ -254,7 +364,14 @@ note "scanning ${#_logfiles[@]} domlog files: ${GLOB}"
         if (status == "") { bad[ip]++ }
         # 304 and 206 ARE successful deliveries to a real client. The first
         # lines of a real cds1 customer log are 304s.
-        else if (status ~ /^2[0-9][0-9]$/ || status == "304" || status == "206") served[ip]++
+        # ROUND 5 [4.6-a m1]: so is a redirect. A 301/302/303/307/308 is the
+        # origin answering a real client with a real Location, which is exactly
+        # what "served something" is meant to capture; review found a row whose
+        # only traffic was a 301 reaching bucket 2. Counting them can only make
+        # the bucket-2 predicate HARDER to satisfy, which is the safe direction.
+        else if (status ~ /^2[0-9][0-9]$/ || status == "304" || status == "206" \
+                 || status == "301" || status == "302" || status == "303" \
+                 || status == "307" || status == "308") served[ip]++
 
         ua = tolower(q[nq-1])                  # last quote pair, lowercased as ingest does
         if (ua == "" || ua == "-") uaempty[ip]++
@@ -351,13 +468,47 @@ _asn_is_shared() {
 # drops the FINAL line, so probing the first entry would prove nothing about the
 # one actually at risk — and this script may be pointed at an installed
 # /usr/local/lib/swatter that predates the library-side fix.
-_probe_cidr_arm() {
-    local tok net
-    tok="$(sed 's/#.*//' "$SE_CIDR" 2>/dev/null | tr -d '[:blank:]' \
-           | grep -E '^[0-9a-fA-F:.]+/[0-9]+$' | tail -1)" || return 1
-    [[ -n "$tok" ]] || return 1
+#
+# ROUND 5 (both models, independently): "last entry" is ONE address family, and
+# _cidr_overlaps_file is TWO different matchers — IPv4 is a separate awk process
+# (lib/allowlist.sh:176-196), IPv6 is a bash `while read` (lib/allowlist.sh:151-170).
+# Probing whichever family happens to sit on the last line proves nothing about
+# the other, and which family that is depends only on the order someone appended
+# ranges. Both spellings of the failure are live:
+#   * repo config/shared-egress.cidr ends with 2a09:bac7::/32 (v6) — the awk arm
+#     that is WARP v4's ONLY protection (AS13335 is deliberately off the ASN
+#     list) would go unprobed.
+#   * cds1's live file ends with 194.5.82.0/24 (v4) — so the v6 arm goes
+#     unprobed instead, while a real WARP v6 candidate sits in the list.
+# So probe EVERY family the file actually contains, and require each to match.
+_probe_cidr_family() {
+    local fam="$1" tok net
+    case "$fam" in
+        v4) tok="$(sed 's/#.*//' "$SE_CIDR" 2>/dev/null | tr -d '[:blank:]' \
+                   | grep -E '^[0-9]+(\.[0-9]+){3}/[0-9]+$' | tail -1)" ;;
+        v6) tok="$(sed 's/#.*//' "$SE_CIDR" 2>/dev/null | tr -d '[:blank:]' \
+                   | grep -E '^[0-9a-fA-F:]*:[0-9a-fA-F:.]*/[0-9]+$' | tail -1)" ;;
+    esac
+    [[ -n "$tok" ]] || return 2           # 2 = family absent, not a failure
     net="${tok%%/*}"                      # a prefix always contains its own network address
-    _cidr_overlaps_file "$net" "$SE_CIDR" 2>/dev/null
+    _cidr_overlaps_file "$net" "$SE_CIDR" 2>/dev/null || return 1
+    return 0
+}
+# 0 only if every family PRESENT in the file was matched by the real matcher,
+# and at least one family was present.
+_probe_cidr_arm() {
+    local fam rc seen=0
+    for fam in v4 v6; do
+        _probe_cidr_family "$fam"; rc=$?
+        case "$rc" in
+            0) seen=1 ;;
+            2) : ;;                       # family not in the file — nothing to prove
+            *) note "shared-egress CIDR ${fam} matcher failed to match its own last ${fam} entry"
+               return 1 ;;
+        esac
+    done
+    (( seen )) || return 1
+    return 0
 }
 _probe_asn_arm() {
     local tok
@@ -374,12 +525,12 @@ if (( se_enabled )); then
     if _swatter_shared_egress_cidr_usable 2>/dev/null && _probe_cidr_arm; then
         se_cidr_ok=1
     else
-        note "shared-egress CIDR arm did NOT match its own first entry — arm treated as broken"
+        note "shared-egress CIDR arm did NOT match its own last entry in every family present — arm treated as broken"
     fi
     if _swatter_shared_egress_asns_usable 2>/dev/null && _probe_asn_arm; then
         se_asns_ok=1
     else
-        note "shared-egress ASN arm did NOT match its own first entry — arm treated as broken"
+        note "shared-egress ASN arm did NOT match its own last entry — arm treated as broken"
     fi
 fi
 # A policy file whose last line lacks a trailing newline is read differently by
@@ -505,6 +656,15 @@ _inert_reason() {
     case "$lip" in
         127.*|10.*|192.168.*|169.254.*|::1|fe80:*|fc*:*|fd*:*) echo "local/private"; return 0 ;;
         172.1[6-9].*|172.2[0-9].*|172.3[0-1].*)                echo "rfc1918";       return 0 ;;
+        # ROUND 5 [4.6-a M1]: RFC6598 carrier-grade NAT. Shared BY CONSTRUCTION —
+        # it is the address space ISPs put many subscribers behind, which is
+        # exactly the "shared exit, never allowlist" class the handoff's
+        # disposition table calls out. It cannot be added to shared-egress.cidr:
+        # the block is a /10 and SHARED_EGRESS_MIN_PREFIX4=16 would reject the
+        # line, and one rejected line disables the WHOLE CIDR arm
+        # (lib/asn.sh:106-112) — taking WARP v4 down with it. So special-case it.
+        100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*)
+                                                               echo "cgnat-rfc6598"; return 0 ;;
     esac
     _cidr_overlaps_file "$ip" "${CLOUDFLARE_IPS_FILE}" 2>/dev/null && { echo "cloudflare-range"; return 0; }
     _ip_in_cidr_list "$ip" "${SWATTER_CF_FALLBACK_V4} ${SWATTER_CF_FALLBACK_V6}" 2>/dev/null \
@@ -539,6 +699,17 @@ trap _cleanup EXIT
 # ------------------------------------------------------------ phase 4: bucket
 printf 'ip\ttemps_prior\tlast_temp_utc\tstatus\tinert\tasn\tptr\tptr_confirmed\tvhost_top\treqs\tserved\tua_present\tua_empty\tua_distinct\tbrowser\tpaths\tbadlines\tintel\tbucket\twhy\n' > "${ENRICHED}.partial"
 
+# Unparsed preview lines become visible bucket-3 rows rather than vanishing (or
+# aborting the run). The raw line goes in the ip column so the operator can see
+# exactly what could not be read; it is never used as a dig/awk argument.
+if (( n_unp > 0 )); then
+    while IFS=$'\t' read -r _ln _rest || [[ -n "${_ln:-}" ]]; do
+        [[ -n "${_ln:-}" ]] || continue
+        printf '%s\t-\t-\t-\t-\t-\t-\t-\t-\t0\t0\t0\t0\t0\t0\t0\t0\t-\t3\tunparsed-preview-line:%s\n' \
+            "${_rest//$'\t'/ }" "$_ln" >> "${ENRICHED}.partial"
+    done < "${CAND}.unparsed"
+fi
+
 while IFS=$'\t' read -r ip temps last status || [[ -n "$ip" ]]; do
     [[ -n "$ip" ]] || continue
 
@@ -548,6 +719,42 @@ while IFS=$'\t' read -r ip temps last status || [[ -n "$ip" ]]; do
         printf '%s\t%s\t%s\t%s\t-\t-\t-\t-\t-\t0\t0\t0\t0\t0\t0\t0\t0\t-\t3\tinvalid-candidate\n' \
             "$ip" "$temps" "$last" "$status" >> "${ENRICHED}.partial"
         continue
+    fi
+
+    # ROUND 5 [4.6-a B2]: an IPv4-mapped IPv6 candidate is canonicalized by
+    # _inert_reason (which unwraps internally) but NOT by the shared-egress CIDR
+    # leg or by _asn_of, both of which use the original string. A mapped WARP
+    # address therefore skips the v4 CIDR arm (the pfx is v4, the ip is "v6"),
+    # while origin6 of the mapped nibbles can still return a numeric ASN — the
+    # combination that put 0:0:0:0:0:ffff:104.28.1.1 in bucket 2 in review.
+    # Canonicalizing here would desync three separately-keyed lookups (want[] in
+    # the domlog pass, TRAF_OF, and the preview itself) right before a live run.
+    # The invariant already has the right answer for an address we cannot
+    # evaluate consistently: a human looks. Mapped forms are anomalous in this
+    # ledger anyway — this preview contains zero.
+    # ROUND 5 re-review [4.5-b B1]: matching SPELLINGS here was itself the bug.
+    # `::ffff:*|0:0:0:0:0:ffff:*` caught two of the many encodings
+    # swatter_is_valid_ip_or_cidr accepts; 0::ffff:104.28.1.1,
+    # 0000::ffff:104.28.1.1 and the zero-padded expanded form all sailed past it
+    # into bucket 2 — and lib/ingest.sh:33-34 unwraps only the compact form, so
+    # those are exactly the spellings the ledger PRESERVES. Decide it
+    # semantically instead: expand once and look at the canonical 32 nibbles.
+    if [[ "$ip" == *:* ]]; then
+        _exp="$(_ipv6_expand "$ip" 2>/dev/null)" || _exp=""
+        _mapped=0
+        # ::ffff:a.b.c.d — IPv4-mapped, any spelling.
+        case "$_exp" in 00000000000000000000ffff????????) _mapped=1 ;; esac
+        # ::a.b.c.d — deprecated IPv4-compatible. Only when a dotted quad was
+        # actually written, so this does not swallow :: or ::1 (which
+        # _inert_reason classifies correctly as local/private).
+        if (( _mapped == 0 )) && [[ "$ip" == *.* ]]; then
+            case "$_exp" in 000000000000000000000000????????) _mapped=1 ;; esac
+        fi
+        if (( _mapped )); then
+            printf '%s\t%s\t%s\t%s\t-\t-\t-\t-\t-\t0\t0\t0\t0\t0\t0\t0\t0\t-\t3\tipv4-mapped-not-consistently-evaluable\n' \
+                "$ip" "$temps" "$last" "$status" >> "${ENRICHED}.partial"
+            continue
+        fi
     fi
 
     inert="" asn="" ptr="-" ptrc="-" why="" bucket=""
@@ -669,8 +876,9 @@ while IFS=$'\t' read -r ip temps last status || [[ -n "$ip" ]]; do
 done < "$CAND"
 
 n_rows=$(( $(wc -l < "${ENRICHED}.partial" | tr -d ' ') - 1 ))
-if (( n_rows != n_cand )); then
-    die "INCOMPLETE: enriched ${n_rows} of ${n_cand} candidates — refusing to publish a partial run. Partial left at ${ENRICHED}.partial"
+n_expect=$(( n_cand + n_unp ))
+if (( n_rows != n_expect )); then
+    die "INCOMPLETE: enriched ${n_rows} of ${n_expect} rows (${n_cand} candidates + ${n_unp} unparsed) — refusing to publish a partial run. Partial left at ${ENRICHED}.partial"
 fi
 
 # ------------------------------------------------------------ phase 5: report
@@ -704,7 +912,7 @@ fi
     echo "  before trusting it — that is how the 2026-08-01 scanner_profile audit was"
     echo "  done, and it is why that audit could make absolute claims."
     echo
-    echo "COMPLETE ${n_rows}/${n_cand}"
+    echo "COMPLETE ${n_rows}/${n_expect}"
 } > "${BUCKETS}.partial"
 
 # Publish both files atomically, together. An interrupted first draft left a new

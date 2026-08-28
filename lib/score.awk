@@ -28,6 +28,53 @@ function sev_weight(cat) {
 
 function clamp100(x) { return (x > 100) ? 100 : ((x < 0) ? 0 : x) }
 
+# is_mangled_srcset(p) : 1 if this request path is a browser faithfully fetching
+# a BROKEN srcset/sizes attribute emitted by the site itself, rather than a probe.
+#
+# When markup puts a whole srcset VALUE where a single URL belongs, the browser
+# requests the entire string as one URL and always gets a 404. Found 2026-08-28
+# during the gate D review: 17,829 such requests from 8,767 DISTINCT client IPs
+# across 35 hosted sites, overwhelmingly residential broadband with ordinary
+# consumer browser UAs. Nineteen real visitors had already been temp-blocked,
+# six by rule=error_burst, and one was a live permanent-ban candidate. These are
+# the site's own visitors punished for the site's own markup.
+#
+# ONE ANCHORED, POSITIONAL regex, deliberately. The first version used three
+# INDEPENDENT unanchored substring tests, and both review models independently
+# broke it: any path with "/uploads/2025/10/x.jpg%20300w," appended won the
+# exemption, because "image extension" and "NNNw," only had to appear SOMEWHERE
+# rather than adjacently. So:
+#   ^/            - the shape must BE the request, not appear inside it
+#   ([a-z0-9_~-]+/)*  - intermediate dirs, and NO DOT: this is what stops
+#                   /.env/uploads/... , /index.php/uploads/... (PATH_INFO) and
+#                   /scan/path-1.html/uploads/... from being laundered through
+#   uploads/YYYY/MM/  - the WordPress uploads tree
+#   <file>.<imgext>   - an image, then IMMEDIATELY
+#   (%20|+|space)NNN(w|x)  - the srcset/sizes descriptor, adjacent by construction
+#   (,|%2c|end)       - width lists carry a comma; a single-candidate srcset or
+#                   the LAST candidate does not, so end-of-string counts too.
+#                   Density descriptors (2x, 1.5x) are the "sizes" spelling of
+#                   the same defect and are covered.
+# Suppression is further gated on path_scores_on_its_own() at the call site, so
+# a bad-path or honeypot hit is never exempted however it is dressed.
+function is_mangled_srcset(p,   lp) {
+    lp = tolower(p)
+    return (lp ~ /^\/([a-z0-9_~-]+\/)*uploads\/[0-9][0-9][0-9][0-9]\/[0-9][0-9]\/[^\/]+\.(jpg|jpeg|png|gif|webp|avif|svg)(%20|\+| )[0-9]+(\.[0-9]+)?[wx](,|%2c|$)/)
+}
+
+# path_scores_on_its_own(p) : 1 if p hits a bad-path pattern or a honeypot trap.
+# The srcset exemption must never apply to such a path. Both review models
+# independently found the bypass this closes: an early skip made
+# "/wp-content/uploads/2025/10/.git/config.jpg%20300w," invisible to badpath AND
+# honeypot scoring, so a request that scored 90 before the exemption scored
+# nothing after it. A real browser fetching a broken srcset never requests a
+# bad-path; only an attacker dressing one up does.
+function path_scores_on_its_own(p,   i, h) {
+    for (i = 0; i < nbad; i++) if (p ~ bad_rx[i]) return 1
+    for (h = 0; h < nhp;  h++) if (p ~ hp_rx[h])  return 1
+    return 0
+}
+
 function jesc(s,   t) {
     t = s
     gsub(/\\/, "\\\\", t)
@@ -106,6 +153,26 @@ BEGIN {
     # by csf/the CF API downstream. (The block path re-validates strictly; this is
     # the first-line filter so garbage never even reaches scoring.)
     if (!ip_plausible(ip)) next
+
+    # A 404 the site's own broken markup asked for is not an event this IP
+    # caused, so it is not scored AT ALL -- not merely kept out of the error
+    # counters. Counting it in reqs[] while excluding it from cerr[] would hand
+    # an attacker a DILUTION lever: err_ratio is nerr/n, so padding a real scan
+    # with exempted 404s would drive the ratio down (50 probes at 100% becomes
+    # 500 requests at 10%). It would also inflate rps and feed request_flood,
+    # which is one of the two rules that produced the false positives. Dropping
+    # the request outright removes both. Recorded in csrcset[] so it stays
+    # counted in csrcset[] and surfaced as "404_srcset" in the evidence JSON --
+    # but note that only shows up for an IP that scores on its OTHER traffic,
+    # because END walks reqs[] and a srcset-only client deliberately has no
+    # reqs[] entry. That is the intended outcome (such a client is not an
+    # offender and should produce no row at all); the counter is for explaining
+    # a borderline IP, not for census of the affected population.
+    # Gated on path_scores_on_its_own(): a path that hits a bad-path pattern or a
+    # honeypot is NEVER exempted, however it is dressed up.
+    if (status == 404 && is_mangled_srcset(path) && !path_scores_on_its_own(path)) {
+        csrcset[ip]++; next
+    }
 
     reqs[ip]++
     if (first_ep[ip] == 0 || ep < first_ep[ip]) first_ep[ip] = ep
@@ -274,6 +341,7 @@ END {
         ev = ev ",\"distinct_paths\":" ndist
         ev = ev ",\"status\":{\"2xx\":" (c2xx[ip]+0) ",\"3xx\":" (c3xx[ip]+0) \
                 ",\"401\":" (c401[ip]+0) ",\"403\":" (c403[ip]+0) ",\"404\":" (c404[ip]+0) \
+                ",\"404_srcset\":" (csrcset[ip]+0) \
                 ",\"444\":" (c444[ip]+0) ",\"5xx\":" (c5xx[ip]+0) "}"
         ev = ev ",\"post\":" npost
         ev = ev ",\"badpath_cat\":\"" (badcat[ip] == "" ? "" : badcat[ip]) "\""
