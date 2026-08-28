@@ -5,6 +5,64 @@ All notable changes to Swatter are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.17.0] - 2026-08-28
+
+### Fixed
+- **A site's own broken markup could get its real visitors banned.** When an
+  `srcset` value is emitted where a single URL belongs, the browser requests the
+  entire value as one URL and always gets a 404. On the reference fleet that
+  produced **17,829 such requests from 8,767 distinct client IPs across 35
+  sites**, overwhelmingly residential broadband with ordinary consumer browser
+  user-agents, and still running at roughly 2,100/month. Nineteen real visitors
+  had already been temp-blocked — six by `rule=error_burst` — and one was a
+  candidate for a permanent ban, which on a publishing host is also an AbuseIPDB
+  report with no delete API, filed against a residential customer of the site's
+  own owner.
+
+  A 404 whose request path is a browser faithfully fetching a broken
+  `srcset`/`sizes` attribute is now dropped before scoring. Not merely excluded
+  from the error counters: counting it in `reqs[]` while excluding it from
+  `cerr[]` would make `err_ratio` (`nerr/n`) dilutable — 50 probes at 100% become
+  500 requests at 10% — and would also inflate `rps` and feed `request_flood`.
+
+  The exemption is deliberately hard to abuse, because a detection exemption is
+  exactly the kind of thing that becomes a blind spot:
+  - it is **one anchored, positional** regex, not a set of independent substring
+    tests. The descriptor must immediately follow the image extension, so
+    appending `%20300w,` to an unrelated path does nothing.
+  - **dot-bearing path segments before the uploads tree are refused**, which is
+    what stops `/.env/uploads/…`, `/index.php/uploads/…` (PATH_INFO), and
+    `/scan/path-1.html/uploads/…`.
+  - it is gated on `path_scores_on_its_own()`, so a **bad-path or honeypot hit is
+    never exempted**, however it is dressed.
+
+  Single-candidate `srcset` (no trailing comma) and `sizes` density descriptors
+  (`2x`, `1.5x`) are the same defect and are covered. Exempted requests are
+  counted in the new `404_srcset` evidence field.
+
+  Verified against real production traffic: the false positive's 238 archived log
+  lines score 75 (banned) on the old scorer and are not flagged on the new one,
+  while a control attacker scores 78 on both, and rescoring an entire day of live
+  domlogs gives identical results.
+
+- **A policy file's final line was invisible when it lacked a trailing newline**
+  (`d396ad6`, previously committed but unreleased). `_cidr_overlaps_file`'s IPv6
+  branch is a bare `while read`, which drops it, while the validator is `grep` and
+  still passes the file — so the arm reported itself healthy and matched nothing.
+
+### Added
+- `404_srcset` in the per-IP evidence JSON: the count of requests exempted as
+  broken-markup 404s. It appears only for an IP that scores on its other traffic,
+  since a client with nothing but exempted requests deliberately produces no row.
+- `tools/gate-d/gate-d-enrich.sh` and `test/gate_d_enrich_test.sh`: the gate D
+  candidate-triage tool, hardened across five adversarial review rounds. Each
+  round found a distinct way for a shared-egress address to reach the bucket no
+  human reads. Round 5 closed three: the shared-egress CIDR probe certified the
+  arm on only **one address family** (the IPv4 and IPv6 matchers are different
+  code paths, and which one gets probed depended only on the order ranges were
+  appended); RFC6598 CGNAT was not treated as shared egress; and IPv4-mapped
+  addresses were matched by spelling rather than semantically.
+
 ## [2.16.1] - 2026-08-15
 
 ### Fixed

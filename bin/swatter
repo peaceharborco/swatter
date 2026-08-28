@@ -42,7 +42,7 @@ umask 0027
 
 SWATTER_ENTRYPOINT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
 SWATTER_ARGV=("$@")
-SWATTER_VERSION="2.16.1"
+SWATTER_VERSION="2.17.0"
 
 # Locate libs: installed layout (/usr/local/lib/swatter) or repo layout (../lib).
 _self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
