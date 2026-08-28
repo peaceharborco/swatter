@@ -52,14 +52,18 @@ public research scanner.
 
 ## The two false positives — both real people
 
-**`154.3.224.141`** — 161x304 + 3x200, one stable Chrome/114 on macOS, fetching
-jQuery and magazine images from `sandpointsbestlifestyle.com`. A browser
-revalidating cache. This is the `request_flood` asset-burst mode already
-documented on 2026-07-27, recurring.
+**FP-1** (a US commercial IPv4; the address is in `decisions.tsv` on cds1) —
+161x304 + 3x200, one stable Chrome/114 on macOS, fetching jQuery and magazine
+images from a customer magazine site. A browser revalidating cache. This is the
+`request_flood` asset-burst mode already documented on 2026-07-27, recurring.
 
-**`2603:3007:152e:8400:2c72:797c:3499:a678`** — Comcast residential IPv6. All 224
-of its 404s are one malformed-`srcset` path shape produced by the site's own
-markup. Scored `rule=error_burst`, twice.
+**FP-2** (a residential Comcast IPv6) — all 224 of its 404s are one
+malformed-`srcset` path shape produced by the site's own markup. Scored
+`rule=error_burst`, twice.
+
+*Both addresses are deliberately not written here. This repo is public and these
+are innocent third parties; the concrete values live in `decisions.tsv` on cds1
+(mode 0700), the same way client specifics were redacted on 2026-08-04.*
 
 ### The second one is a class, and it is still running
 
@@ -71,10 +75,11 @@ which always 404s. Fleet-wide:
 3,198 residential IPv6 clients                35 sites
 ```
 
-Affected sites include `g3min.org` (10,889 hits), `spencermusic.com`,
-`cowelltactical.com`, `kootenaiponderaysewerdistrict.org`, `condosatsandpoint.com`,
-`kauaicontainer.com` — and Peace Harbor's own `designs.`, `hosting.`, `printing.`
-and `web.peaceharbor.com`. Referer is each site's homepage.
+**35 hosted sites**, spanning customer sites and several of Peace Harbor's own
+internal hosts. The single worst accounts for 10,889 of the hits; the next four
+carry 400–1,700 each. Referer is each site's homepage. The site list is
+deliberately not written here — this repo is public. Regenerate it on cds1 with
+the `zgrep` above piped through `zgrep -l`.
 
 Monthly volume shows it is **current, not historical**:
 
