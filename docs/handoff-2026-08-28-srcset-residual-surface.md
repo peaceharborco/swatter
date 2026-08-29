@@ -104,7 +104,7 @@ carry client domains and visitor IPs, and this repo is public.
 8. Exempted requests no longer vote for `top_vhost`; `srcset_flood` added to the
    report label map and the AbuseIPDB category map (as a dead branch).
 
-**Test suite: 220 assertions in `test/score_test.sh`, green under a non-UTC TZ.
+**Test suite: 224 assertions in `test/score_test.sh`, green under a non-UTC TZ.
 Nine mutation rounds (unique-match, code only).**
 
 ---
@@ -150,10 +150,12 @@ Line numbers re-resolved by grep after the edits.
 4. **Descriptor-less.** Not exempt; CHANGELOG overclaim narrowed. Matcher not
    widened.
 5. **Line refs / counts.** Call site `lib/score.sh:749`; exempt predicate
-   `lib/score.awk:459`; `request_flood` `lib/score.awk:653`. Suite **220**.
+   `lib/score.awk:459`; `request_flood` `lib/score.awk:653`. Suite **224**.
 6. **Smaller.** `%2e|%2f` comment no longer overclaims; later-candidate hosts
-   require `//`; `n==1` comment states no image extension; `srcset_flood` will
-   not overwrite a genuine floor (`floor == 0` at `lib/score.awk:662`).
+   are scheme+host (`https://`, edge-collapsed `https:/`, `//host`) and a
+   path-only `/wp-config.php/x.jpg` cannot parse as a host; `n==1` comment
+   states no image extension; `srcset_flood` will not overwrite a genuine
+   floor (`floor == 0` at `lib/score.awk:662`).
 
 ### 7. Still gating the widen — operator decision, not code
 

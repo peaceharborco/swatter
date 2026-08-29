@@ -170,6 +170,11 @@ srcset_score_fast() {  # <path> <count> <status> -> score, all inside 20s (rps>=
 # The real production shapes must NOT score.
 SS_REAL='/wp-content/uploads/2025/10/photo-768x576.jpg%20768w,%20https://example.com/photo-900x675.jpg%20900w'
 ss_band "srcset-real-shape-not-banned" "$(srcset_score "$SS_REAL" 220)" 0 49
+# The observed log form: consecutive-slash collapse at the edge turns
+# https://host into https:/host. Documented in the gate-D handoff. Requiring
+# // for later-candidate hosts scored this at 75/error_burst.
+ss_band "srcset-edge-collapsed-https-one-slash" \
+  "$(srcset_score '/wp-content/uploads/2025/10/photo-768x576.jpg%20768w,%20https:/example.com/photo-900x675.jpg%20900w' 220)" 0 49
 # Single-candidate srcset has no trailing comma; density (sizes) descriptors use Nx.
 # Both are the same defect and were MISSED by the first version of the fix.
 ss_band "srcset-single-candidate-no-comma"  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w' 220)" 0 49
@@ -538,9 +543,11 @@ ss_band "real-name-pen-pal"      "$(srcset_score '/wp-content/uploads/2025/10/th
 ss_band "real-name-py-cctld"  "$(srcset_score '/wp-content/uploads/2025/10/asuncion.py-768x576.jpg%20768w,' 220)" 0 49
 ss_band "real-name-rb"        "$(srcset_score '/wp-content/uploads/2025/10/logo.rb.jpg%20300w,' 220)" 0 49
 ss_band "real-name-ini"       "$(srcset_score '/wp-content/uploads/2025/10/foto.ini.jpg%20300w,' 220)" 0 49
-ss_band "real-name-cnf"       "$(srcset_score '/wp-content/uploads/2025/10/my.cnf.jpg%20300w,' 220)" 0 49
-ss_band "real-name-cfm"       "$(srcset_score '/wp-content/uploads/2025/10/notes.cfm.jpg%20300w,' 220)" 0 49
-ss_band "real-name-crt"       "$(srcset_score '/wp-content/uploads/2025/10/tv.crt.jpg%20300w,' 220)" 0 49
+# cnf/cfm/crt are unambiguous secret/executable extensions, not ordinary words.
+# my.cnf is the canonical MySQL credentials filename.
+ss_band "cloak-my-cnf"        "$(srcset_score '/wp-content/uploads/2025/10/my.cnf.jpg%20300w,' 220)" 75 100
+ss_band "cloak-cfm"           "$(srcset_score '/wp-content/uploads/2025/10/notes.cfm.jpg%20300w,' 220)" 75 100
+ss_band "cloak-crt"           "$(srcset_score '/wp-content/uploads/2025/10/tv.crt.jpg%20300w,' 220)" 75 100
 # passwd was an unpinned deny token: removing it from _deny_token left the suite
 # green. A cloak named x.passwd.jpg must still score.
 ss_band "cloak-passwd"        "$(srcset_score '/wp-content/uploads/2025/10/x.passwd.jpg%20300w,' 220)" 75 100
@@ -597,11 +604,16 @@ h='/wp-content/uploads/2025/10/'; t='.jpg+300w,'; f=sys.argv[1]
 print(h + 'a'*(256-len(h)-len(t)-len(f)) + t + f)" "$1"; }
 ss_band "trunc-256-plus-cut-jpg-plus"    "$(srcset_score "$(PLUS_CUT '/p.jpg+')" 220)" 0 49
 ss_band "trunc-256-plus-cut-jpg-plus-9"  "$(srcset_score "$(PLUS_CUT '/p.jpg+9')" 220)" 0 49
+# Admitting + in the prefix class let a deny token hide behind a trailing
+# separator: wp-config.php+ parsed as a safe stem because "php+" is not "php".
+# badpaths.conf has no generic \.php rule.
+ss_band "trunc-256-plus-cut-wp-config-php-plus" "$(srcset_score "$(PLUS_CUT '/wp-config.php+')" 220)" 75 100
+ss_band "trunc-256-plus-cut-c99-php-plus"       "$(srcset_score "$(PLUS_CUT '/c99.php+')" 220)" 75 100
+ss_band "trunc-256-plus-sep-wp-config-php-plus" "$(srcset_score "$(PAD256 'wp-config.php+')" 220)" 75 100
 
-# Later-candidate host group used to allow a single slash, so a path-only
-# candidate `/wp-config.php/x.jpg` parsed as host `wp-config.php` (dots legal
-# in a host, illegal in a directory). badpaths.conf requires a suffix after
-# wp-config.php, so nothing backstopped it. Hosts now require `//`.
+# Later-candidate hosts are scheme+host (`https://`, `https:/` edge-collapse,
+# `http://`) or protocol-relative `//host`. A path-only `/wp-config.php/x.jpg`
+# must not parse as a host (dots legal in a host, illegal in a directory).
 ss_band "later-path-dots-not-a-host" \
   "$(srcset_score '/wp-content/uploads/2025/10/a.jpg%20300w,/wp-config.php/x.jpg%20300w' 220)" 75 100
 

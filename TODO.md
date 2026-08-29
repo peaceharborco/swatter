@@ -249,7 +249,7 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       cds1 is still on v2.17.0. It carries the exempt set
       `status < 400 || status == 404`, end-anchored candidate-list validation, a
       dot-free-*directory* rule with a vetted stem, and a `srcset_flood` volume
-      tripwire — 220 assertions, nine mutation rounds, **six review rounds, every
+      tripwire — 224 assertions, nine mutation rounds, **six review rounds, every
       one HOLD**, and a clean 3.1M-row prod dry run. **The two Blockers from
       that review are closed on this branch (not shipped).** Remaining: re-review,
       prod dry-run, 2.18.0. See the dedicated block below and
@@ -299,11 +299,13 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
             optional exempts every missing WP upload.
       - [x] **Line refs and assertion counts reconciled.** Call site
             `lib/score.sh:749`; exempt predicate `lib/score.awk:459`;
-            `request_flood` `lib/score.awk:653`. Suite is **220** assertions,
+            `request_flood` `lib/score.awk:653`. Suite is **224** assertions,
             nine mutation rounds, six review rounds.
       - [x] **Smaller:** `passwd` pinned; `%2e|%2f` in `candidate_prefix_ok`
             comment no longer credits it with stopping encoded cloaks;
-            later-candidate hosts require `//`; `n == 1` comment states no
+            later-candidate hosts are scheme+host (`https://`, `https:/`,
+            `//host`) and a path-only `/wp-config.php/x.jpg` cannot parse as
+            a host; `n == 1` comment states no
             image extension is required; `srcset_flood` will not overwrite a
             genuine floor if `SCORE_WATCH` is raised.
       - [ ] **Then:** re-review (Grok budget is EXHAUSTED — record which reviewers

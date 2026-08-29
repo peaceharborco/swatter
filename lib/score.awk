@@ -78,10 +78,11 @@ function clamp100(x) { return (x > 100) ? 100 : ((x < 0) ? 0 : x) }
 #                            legal srcset. Density descriptors (2x, 1.5x) are the
 #                            "sizes" spelling of the same defect and are covered.
 # Every LATER candidate must match the same shape, optionally preceded by a
-# scheme+host. The host group requires `//` (`https://host` or `//host`); a
-# single slash is a path, so `/wp-config.php/x.jpg` cannot parse as a host
-# (dots are legal in a host and illegal in a directory). A trailing comma
-# with nothing after it is the one permitted empty element.
+# scheme+host. Hosts are `https://host`, `http://host`, the edge-collapsed
+# `https:/host` (consecutive-slash collapse — the observed log form), or
+# protocol-relative `//host`. A path-only `/wp-config.php/x.jpg` cannot
+# parse as a host (dots are legal in a host and illegal in a directory).
+# A trailing comma with nothing after it is the one permitted empty element.
 # Suppression is further gated on path_scores_on_its_own() at the call site, so
 # a bad-path or honeypot hit is never exempted however it is dressed.
 #
@@ -130,7 +131,7 @@ function clamp100(x) { return (x > 100) ? 100 : ((x < 0) ? 0 : x) }
 # descriptor). Used to tell a truncated tail from a finished one at the 256-byte
 # boundary -- see the note at the call site.
 function candidate_complete(c) {
-    return (c ~ /^(%20|\+| )*(https?:)?(\/\/[a-z0-9_~.-]+(:[0-9]+)?)?\/([a-z0-9_~-]+\/)*[a-z0-9_~@.%-]+\.(jpg|jpeg|png|gif|webp|avif|svg|bmp|heic|heif|jfif)(%20|\+| )+[0-9]+(\.[0-9]+)?[wx](%20|\+| )*$/)
+    return (c ~ /^(%20|\+| )*(https?:\/\/?[a-z0-9_~.-]+(:[0-9]+)?|\/\/[a-z0-9_~.-]+(:[0-9]+)?)?\/([a-z0-9_~-]+\/)*[a-z0-9_~@.%-]+\.(jpg|jpeg|png|gif|webp|avif|svg|bmp|heic|heif|jfif)(%20|\+| )+[0-9]+(\.[0-9]+)?[wx](%20|\+| )*$/)
 }
 
 # candidate_prefix_ok(c) : 1 if c could be the BEGINNING of a well-formed srcset
@@ -213,7 +214,7 @@ function _strip_wp_suffixes(c,   prev) {
 }
 
 function _deny_token(c) {
-    return (c ~ /^(php|php[0-9]+|phps|phtml|phtm|pht|phar|aspx|ashx|asmx|ascx|cshtml|jsp|jspx|jhtml|shtml|cgi|fcgi|wsgi|ps1|vbs|exe|dll|wasm|env|htaccess|htpasswd|htgroup|cfg|yml|yaml|toml|sql|sqlite|sqlite3|pem|pfx|p12|jks|keystore|passwd)$/)
+    return (c ~ /^(php|php[0-9]+|phps|phtml|phtm|pht|phar|aspx|ashx|asmx|ascx|cshtml|jsp|jspx|jhtml|cfm|shtml|cgi|fcgi|wsgi|ps1|vbs|exe|dll|wasm|env|htaccess|htpasswd|htgroup|cnf|cfg|yml|yaml|toml|sql|sqlite|sqlite3|pem|pfx|p12|jks|keystore|crt|passwd)$/)
 }
 
 # stem_is_safe(stem) : 0 if a dot-component of the filename stem is an executable
@@ -236,8 +237,10 @@ function _deny_token(c) {
 # descriptor, so the server serves no PHP either way). A wrong token bans a real
 # person irreversibly. So: only tokens that are unambiguous file extensions AND
 # rarely ordinary words. Short words (bat, do, key, pl, sh, so, ts, der, inc,
-# py, rb, ini, cnf, cfm, crt) and
+# py, rb, ini) and
 # inert data suffixes (html, json, xml, zip, bak, tmp) are OUT by that rule.
+# cnf/cfm/crt stay: my.cnf is the MySQL credentials file, cfm is ColdFusion,
+# crt is a certificate. Unambiguous secret/executable extensions, not words.
 #
 # Not consulted at all when the stem has no dot: a dot-free stem cannot BE a
 # double extension, and checking it banned bare old.jpg / tmp.jpg / env.jpg.
@@ -254,6 +257,11 @@ function stem_is_safe(stem,   k, m, comp, c) {
     # ("", "htaccess"), so the token is in position 2 where it belongs.
     for (k = 2; k <= m; k++) {
         c = comp[k]
+        # Truncation residue: a cut on the + / %20 separator leaves php+ or
+        # php% as the last token, which is not an exact deny match. Strip
+        # only trailing separator-class bytes, then deny. jpg+ -> jpg, which
+        # is not a deny token, so real + -separated descriptors stay exempt.
+        sub(/[+%]+$/, "", c)
         if (_deny_token(c)) return 0
         # Editor backups, pool variants and WordPress's own resize suffix.
         # ITERATIVE and TARGETED, both deliberately. A single strip let
@@ -340,7 +348,7 @@ function is_mangled_srcset(p,   lp, n, parts, i, trunc, last) {
     }
     for (i = 2; i <= last; i++) {
         if (i == n && parts[i] ~ /^(%20|\+| )*$/) continue
-        if (parts[i] !~ /^(%20|\+| )*(https?:)?(\/\/[a-z0-9_~.-]+(:[0-9]+)?)?\/([a-z0-9_~-]+\/)*[a-z0-9_~@.%-]+\.(jpg|jpeg|png|gif|webp|avif|svg|bmp|heic|heif|jfif)(%20|\+| )+[0-9]+(\.[0-9]+)?[wx](%20|\+| )*$/)
+        if (parts[i] !~ /^(%20|\+| )*(https?:\/\/?[a-z0-9_~.-]+(:[0-9]+)?|\/\/[a-z0-9_~.-]+(:[0-9]+)?)?\/([a-z0-9_~-]+\/)*[a-z0-9_~@.%-]+\.(jpg|jpeg|png|gif|webp|avif|svg|bmp|heic|heif|jfif)(%20|\+| )+[0-9]+(\.[0-9]+)?[wx](%20|\+| )*$/)
             return 0
         if (!stem_is_safe(candidate_stem(parts[i]))) return 0
     }

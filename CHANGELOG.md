@@ -92,11 +92,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`lib/score.sh:780`). `candidate_prefix_ok` admitted `%` in the final token
   but omitted `+`, so a truncation landing on `…jpg+` / `…jpg+9` scored
   (`lib/score.awk:170`). The deny list still carried ordinary words (`py` is
-  Paraguay, the same class as the `pl` round 4 removed, plus `rb`/`ini`/`cnf`/
-  `cfm`/`crt`). Later-candidate hosts allowed a single slash, so
-  `/wp-config.php/x.jpg` parsed as a host (dots legal in a host, illegal in a
-  directory) and `badpaths.conf` does not backstop it. All four are closed
-  and pinned. A 256-byte sweep of 171 well-formed `+` / `%20` prefixes scored
+  Paraguay, the same class as the `pl` round 4 removed, plus `rb`/`ini`).
+  `cnf`/`cfm`/`crt` stay — `my.cnf` is the MySQL credentials file, `cfm` is
+  ColdFusion, `crt` is a certificate. Path-only later candidates with dots
+  in a directory (`/wp-config.php/x.jpg`) no longer parse as a host.
+  Scheme+host still accepts the observed edge-collapsed form `https:/host`
+  (consecutive-slash collapse, documented in the gate-D handoff) as well as
+  `https://host` and `//host`. Admitting `+` in the prefix class left
+  `php+` as a non-matching deny token; trailing `+`/`%` are stripped before
+  the deny check, so `…/wp-config.php+` at 256 scores and `…jpg+` stays
+  exempt. A 256-byte sweep of 171 well-formed `+` / `%20` prefixes scored
   0 IPs.
 
 ### Added
@@ -177,7 +182,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `floor == 0` guard, and the later-candidate `//` host group). Each
   round's survivors were missing tests rather than code defects — so this is
   evidence the pinned behaviours are pinned, **not** evidence the suite is
-  complete. `test/score_test.sh` is at 220 assertions.
+  complete. `test/score_test.sh` is at 224 assertions.
 
   `stem_is_safe()` is a **deny list** and therefore has a residual tail by
   construction: round 2 produced `phtm`, `php-cgi`, `js`, `inc`, `cmd`, `jspx`,

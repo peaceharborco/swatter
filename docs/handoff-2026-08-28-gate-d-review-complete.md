@@ -245,7 +245,7 @@ item 4 is the only part still open, and it is what actually gates the widen.
    unvalidated (traversal payloads were dropped at every status), and the filename
    stem admitted dots and percent-encoding (`wp-config.php.jpg`, `%2eenv.jpg`,
    `x%2f.env.jpg` were all dropped). Both closed.
-3. ~~No test feeds a non-404~~ **DONE.** 220 assertions; nine mutation rounds. Six review rounds, every one HOLD.
+3. ~~No test feeds a non-404~~ **DONE.** 224 assertions; nine mutation rounds. Six review rounds, every one HOLD.
 4. **STILL OPEN — the pre-fix temps are on the ledger.**
    `swatter_store_recent_temp_count` (`lib/score.sh:749`, window applied in
    `lib/store_sqlite.sh:144`) is a trailing lookback, so widening 7 → 30
