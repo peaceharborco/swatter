@@ -56,3 +56,19 @@ file. Test it with `SWATTER_CONF=<copy>`, not with `VAR=x swatter …`.
 Everything in the errors/alerting plane fails toward the LOUDER reading. A lookup
 that could not read its evidence must never report absence, and no signal may turn
 a RED green — that is the defect the fan-out gate exists to prevent.
+
+
+## Grok Bot opportunities
+
+Grok Bot.app is the cloud teammate (persistent VM, browser, routines). This TUI
+still owns code, git, `pass-cli`, `cf` writes, and deploys. Tree-wide trigger
+and hard nos: `~/Developer/CLAUDE.md` §"Grok Bot".
+
+When the same non-code ask happens twice, name the Bot (or an on-machine script)
+instead of silently becoming the routine.
+
+**This repo:**
+
+- Read-only visual of the nightly digest / SMS path *after* this TUI has already produced it — "did the mail/SMS actually land?"
+- AbuseIPDB / GreyNoise / HoneyPot dashboard glances when a feed looks stale. Return links, do not tune the scanner.
+- Never: surgical-scp, `install/release.sh`, live `swatter.conf` edits, or CSF/origin-lock changes. Those stay on-machine and gated.
