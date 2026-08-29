@@ -188,8 +188,7 @@ Also unchanged from the 08-20 decision: `ABUSEIPDB_REPORT="false"` is to be set
    the 3,126,395 measurement): lose=0, gain=0, changed=1 (`75 → 50`),
    temp-band 2043 → 2042. Live glob WINDOW=600 was a quiet slice (0 IPs on
    either scorer). No IPs or domains copied off the host.
-8. Version bump (this is a **2.18.0**; the CHANGELOG entry is still under
-   `[Unreleased]`), release, surgical-scp, sha-verify against the tag.
+8. Release **2.18.0**, surgical-scp, sha-verify against the tag.
 
 
 ## Known and deliberately accepted

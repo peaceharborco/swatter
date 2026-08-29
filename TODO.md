@@ -314,8 +314,7 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       - [x] **Prod dry-run** 2026-08-29, read-only, installed sha unchanged.
             100 rotated gz, 3,126,419 rows: lose=0, gain=0, changed=1
             (`75 → 50`), temp-band 2043 → 2042. No IPs/domains copied off host.
-      - [ ] **Then:** bump to **2.18.0** (entry is still under `[Unreleased]`),
-            release, surgical-scp, sha-verify.
+      - [ ] **Then:** release **2.18.0**, surgical-scp, sha-verify.
 
 - [ ] **Swatter is swatting our own CI** — see
       `docs/handoff-2026-08-28-ci-self-swat.md`. Verified while reviewing it:

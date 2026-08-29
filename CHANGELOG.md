@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.18.0] - 2026-08-29
+
+The residual srcset scoring surface: v2.17.0's 404-only exemption left 14% of
+the class scoring, and the matcher could be worn as a disguise. `/claude`
+HOLD on the first closer-commit was folded before tag. Measured on cds1
+(read-only): 3,126,419 log rows, 0 IPs lost detection, 0 newly scoring, 1
+changed (75 → 50).
+
 ### Fixed
 - **The srcset exemption did not cover its own class, and could be worn as a
   disguise.** Found by a falsification review of the root-cause report and then by
@@ -1725,7 +1733,8 @@ plane-correct blocking (CSF for direct-to-origin, Cloudflare IP Access Rules for
 via-proxy), a hardcoded Cloudflare never-block set, and fail-closed behavior when
 the range list is stale.
 
-[Unreleased]: https://github.com/peaceharborco/swatter/compare/v2.12.0...HEAD
+[Unreleased]: https://github.com/peaceharborco/swatter/compare/v2.18.0...HEAD
+[2.18.0]: https://github.com/peaceharborco/swatter/compare/v2.17.0...v2.18.0
 [2.12.0]: https://github.com/peaceharborco/swatter/compare/v2.11.0...v2.12.0
 [2.11.0]: https://github.com/peaceharborco/swatter/compare/v2.10.0...v2.11.0
 [2.10.0]: https://github.com/peaceharborco/swatter/compare/v2.9.5...v2.10.0
