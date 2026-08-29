@@ -293,7 +293,8 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
             171-prefix sweep of `+` / `%20` / path-only later candidates at
             exactly 256 scored 0 IPs.
       - [x] **Deny list ordinary words removed** (`lib/score.awk:215`): `py`,
-            `rb`, `ini`, `cnf`, `cfm`, `crt`. `passwd` is now pinned.
+            `rb`, `ini`. `cnf`/`cfm`/`crt` restored after `/claude` (secret/
+            executable, not ordinary words). `passwd` is pinned.
       - [x] **Descriptor-less candidates are not exempt.** Pinned; CHANGELOG
             overclaim narrowed. Matcher not widened — making the descriptor
             optional exempts every missing WP upload.
@@ -308,9 +309,13 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
             a host; `n == 1` comment states no
             image extension is required; `srcset_flood` will not overwrite a
             genuine floor if `SCORE_WATCH` is raised.
-      - [ ] **Then:** re-review (Grok budget is EXHAUSTED — record which reviewers
-            actually ran), re-run the prod dry run, bump to **2.18.0** (entry is
-            still under `[Unreleased]`), release, surgical-scp, sha-verify.
+      - [x] **Re-review.** `/claude` (Opus) HOLD on `c3a7a14`, folded in
+            `a1fadf5`. That is the ship-gate review for Grok-authored work.
+      - [x] **Prod dry-run** 2026-08-29, read-only, installed sha unchanged.
+            100 rotated gz, 3,126,419 rows: lose=0, gain=0, changed=1
+            (`75 → 50`), temp-band 2043 → 2042. No IPs/domains copied off host.
+      - [ ] **Then:** bump to **2.18.0** (entry is still under `[Unreleased]`),
+            release, surgical-scp, sha-verify.
 
 - [ ] **Swatter is swatting our own CI** — see
       `docs/handoff-2026-08-28-ci-self-swat.md`. Verified while reviewing it:

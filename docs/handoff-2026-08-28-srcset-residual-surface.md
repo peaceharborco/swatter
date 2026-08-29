@@ -179,10 +179,15 @@ Also unchanged from the 08-20 decision: `ABUSEIPDB_REPORT="false"` is to be set
 3. ~~Re-sweep the 256-byte boundary at every offset.~~
 4. ~~Mutation round (unique-match, code only).~~
 5. ~~`make test` under a non-UTC TZ.~~ (`TZ=Asia/Tokyo make test` green; `gawk` as `awk` on score/errors/scan_wire.)
-6. **Re-review.** Every round so far found something; there is no evidence that
-   has stopped. Grok budget is exhausted — record which reviewers actually ran.
-7. Re-run the prod dry-run — it is cheap, read-only, and it is what proved the
-   change is needed.
+6. ~~**Re-review.**~~ `/claude` (Opus) HOLD on `c3a7a14`, folded in `a1fadf5`
+   (`https:/` edge-collapse restored without reopening `/wp-config.php/x.jpg`
+   as a host; `php+` truncation closed; `cnf`/`cfm`/`crt` restored). That is
+   the ship-gate review for Grok-authored work.
+7. ~~Re-run the prod dry-run.~~ 2026-08-29, read-only, workdir removed,
+   installed sha unchanged. 100 rotated gz, **3,126,419** rows (same order as
+   the 3,126,395 measurement): lose=0, gain=0, changed=1 (`75 → 50`),
+   temp-band 2043 → 2042. Live glob WINDOW=600 was a quiet slice (0 IPs on
+   either scorer). No IPs or domains copied off the host.
 8. Version bump (this is a **2.18.0**; the CHANGELOG entry is still under
    `[Unreleased]`), release, surgical-scp, sha-verify against the tag.
 
