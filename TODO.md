@@ -244,15 +244,14 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       unvalidated after the first comma, and the filename stem admitted dots and
       percent-encoding.
 
-      **The code half of gate 2 is NOT done.** Branch
-      `fix/srcset-residual-scoring-surface` is **uncommitted and not deployed**;
-      cds1 is still on v2.17.0. It carries the exempt set
-      `status < 400 || status == 404`, end-anchored candidate-list validation, a
-      dot-free-*directory* rule with a vetted stem, and a `srcset_flood` volume
-      tripwire — 224 assertions, nine mutation rounds, **six review rounds, every
-      one HOLD**, and a clean 3.1M-row prod dry run. **The two Blockers from
-      that review are closed on this branch (not shipped).** Remaining: re-review,
-      prod dry-run, 2.18.0. See the dedicated block below and
+      **The code half of gate 2 is done.** Released as **v2.18.0** and deployed
+      to cds1 2026-08-29 — all 32 installed files sha-match the tag. It carries
+      the exempt set `status < 400 || status == 404`, end-anchored candidate-list
+      validation, a dot-free-*directory* rule with a vetted stem, and a
+      `srcset_flood` volume tripwire — 224 assertions, nine mutation rounds,
+      **six review rounds, every one HOLD**, a clean 3.1M-row prod dry run, and
+      the `/claude` HOLD fold-in (`https:/` edge-collapse + `php+` truncation).
+      See the dedicated block below and
       `docs/handoff-2026-08-28-srcset-residual-surface.md`.
 
       **What ALSO still gates the widen is the ledger**: the pre-fix temps remain,
@@ -266,8 +265,8 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       blocker that could never be satisfied; it does not clear the ones that can.
       **Read `docs/handoff-2026-08-28-gate-d-review-complete.md`.**
 
-- [ ] **SRCSET RESIDUAL SURFACE — code closed on the branch, NOT SHIPPABLE.**
-      Branch `fix/srcset-residual-scoring-surface`; cds1 on v2.17.0.
+- [x] **SRCSET RESIDUAL SURFACE — released as v2.18.0 and deployed 2026-08-29.**
+      Branch `fix/srcset-residual-scoring-surface`; **cds1 on v2.18.0**.
       **Read `docs/handoff-2026-08-28-srcset-residual-surface.md` first.**
 
       Why it matters, measured not argued: a read-only dry run over **3,126,395
@@ -314,7 +313,11 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       - [x] **Prod dry-run** 2026-08-29, read-only, installed sha unchanged.
             100 rotated gz, 3,126,419 rows: lose=0, gain=0, changed=1
             (`75 → 50`), temp-band 2043 → 2042. No IPs/domains copied off host.
-      - [ ] **Then:** release **2.18.0**, surgical-scp, sha-verify.
+      - [x] **v2.18.0 released and deployed 2026-08-29.** GitHub+GitLab tag
+            `v2.18.0`. Surgical-scp of `bin/swatter` + `score.awk` +
+            `score.sh` + `report.sh` + `report_abuseipdb.sh` under a cron
+            hold outside `/etc/cron.d`. `test-config` 2.18.0, `scan --dry-run`
+            rc=0, cron restored. **All 32 installed files sha-match the tag.**
 
 - [ ] **Swatter is swatting our own CI** — see
       `docs/handoff-2026-08-28-ci-self-swat.md`. Verified while reviewing it:

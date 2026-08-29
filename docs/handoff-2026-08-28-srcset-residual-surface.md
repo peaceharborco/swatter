@@ -1,7 +1,8 @@
-# Handoff — the srcset residual scoring surface (branch, NOT shipped)
+# Handoff — the srcset residual scoring surface (released as v2.18.0)
 
-Written 2026-08-28. Branch `fix/srcset-residual-scoring-surface`, **uncommitted**
-at the time of writing and **not deployed**. cds1 is still on v2.17.0.
+Written 2026-08-28. Branch `fix/srcset-residual-scoring-surface`.
+**Released as v2.18.0 and deployed to cds1 2026-08-29.** All 32 installed
+files sha-match the tag.
 
 Read this with `docs/handoff-2026-08-28-gate-d-review-complete.md`, which this
 supersedes for gate 2. Unrelated to `docs/handoff-2026-08-28-ci-self-swat.md`.
@@ -23,11 +24,10 @@ fix exists and the scanner exemption is the only layer that can act. See
 v2.17.0 shipped that exemption gated on `status == 404`. This branch closes the
 gap that gate left, plus everything six review rounds found underneath it.
 
-**The two Blockers from that review are closed on this branch (2026-08-28
-pickup). Not shipped.** cds1 is still on v2.17.0. Remaining: re-review, prod
-dry-run, 2.18.0. Both blockers were found by an independent Claude review round
-after the Grok budget was exhausted mid-round-6, and neither overlapped the
-five completed Grok rounds.
+**The two Blockers from that review are closed, released as v2.18.0, and
+deployed.** Both were found by an independent Claude review round after the
+Grok budget was exhausted mid-round-6, and neither overlapped the five
+completed Grok rounds. `/claude` is the ship-gate review for this work.
 
 ---
 
@@ -188,7 +188,8 @@ Also unchanged from the 08-20 decision: `ABUSEIPDB_REPORT="false"` is to be set
    the 3,126,395 measurement): lose=0, gain=0, changed=1 (`75 → 50`),
    temp-band 2043 → 2042. Live glob WINDOW=600 was a quiet slice (0 IPs on
    either scorer). No IPs or domains copied off the host.
-8. Release **2.18.0**, surgical-scp, sha-verify against the tag.
+8. ~~Release **2.18.0**, surgical-scp, sha-verify against the tag.~~
+   Done 2026-08-29. All 32 installed files sha-match `v2.18.0`.
 
 
 ## Known and deliberately accepted
