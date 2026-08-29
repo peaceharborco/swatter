@@ -5,12 +5,215 @@ All notable changes to Swatter are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.17.0] - 2026-08-28
+## [Unreleased]
 
 ### Fixed
-- **A site's own broken markup could get its real visitors banned.** When an
-  `srcset` value is emitted where a single URL belongs, the browser requests the
-  entire value as one URL and always gets a 404. On the reference fleet that
+- **The srcset exemption did not cover its own class, and could be worn as a
+  disguise.** Found by a falsification review of the root-cause report and then by
+  the pre-ship review of the first attempt at this fix. Both are measured below.
+
+  **1. The status gate.** The v2.17.0 drop was gated on `status == 404`, but the
+  class's measured split is 15,299 × 404, 1,936 × 301, 592 × 302, 2 × 200 — so
+  **2,530 requests (14%) never reached the exemption** and still entered `reqs[]`.
+  A 3xx lands in `reqs[]` but not `cerr[]`, which is exactly the `err_ratio`
+  dilution the drop-before-`reqs[]` design exists to prevent: a 60-request probe
+  run scored **78** bare, **78** padded with 500 srcset-shaped 404s, and **18**
+  padded with the same 500 answered 301.
+
+  The exempt set is now `status < 400 || status == 404` — that is
+  `{0, 1xx, 2xx, 3xx, 404}`, where status 0 is what ingest emits for an unparseable
+  line. It deliberately reads wider than the measured class: 0 and 1xx do not feed
+  `cerr[]` either, so narrowing it to the tidier-looking `{2xx, 3xx, 404}` would
+  reopen the dilution lever for them. That is pinned by a test, not left to a
+  comment. The first attempt removed the status
+  gate *entirely*, on the argument that any status set is itself the lever. **That
+  argument was wrong**: `err_ratio` is `nerr/n`, so only a status that stays out of
+  `cerr[]` can dilute. 5xx feeds `cerr[]`, and 403 feeds `cerr[]` **and**
+  `cburst[]` — padding with either *raises* the score. The measured class contains
+  zero 5xx and zero 403, so the set is exactly what the class contains and every
+  status carrying real signal keeps scoring. Removing the gate outright would have
+  made an origin melt invisible: 400 srcset-shaped 500s in 20s scored 75
+  (`request_flood`) before that attempt and **NONE** after it.
+
+  **2. The unconstrained tail.** `^/` anchored the start; nothing anchored the end.
+  Once the alternation took the `,` branch the whole remainder of the path was
+  unvalidated, so any target could ride behind a valid srcset head.
+  `config/badpaths.conf` carries **no `..` or `%2e` pattern**, so
+  `path_scores_on_its_own()` is blind to traversal and never backstopped it.
+  Verified dropped at every status, including 200 where the server normalises the
+  `..` and serves the real target:
+  `…/a.jpg%20300w,/../../../../etc/passwd`, `…,/%2e%2e/%2e%2e/wp-admin/`,
+  `…,/../../../wp-login.php`. The path is now split on commas — with `%2c`
+  normalised first, or the encoded spelling escapes validation — and **every**
+  candidate must match end to end.
+
+  **3. The stem cloak — and the false positive that fixing it first created.** The
+  filename stem was `[^\/]+`, which admits dots and percent-encoding. Everything
+  the exemption *requires* in order to look like an image is what made these miss
+  the badpath table, which keys on literal spellings while `tolower()` case-folds
+  without decoding. All were dropped and all score again: `wp-config.php.jpg`,
+  `c99.php.jpg`, `backdoor.php.jpg`, `.htaccess.jpg`, `%2eenv.jpg`, `x%2f.env.jpg`.
+
+  The first tightening made the stem `[a-z0-9_~-]+`, the dot-free class the
+  directories use — **and that was itself a false-positive regression.**
+  WordPress's `sanitize_file_name()` strips ``?[]\/=<>:;,'"&$#*()|~`!{}%+`` and
+  NUL but leaves `.` and `@` alone, so `my.photo-768x576.jpg`,
+  `report.v2-768x576.jpg` and `logo@2x-768x576.jpg` are all **real upload names**
+  that a real visitor's client will request — and each scored 75 under that
+  tightening. Three such temps is a permanent, non-deletable AbuseIPDB report
+  against a residential visitor: precisely the harm this exemption exists to
+  prevent, reintroduced while closing a bypass.
+
+  The stem now admits `.` and `@` but **never `%`** (which is how the encoded dot
+  and slash cloaks got in), and safety moved to `stem_is_safe()`: a **bounded deny
+  list over one token** — the dot-separated components of a single filename, tested
+  against executable and config extensions. That is a different thing from the path
+  substring blocklist this design avoids, and the structural rules (dot-free,
+  `%`-free directory segments on both sides of the dated tree) still carry every
+  traversal case on their own.
+
+  Dilution is closed for the statuses that could actually dilute: a 60-probe run
+  scores 78 bare, and 78 when padded with 500 srcset-shaped 404s, 301s or 1xx.
+  Padding with 500s or 403s also reads 78, but for a different reason worth stating
+  plainly rather than claiming as a win — those are **not** exempted, and the score
+  holds because `scanner_profile` already floors at 78 and 5xx/403 feed `cerr[]`.
+  The real class is still fully protected: two-candidate
+  values, multisite, nested subdirs, single-candidate, and density descriptors all
+  remain exempt.
+
+### Added
+- **A volume tripwire on the exemption (`decisive_rule=srcset_flood`).** Dropping
+  before `reqs[]` is what closes the dilution lever, but it also means a client
+  flooding purely in this shape produces no row **at any volume** — true in
+  v2.17.0 as well, where a 3,000-request 404 flood at 50 rps scored nothing. The
+  exempted requests are now still counted, and an implausible volume of them
+  surfaces.
+
+  **It can never temp, and that is the point.** The first version made it a 75
+  floor at `>= 60` requests and `>= RATE_SAT` rps, justified as "~1300× above the
+  heaviest real client (544/day, ~0.006 rps)". That compared a **daily average**
+  against a **burst rate**, which are not the same quantity — the tripwire measures
+  burst span, and the real class *is* a burst: one image-heavy page makes the
+  client fetch every srcset on it at once. Measured: **70 gallery images in 5s
+  scored 75**, temp-blocking a visitor for loading one page, and three of those is
+  a permanent AbuseIPDB report. A rate tripwire on this shape will always hit
+  gallery bursts, so it now tops out at `SCORE_WATCH` — which the config defines as
+  "log + count, no action" — and the threshold sits far above any page load.
+
+  It is also counted for a **mixed** client: the first version seeded a row only
+  for a srcset-only IP and ran the `MIN_REQS` skip before the check, so ten
+  ordinary requests switched the whole channel back off.
+
+  The threshold (`>= 500` exempted requests at `>= 25` rps) is **hardcoded**, like
+  `request_flood`'s own `60`. No new *configurable* knob is introduced, so the
+  repo's validate-every-new-knob rule is honoured — but note the earlier draft of
+  this entry claimed the threshold "reuses the already-validated `RATE_SAT`", and
+  that was false twice over: the numbers are not `RATE_SAT`, and `RATE_SAT` is not
+  validated. `_swatter_validate_int` covers only `SCORE_TEMP`,
+  `MAX_BLOCKS_PER_RUN`, `WINDOW_SECONDS` and `MIN_REQS` (`lib/common.sh:491-494`).
+  `RATE_SAT` and `SCORE_WATCH` reach `lib/score.sh:14` as `-v` arguments to awk and
+  never enter a bash arithmetic context, so they carry no `set -u` abort path — a
+  pre-existing gap worth closing on its own, not here.
+
+### Changed
+- `404_srcset` in the per-IP evidence JSON is now **`srcset_exempt`**, since the
+  exemption is no longer 404-only. Its name and count are now under test.
+
+### Known
+- **The pre-fix temps are still on the ledger.** The recidivism lookback is a
+  trailing window over stored temps (`lib/score.sh:735`, window applied in
+  `lib/store_sqlite.sh:144`), not a forward-only rule, so raising
+  `REPEAT_WINDOW_DAYS` re-includes temps that already aged out. Nineteen
+  residential visitors carry temps from this class placed before v2.17.0. Stopping
+  new scoring does not expunge the ladder; that is a separate operator decision
+  (`swatter rollback-ladder`) and it gates the 7 → 30 widen.
+- **`lib/ingest.sh:72` truncates paths at 256 bytes**, and anything beyond that is
+  invisible to *all* scoring, badpath and honeypot included. A path can therefore
+  be padded so a probe suffix falls past the boundary while the visible prefix is a
+  clean srcset shape. Concretely: at exactly 256 bytes the final element is
+  ambiguous — indistinguishable from a genuinely truncated candidate — so a tail
+  that is not in `badpaths.conf` and passes the stem check (`,/etc/passwd`,
+  `…/x.exe%20300w`) still wins the exemption. It carries no working exploit (the
+  request ends in a srcset descriptor and the server serves nothing from it) and
+  `path_scores_on_its_own()` still catches anything the badpath table knows
+  (`.env` → 90, `wp-login.php` → 80), but the earlier wording of this note claimed
+  the badpath table backstopped the class generally, and that was wrong — there is
+  no generic `\.php` rule there. This predates the exemption and is ingest's limitation rather
+  than this function's, and it is not fixed here: refusing truncated paths would
+  return real visitors with long srcset values to being scored, which is the
+  irreversible direction — end-anchoring every candidate did exactly that, scoring a
+  real 4-candidate value at 75, so a truncated path now exempts its final
+  incomplete candidate while still validating every complete one.
+- Non-`YYYY/MM` upload layouts (old multisite `blogs.dir/N/files/`, `uploads/202510/`)
+  are not exempted. Not observed on the reference fleet; recorded so it is a known
+  boundary rather than a surprise.
+
+  Verified by mutation across three rounds. Each round's survivors were missing
+  tests rather than code defects, and each round found survivors the previous one
+  had not thought to try — so this is evidence the pinned behaviours are pinned,
+  **not** evidence the suite is complete. `test/score_test.sh` is at 169 assertions.
+
+  `stem_is_safe()` is a **deny list** and therefore has a residual tail by
+  construction: round 2 produced `phtm`, `php-cgi`, `js`, `inc`, `cmd`, `jspx`,
+  `ashx`, `shtml` and `zip` against the first version of it, all now closed. The
+  structural guarantees here are the dot-free, `%`-free directory segments and the
+  per-candidate end anchor; the deny list is defence in depth on top of them, and
+  should not be described as a guarantee.
+
+  Round 4 then found the SAME failure in a fourth form, and it is worth stating
+  rather than burying: the round-2 truncation tolerance had been tested at **one
+  offset**. The fixture happens to cut mid-filename, so it never exercised the
+  window where ingest lands on a partial `https` — and a realistic 4-candidate
+  srcset with a 20-character stem is ~354 bytes and cuts exactly there. Every cut
+  point from `%20h` through `%20https://cdn.example.com` scored **75**. Round 4
+  also found that an **incomplete** final element skipped `stem_is_safe()`
+  entirely (so `,/c99.php` and `,/wp-config.php` rode at 256 bytes, with no
+  generic `\.php` rule in `badpaths.conf` to backstop them), and that the deny
+  list's exact matching missed `php~`, `php_`, `php_backup` and `php-fpm`.
+
+  Round 3 then found the deny list had been scoped wrongly in **both** directions.
+  It missed `php81`/`php82`/`php74` (the anchor was `php[0-9]`, one digit, while a
+  modern multi-PHP host uses two), and it **banned real uploads**: `photo.bak.jpg`,
+  `image.tmp.jpg`, `backup.zip.jpg`, and bare `old.jpg`/`tmp.jpg`/`copy.jpg`/`env.jpg`
+  all scored 75. It is now scoped to extensions that would be **executed** or would
+  **leak a secret** — archives, backups, temp copies, logs and VCS names are none of
+  those — and it is not consulted at all when the stem has no dot, since a dot-free
+  stem cannot be a double extension.
+  Round 1 left six alive and round 2 left three, every one of them a missing test
+  rather than a code defect — including two cases where a bypass assertion was
+  passing on the badpath table instead of the structural refusal it claimed to pin,
+  and one where the test path failed the prefilter for an unrelated reason and so
+  pinned nothing at all.
+
+## [2.17.0] - 2026-08-28
+
+> **Cause corrected 2026-08-28, after release.** This entry was written on the
+> theory that the affected sites emit broken `srcset` markup. A follow-up
+> investigation found that they do not: the fleet's markup is correct, and the
+> requests are manufactured **client-side** by third-party Chromium-based clients
+> that read a correct `srcset` attribute and request its whole value as one URL.
+> The decisive evidence is the browser mix — 14,653 Chrome / 2,635 Edge / 3 Safari
+> / 0 Firefox against a baseline of ~24% Safari and ~7% Firefox on the same
+> traffic. Broken markup breaks in every browser; this does not.
+>
+> **The fix remains correct in direction** — if anything more so, since the
+> requests originate off our infrastructure and this exemption is the only layer
+> that can act on them. It is not a stopgap awaiting a markup fix, and it must not
+> be reverted on the grounds that "the markup is clean." Two adversarial review
+> models were unable to refute the client-side finding.
+>
+> Its **behavior**, however, was NOT left unchanged: the entry below describes a
+> 404-only drop, and a later review found that gate let 14% of the class through
+> and could itself be worn as a disguise. See the Unreleased section above for what
+> replaced it. Read the two together — this entry alone is no longer accurate.
+> See also the known residual scoring surface recorded under Unreleased.
+
+### Fixed
+- **A visitor's own browser-side client could get them banned.** When an
+  `srcset` value is requested where a single URL belongs, the requester asks for
+  the entire value as one URL. That is usually a 404, though the measured split is
+  86% 404 and 14% redirects — a distinction this entry originally missed, and which
+  the Unreleased section above corrects. On the reference fleet that
   produced **17,829 such requests from 8,767 distinct client IPs across 35
   sites**, overwhelmingly residential broadband with ordinary consumer browser
   user-agents, and still running at roughly 2,100/month. Nineteen real visitors

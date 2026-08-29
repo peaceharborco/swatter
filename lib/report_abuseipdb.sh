@@ -19,6 +19,12 @@ _abuseipdb_categories() {
         high_badpath_repeat)               echo "18,21" ;;  # Brute-Force, Web App Attack
         critical_badpath|scanner_profile)  echo "21,14" ;;  # Web App Attack, Port Scan
         request_flood)                     echo "4"     ;;  # DDoS Attack
+        # srcset_flood is WATCH-ONLY and tops out below SCORE_TEMP, so it cannot
+        # reach a perm and cannot reach this map. Listed so that stays deliberate:
+        # if it is ever promoted to an actionable rule, 4 (DDoS) is the category,
+        # NOT the 21 (Web App Attack) default -- this shape is volume, not an
+        # exploit attempt, and the population behind it is residential.
+        srcset_flood)                      echo "4"     ;;  # DDoS Attack
         *)                                 echo "21"    ;;  # Web App Attack
     esac
 }

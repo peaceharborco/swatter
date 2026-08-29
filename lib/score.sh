@@ -703,6 +703,18 @@ swatter_scan() {
         local drule; drule="$(printf '%s' "$ev" | sed -n 's/.*"decisive_rule":"\([^"]*\)".*/\1/p')"
         [[ -n "$drule" ]] && reason="${reason} rule=${drule}"
 
+        # srcset_flood is WATCH-ONLY, and this is the line that MAKES it so.
+        # score.awk caps it at SCORE_WATCH, but reputation and ASN fold in HERE,
+        # afterwards -- so "cannot temp" was arithmetic coincidence at the shipped
+        # defaults (50 + 14 + 12 = 76 would have crossed a SCORE_TEMP of 70 the
+        # moment anyone raised SCORE_WATCH or W_ASN), not an enforced property.
+        # The exempted class is residential by construction; it must never reach
+        # the ladder, and therefore never an AbuseIPDB report.
+        if [[ "$drule" == "srcset_flood" ]] && (( folded >= SCORE_TEMP )); then
+            folded=$(( SCORE_TEMP - 1 ))
+            reason="${reason} watch-only-capped"
+        fi
+
         # Suppression is total — exempt everywhere — UNLESS a honeypot hit and
         # HONEYPOT_OVERRIDES_SUPPRESS=true together override it (operator opt-in;
         # default false keeps a known-good RIOT range safe even on a trap hit).

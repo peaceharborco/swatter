@@ -127,7 +127,7 @@ Each IP is scored 0–100 over a sliding window from a **weighted blend** of sig
 |---|---|
 | Request rate | hammering / floods |
 | Error ratio (4xx/5xx) | scanners generate errors |
-| Error burst (403/404/444) | brute-force & path fuzzing (404s caused by a site's own broken `srcset` markup are excluded — see `404_srcset`) |
+| Error burst (403/404/444) | brute-force & path fuzzing (requests for a whole `srcset` attribute value are excluded below status 400, plus 404 — see `srcset_exempt`) |
 | URL fanout | path enumeration / scanning |
 | **Bad-path hits** | `/.env`, `/.git`, `wp-login.php`, `xmlrpc.php`, `/cgi-bin/`, shell drops, … |
 | User-agent | `sqlmap`, `nikto`, `zgrab`, empty UAs |

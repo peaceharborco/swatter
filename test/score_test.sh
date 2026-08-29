@@ -84,21 +84,27 @@ emit_spread "$tmp/legit.log" "203.0.113.50" "GET /missing HTTP/1.1" 404 "Mozilla
 assert_band "legit-visitor" "$(score_of example.com "$tmp/legit.log")" 0 49
 
 # --- 1b: mangled-srcset 404 storm is the SITE's bug, not a probe ------------
-# 2026-08-28 gate D review: broken srcset markup made browsers request the whole
-# srcset value as one URL, always 404. 17,829 such requests from 8,767 DISTINCT
-# client IPs across 35 hosted sites, overwhelmingly residential broadband with
-# ordinary consumer browser UAs. Nineteen real visitors were already temp-blocked,
-# six by rule=error_burst, one a live perm candidate. A real visitor must not be
-# banned for the site's own markup -- and the exemption must not become a
-# detection blind spot. Both review models broke the FIRST version of this fix;
-# the bypass strings they supplied are pinned below by name.
+# 2026-08-28 gate D review: third-party Chromium-based clients request a whole
+# srcset value as one URL. 17,829 such requests from 8,767 DISTINCT client IPs
+# across 35 hosted sites, overwhelmingly residential broadband. Nineteen real
+# visitors were already temp-blocked, six by rule=error_burst, one a live perm
+# candidate. A real visitor must not be banned for what their client does -- and
+# the exemption must not become a detection blind spot. Both review models broke
+# the FIRST version of this fix; the bypass strings they supplied are pinned below
+# by name.
+#
+# NOTE the cause was corrected AFTER v2.17.0 shipped: this was first diagnosed as
+# the sites emitting broken markup, and they do not -- see the header comment on
+# is_mangled_srcset() in lib/score.awk. The tests are unchanged by that
+# correction (the request shape is identical either way); what changed is that
+# there is no upstream fix coming, so these assertions are permanent.
 HP="$tmp/honeypots.conf"; printf '/__trap_a7f3c1d9(/|$)\n' > "$HP"
-srcset_score() {  # srcset_score <path> <count> -> score or NONE
-    local pth="$1" cnt="$2" i
+srcset_score() {  # srcset_score <path> <count> [status] -> score or NONE
+    local pth="$1" cnt="$2" st="${3:-404}" i
     : > "$tmp/ss.tsv"
     for (( i=1; i<=cnt; i++ )); do
-        printf '198.51.100.9\t%s\tGET\t%s\t404\t-\tcurl/8.0\n' \
-            $(( NOW_EPOCH - 300 + i )) "$pth" >> "$tmp/ss.tsv"
+        printf '198.51.100.9\t%s\tGET\t%s\t%s\t-\tcurl/8.0\n' \
+            $(( NOW_EPOCH - 300 + i )) "$pth" "$st" >> "$tmp/ss.tsv"
     done
     gawk -v NOW="$NOW_EPOCH" -v WINDOW=600 -v MIN_REQS=15 -v RATE_SAT=8 -v SCORE_WATCH=50 \
          -v W_RATE=18 -v W_ERR_RATIO=16 -v W_ERR_BURST=12 -v W_FANOUT=12 -v W_BADPATH=22 \
@@ -109,13 +115,512 @@ srcset_score() {  # srcset_score <path> <count> -> score or NONE
 }
 ss_band() { assert_band "$1" "$2" "$3" "$4"; }
 
+# A real 5-candidate srcset, truncated to 256 bytes exactly as lib/ingest.sh does.
+SS_LONG_FULL='/wp-content/uploads/2025/10/summer-collection-hero-480x360.jpg%20480w,%20https://cdn.example.com/wp-content/uploads/2025/10/summer-collection-hero-768x576.jpg%20768w,%20https://cdn.example.com/wp-content/uploads/2025/10/summer-collection-hero-1024x768.jpg%201024w,%20https://cdn.example.com/wp-content/uploads/2025/10/summer-collection-hero-1920x1440.jpg%201920w'
+SS_LONG_TRUNC="${SS_LONG_FULL:0:256}"
+
+_srcset_burst_tsv() {  # <count> <seconds> [other_requests]
+    local cnt="$1" secs="$2" other="${3:-0}" i
+    : > "$tmp/burst.tsv"
+    for (( i=1; i<=cnt; i++ )); do
+        printf '198.51.100.7\t%s\tGET\t/wp-content/uploads/2025/10/gallery-img%s-768x576.jpg%%20768w,%%20https:/e.com/g%s-900x675.jpg%%20900w\t404\t-\tMozilla/5.0\texample.com\n' \
+            $(( NOW_EPOCH - 300 + (i * secs / cnt) )) "$i" "$i" >> "$tmp/burst.tsv"
+    done
+    for (( i=1; i<=other; i++ )); do
+        printf '198.51.100.7\t%s\tGET\t/page-%s\t200\t-\tMozilla/5.0\texample.com\n' \
+            $(( NOW_EPOCH - 320 + i )) "$i" >> "$tmp/burst.tsv"
+    done
+}
+_srcset_burst_run() {
+    gawk -v NOW="$NOW_EPOCH" -v WINDOW=600 -v MIN_REQS=15 -v RATE_SAT=8 -v SCORE_WATCH=50 \
+         -v W_RATE=18 -v W_ERR_RATIO=16 -v W_ERR_BURST=12 -v W_FANOUT=12 -v W_BADPATH=22 \
+         -v W_UA=6 -v W_POST_FLOOD=8 -v W_NOVHOST=6 \
+         -v BADPATHS="${ROOT}/config/badpaths.conf" -v HONEYPOTS="$HP" \
+         -f "${ROOT}/lib/score.awk" "$tmp/burst.tsv" | head -1
+}
+srcset_burst()       { _srcset_burst_tsv "$1" "$2";     local r; r="$(_srcset_burst_run | cut -f2)"; printf '%s' "${r:-NONE}"; }
+srcset_burst_mixed() { _srcset_burst_tsv "$1" "$2" "$3"; local r; r="$(_srcset_burst_run | cut -f2)"; printf '%s' "${r:-NONE}"; }
+srcset_burst_rule()  { _srcset_burst_tsv "$1" "$2";     _srcset_burst_run | grep -o '"decisive_rule":"[^"]*"' | cut -d'"' -f4; }
+
+srcset_rule_fast() {  # <path> <count> <status> -> decisive_rule (field 3 is the count; rule is in the JSON)
+    srcset_score_fast "$1" "$2" "$3" >/dev/null
+    gawk -v NOW="$NOW_EPOCH" -v WINDOW=600 -v MIN_REQS=15 -v RATE_SAT=8 -v SCORE_WATCH=50 \
+         -v W_RATE=18 -v W_ERR_RATIO=16 -v W_ERR_BURST=12 -v W_FANOUT=12 -v W_BADPATH=22 \
+         -v W_UA=6 -v W_POST_FLOOD=8 -v W_NOVHOST=6 \
+         -v BADPATHS="${ROOT}/config/badpaths.conf" -v HONEYPOTS="$HP" \
+         -f "${ROOT}/lib/score.awk" "$tmp/ssf.tsv" \
+      | head -1 | grep -o '"decisive_rule":"[^"]*"' | cut -d'"' -f4
+}
+
+srcset_score_fast() {  # <path> <count> <status> -> score, all inside 20s (rps>=8)
+    local pth="$1" cnt="$2" st="$3" i
+    : > "$tmp/ssf.tsv"
+    for (( i=1; i<=cnt; i++ )); do
+        printf '198.51.100.9\t%s\tGET\t%s\t%s\t-\tMozilla/5.0\texample.com\n' \
+            $(( NOW_EPOCH - 60 + (i % 20) )) "$pth" "$st" >> "$tmp/ssf.tsv"
+    done
+    gawk -v NOW="$NOW_EPOCH" -v WINDOW=600 -v MIN_REQS=15 -v RATE_SAT=8 -v SCORE_WATCH=50 \
+         -v W_RATE=18 -v W_ERR_RATIO=16 -v W_ERR_BURST=12 -v W_FANOUT=12 -v W_BADPATH=22 \
+         -v W_UA=6 -v W_POST_FLOOD=8 -v W_NOVHOST=6 \
+         -v BADPATHS="${ROOT}/config/badpaths.conf" -v HONEYPOTS="$HP" \
+         -f "${ROOT}/lib/score.awk" "$tmp/ssf.tsv" \
+      | awk -F'\t' 'NR==1{print $2; f=1} END{if(!f) print "NONE"}'
+}
+
 # The real production shapes must NOT score.
-ss_band "srcset-real-shape-not-banned" \
-  "$(srcset_score '/wp-content/uploads/2025/10/photo-768x576.jpg%20768w,%20https:/example.com/photo-900x675.jpg%20900w' 220)" 0 49
+SS_REAL='/wp-content/uploads/2025/10/photo-768x576.jpg%20768w,%20https:/example.com/photo-900x675.jpg%20900w'
+ss_band "srcset-real-shape-not-banned" "$(srcset_score "$SS_REAL" 220)" 0 49
 # Single-candidate srcset has no trailing comma; density (sizes) descriptors use Nx.
 # Both are the same defect and were MISSED by the first version of the fix.
 ss_band "srcset-single-candidate-no-comma"  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w' 220)" 0 49
 ss_band "srcset-density-descriptor"         "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%202x,%20https:/e/y.jpg%203x' 220)" 0 49
+
+# --- 2026-08-28 falsification review: the class is not all 404 --------------
+# The report that overturned the markup diagnosis measured the class's status
+# split: 15,299 x 404, 1,936 x 301, 592 x 302, 2 x 200. The v2.17.0 exemption was
+# gated on status==404, so 2,528 requests (14%) still entered reqs[] -- which
+# REOPENED the very err_ratio dilution lever the drop-before-reqs[] design closed.
+# Measured on the real scorer: a 60-probe run scores 78 bare, 78 padded with
+# srcset 404s (neutral, as designed), and 18 padded with srcset 301s.
+#
+# The gate is now shape + path_scores_on_its_own, with NO status carve-out at all,
+# because any status carve-out IS the lever: an attacker simply pads with
+# shape-matching URLs that return a status outside the exempt set.
+# THE EXEMPT STATUS SET IS {2xx, 3xx, 404} AND NOTHING ELSE.
+# The first version of this fix removed the status gate entirely, on the argument
+# that any status set is itself a dilution lever. That argument is WRONG, and the
+# review measured why: err_ratio is nerr/n, so only a status that stays OUT of
+# cerr[] dilutes. 5xx feeds cerr[]; 403 feeds cerr[] AND cburst[]. Padding a probe
+# run with either RAISES the score (78 -> 78), it does not lower it. Only 2xx/3xx
+# dilute -- and the measured class is 15,299x404 + 1,936x301 + 592x302 + 2x200,
+# with ZERO 5xx and ZERO 403. So the set is calibrated to the evidence: drop what
+# the class actually contains, and keep every status that carries real signal.
+# Dropping 5xx would have made an origin melt invisible (measured: 400 requests in
+# 20s scored 75 request_flood before, NONE after).
+ss_band "srcset-403-still-scores" "$(srcset_score "$SS_REAL" 220 403)" 75 100
+ss_band "srcset-500-flood-still-scores" "$(srcset_score_fast "$SS_REAL" 400 500)" 75 100
+ss_band "srcset-401-still-scores" "$(srcset_score_fast "$SS_REAL" 400 401)" 75 100
+# 429 is a rate-limiter answering. It feeds cerr[] so it cannot dilute, but
+# exempting it would throw away the signal that something is being throttled --
+# the one status that most directly says "this client is already too much".
+ss_band "srcset-429-still-scores" "$(srcset_score_fast "$SS_REAL" 400 429)" 75 100
+
+# Exempt statuses at ORDINARY rate (220 requests over 220s, ~1 rps) must not score.
+ss_band "srcset-404-exempt" "$(srcset_score "$SS_REAL" 220 404)" 0 49
+ss_band "srcset-301-exempt" "$(srcset_score "$SS_REAL" 220 301)" 0 49
+ss_band "srcset-302-exempt" "$(srcset_score "$SS_REAL" 220 302)" 0 49
+ss_band "srcset-200-exempt" "$(srcset_score "$SS_REAL" 220 200)" 0 49
+
+# The unmetered-channel problem this used to pin is now covered by the
+# gallery-burst / watch-only block further down, which replaced a 75 floor that
+# could temp a real visitor. Kept here: the ordinary-rate exemption cases above.
+# A slow, high-VOLUME client stays exempt -- the tripwire is a rate, not a count,
+# because the real class is high-volume-low-rate and must never be caught by it.
+ss_band "srcset-high-volume-slow-still-exempt" "$(srcset_score "$SS_REAL" 3000 404)" 0 49
+# Both tripwire thresholds pinned: just under each bar must stay silent, just over
+# must surface. Mutants moving 500->400 or 25->20 rps previously stayed green.
+ss_band "tripwire-just-under-count" "$(srcset_burst 499 20)" 0 49
+ss_band "tripwire-at-count"         "$(srcset_burst 500 20)" 50 69
+ss_band "tripwire-just-under-rate"  "$(srcset_burst 500 21)" 0 49
+# ...and the count bar independently, with the rate comfortably over its own.
+ss_band "tripwire-count-450-over-rate" "$(srcset_burst 450 10)" 0 49
+ss_band "tripwire-count-500-over-rate" "$(srcset_burst 500 10)" 50 69
+
+# THE DEFECT, part 1 -- request_flood. 3xx never reaches error_burst, but it does
+# reach reqs[]/rps, so a tight retry loop on this shape trips the flood floor at
+# 75 and temps a real visitor (SCORE_TEMP=70). The observed heaviest client fired
+# 544 requests for 14 distinct URLs in one day: a retry loop, exactly this shape.
+
+
+# THE DEFECT, part 2 -- err_ratio dilution. This is the SAME lever the 2.17.0
+# design closed by dropping the request before reqs[] rather than merely keeping
+# it out of cerr[]. Gating that drop on status==404 reopened it for every other
+# status: pad a real probe run with shape-matching URLs that redirect and
+# err_ratio (nerr/n) collapses. Measured before the fix: 78 bare -> 18 padded.
+# The probe run is deliberately kept BELOW the error_burst knee (nburst>=100) and
+# spread over distinct paths, so the COMPOSITE decides the score. An absolute
+# floor cannot be diluted, so a 120-request probe run would mask this defect
+# entirely -- which is why the existing 404 padding test could not have caught it.
+emit_scan() {  # <out> <ip> <status> <count> <ndistinct> -- distinct-path probe run
+    local out="$1" ip="$2" st="$3" cnt="$4" nd="$5" i ep
+    for (( i=0; i<cnt; i++ )); do
+        ep=$(( NOW_EPOCH - 300 + i*4 ))
+        printf '%s - - [%s] "GET /nope-%s HTTP/1.1" %s 0 "-" "curl/8.0"\n' \
+            "$ip" "$(tstamp "$ep")" "$(( i % nd ))" "$st" >> "$out"
+    done
+}
+: > "$tmp/probe_bare.log"
+emit_scan "$tmp/probe_bare.log" "203.0.113.83" 404 60 30
+BARE301="$(score_of example.com "$tmp/probe_bare.log")"
+: > "$tmp/probe_padded301.log"
+emit_scan "$tmp/probe_padded301.log" "203.0.113.83" 404 60 30
+emit_spread "$tmp/probe_padded301.log" "203.0.113.83" "GET ${SS_REAL} HTTP/1.1" 301 "curl/8.0" 500
+PADDED301="$(score_of example.com "$tmp/probe_padded301.log")"
+ss_band "probe-run-scores-below-burst-floor" "$BARE301" 75 100
+ss_band "probe-run-still-scores-when-padded-301" "$PADDED301" 75 100
+if [[ "$BARE301" == "$PADDED301" ]]; then
+    printf 'PASS  %-30s 301 padding is neutral (both %s)\n' "srcset-301-padding-neutral" "$BARE301"; PASS=$((PASS+1))
+else
+    printf 'FAIL  %-30s bare=%s padded=%s\n' "srcset-301-padding-neutral" "$BARE301" "$PADDED301"; FAIL=$((FAIL+1))
+fi
+
+# --- regex gaps the review found (all real shapes on this fleet) ------------
+# WordPress MULTISITE puts uploads under sites/N/ -- unexempted before this fix.
+ss_band "srcset-multisite-path" \
+  "$(srcset_score '/wp-content/uploads/sites/2/2025/10/photo-768x576.jpg%20768w,%20https:/e.com/p.jpg%20900w' 220)" 0 49
+# Nested subdirectories under uploads/YYYY/MM/ (plugin thumbnail trees).
+ss_band "srcset-nested-subdir" \
+  "$(srcset_score '/wp-content/uploads/2025/10/thumbs/photo.jpg%20768w,' 220)" 0 49
+ss_band "srcset-bmp-extension" \
+  "$(srcset_score '/wp-content/uploads/2025/10/photo.bmp%20768w,' 220)" 0 49
+# A space BEFORE the comma is legal srcset whitespace.
+ss_band "srcset-space-before-comma" \
+  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w%20,%20https:/e.com/p.jpg%20900w' 220)" 0 49
+
+# --- THE STEM CLOAK: [^/]+ let any name wear an image extension -------------
+# Found by pre-ship review. The stem between YYYY/MM/ and the extension was
+# [^\/]+, which admits dots and percent-encoding. Everything the exemption
+# REQUIRES in order to look like an image (a real extension immediately before the
+# descriptor) is exactly what made these probes MISS path_scores_on_its_own():
+# the badpath table keys on literal spellings, and tolower() case-folds without
+# decoding. Real WordPress upload names (photo-768x576) fit [a-z0-9_~-]+, the same
+# class the directories already use -- so the stem now uses it too.
+ss_band "cloak-wp-config-php-jpg"  "$(srcset_score '/wp-content/uploads/2025/10/wp-config.php.jpg%20768w,' 220)" 75 100
+ss_band "cloak-c99-php-jpg"        "$(srcset_score '/wp-content/uploads/2025/10/c99.php.jpg%20768w,' 220)" 75 100
+ss_band "cloak-backdoor-php-jpg"   "$(srcset_score '/wp-content/uploads/2025/10/backdoor.php.jpg%20768w,' 220)" 75 100
+ss_band "cloak-htaccess-jpg"       "$(srcset_score '/wp-content/uploads/2025/10/.htaccess.jpg%20768w,' 220)" 75 100
+ss_band "cloak-encoded-dot-env"    "$(srcset_score '/wp-content/uploads/2025/10/%2eenv.jpg%20768w,' 220)" 75 100
+ss_band "cloak-encoded-slash-env"  "$(srcset_score '/wp-content/uploads/2025/10/x%2f.env.jpg%20300w,' 220)" 75 100
+
+# --- ...but the stem must not become a FALSE POSITIVE either ----------------
+# Tightening the stem to [a-z0-9_~-]+ closed the cloaks and immediately created
+# the harm the exemption exists to prevent: WordPress sanitize_file_name() strips
+# ?[]\/=<>:;,'"&$#*()|~`!{}%+ and NUL, but NOT '.' and NOT '@'. So these are all
+# REAL upload names, and all three scored 75 under the first tightening -- three
+# such temps is a permanent, non-deletable AbuseIPDB report against a residential
+# visitor. The stem now admits dots and '@' (never '%', which is how %2e/%2f got
+# in), and safety comes from refusing any dot-component that is an executable or
+# config EXTENSION -- a bounded deny list over a single token, not a path blocklist.
+ss_band "real-name-dotted-stem"   "$(srcset_score '/wp-content/uploads/2025/10/my.photo-768x576.jpg%20768w,' 220)" 0 49
+ss_band "real-name-versioned"     "$(srcset_score '/wp-content/uploads/2025/10/report.v2-768x576.jpg%20768w,' 220)" 0 49
+ss_band "real-name-retina-at2x"   "$(srcset_score '/wp-content/uploads/2025/10/logo@2x-768x576.jpg%20768w,' 220)" 0 49
+ss_band "real-name-multi-dot"     "$(srcset_score '/wp-content/uploads/2025/10/a.b.c-768x576.jpg%20768w,' 220)" 0 49
+# The deny list is what keeps the cloaks shut once dots are allowed back in.
+ss_band "cloak-phtml"             "$(srcset_score '/wp-content/uploads/2025/10/x.phtml.jpg%20768w,' 220)" 75 100
+ss_band "cloak-env-component"     "$(srcset_score '/wp-content/uploads/2025/10/x.env.jpg%20768w,' 220)" 75 100
+ss_band "cloak-sql-dump"          "$(srcset_score '/wp-content/uploads/2025/10/db.sql.jpg%20768w,' 220)" 75 100
+ss_band "cloak-pem-key"           "$(srcset_score '/wp-content/uploads/2025/10/server.pem.jpg%20768w,' 220)" 75 100
+
+# --- MORE REAL SHAPES THAT MUST NOT SCORE (false-positive direction) --------
+# Each of these is legitimate markup a real visitor's client will request.
+ss_band "real-scheme-relative-candidate" \
+  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w,%20//cdn.example.com/wp-content/uploads/2025/10/photo-900x675.jpg%20900w' 220)" 0 49
+ss_band "real-trailing-comma-space" \
+  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w,%20' 220)" 0 49
+ss_band "real-heic-extension"  "$(srcset_score '/wp-content/uploads/2025/10/photo.heic%20768w,' 220)" 0 49
+ss_band "real-jfif-extension"  "$(srcset_score '/wp-content/uploads/2025/10/photo.jfif%20768w,' 220)" 0 49
+
+# --- the 1xx / status-0 half of the predicate --------------------------------
+# The predicate is (status < 400 || status == 404) -- i.e. {0, 1xx, 2xx, 3xx, 404}.
+# 1xx and the status-0 that ingest emits for an unparseable line do NOT feed
+# cerr[], so they dilute exactly the way 3xx does. Narrowing the predicate to the
+# {2xx,3xx,404} that the docs used to claim would REOPEN the lever this change
+# exists to close, so it is pinned here as behaviour, not left to a comment.
+: > "$tmp/pad1xx.log"
+emit_scan "$tmp/pad1xx.log" "203.0.113.84" 404 60 30
+emit_spread "$tmp/pad1xx.log" "203.0.113.84" "GET ${SS_REAL} HTTP/1.1" 100 "curl/8.0" 500
+ss_band "probe-run-not-diluted-by-1xx-padding" "$(score_of example.com "$tmp/pad1xx.log")" 75 100
+# ...and status 0, which is what ingest emits for a line it could not parse. The
+# changelog claimed this was pinned when only the 1xx case was, and a mutant
+# dropping 0 from the predicate stayed green.
+: > "$tmp/pad0.log"
+emit_scan "$tmp/pad0.log" "203.0.113.85" 404 60 30
+emit_spread "$tmp/pad0.log" "203.0.113.85" "GET ${SS_REAL} HTTP/1.1" 0 "curl/8.0" 500
+ss_band "probe-run-not-diluted-by-status0-padding" "$(score_of example.com "$tmp/pad0.log")" 75 100
+
+# --- deny-list cloaks: the tokens round 2 found missing ---------------------
+# stem_is_safe() is a DENY LIST, so it has a residual tail by construction. These
+# are the shapes a review actually produced; the list is not a structural
+# guarantee and the docs must not claim one.
+ss_band "cloak-phtm"     "$(srcset_score '/wp-content/uploads/2025/10/c99.phtm.jpg%20768w,' 220)" 75 100
+ss_band "cloak-php-cgi"  "$(srcset_score '/wp-content/uploads/2025/10/x.php-cgi.jpg%20768w,' 220)" 75 100
+# js / inc / cmd were REMOVED from the deny list in round 4, deliberately.
+# "chart.js.jpg" and "three.js.jpg" are ordinary screenshot names, "Inc." is in
+# every other business name, and .cmd is a Windows batch extension on a Linux
+# WordPress fleet. None of them executes when the request ends in a srcset
+# descriptor and the server serves a .jpg. Under the harm asymmetry -- a missed
+# token costs intent-evidence, a wrong token bans a real person irreversibly --
+# they are false-positive risks with no matching upside.
+ss_band "real-name-js"   "$(srcset_score '/wp-content/uploads/2025/10/chart.js.jpg%20768w,' 220)" 0 49
+ss_band "real-name-inc"  "$(srcset_score '/wp-content/uploads/2025/10/acme.inc.jpg%20768w,' 220)" 0 49
+ss_band "real-name-cmd"  "$(srcset_score '/wp-content/uploads/2025/10/run.cmd.jpg%20768w,' 220)" 0 49
+ss_band "cloak-jspx"     "$(srcset_score '/wp-content/uploads/2025/10/x.jspx.jpg%20768w,' 220)" 75 100
+ss_band "cloak-ashx"     "$(srcset_score '/wp-content/uploads/2025/10/x.ashx.jpg%20768w,' 220)" 75 100
+ss_band "cloak-shtml"    "$(srcset_score '/wp-content/uploads/2025/10/x.shtml.jpg%20768w,' 220)" 75 100
+# NOT a cloak: an archive is neither executed nor a secret, and "backup.zip.jpg"
+# is a plausible real upload. The deny list is scoped to extensions that would be
+# EXECUTED or would leak a secret -- widening it past that banned real visitors.
+ss_band "real-name-archive-component" "$(srcset_score '/wp-content/uploads/2025/10/backup.zip.jpg%20768w,' 220)" 0 49
+ss_band "cloak-php5"     "$(srcset_score '/wp-content/uploads/2025/10/x.php5.jpg%20768w,' 220)" 75 100
+ss_band "cloak-phar"     "$(srcset_score '/wp-content/uploads/2025/10/x.phar.jpg%20768w,' 220)" 75 100
+# ...and the deny list must be applied to LATER candidates too, not only the first.
+ss_band "cloak-later-candidate-php" \
+  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w,%20https:/e.com/c99.php.jpg%20900w' 220)" 75 100
+ss_band "cloak-later-candidate-phar" \
+  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w,%20https:/e.com/x.phar.jpg%20900w' 220)" 75 100
+# An empty element in the MIDDLE is not a candidate and must not be skipped.
+ss_band "empty-middle-element-refused" \
+  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w,,%20https:/e.com/p.jpg%20900w' 220)" 75 100
+
+# --- the deny list must not ban REAL upload names (round 3) -----------------
+# Scoping it to "anything that looks like an extension" temp-banned ordinary
+# files. WordPress leaves these dots alone, so every one of these is a real name a
+# visitor's client will request, and each scored 75 -- the same irreversible ladder
+# that produced the original 19 residential temps.
+ss_band "real-name-dot-bak"   "$(srcset_score '/wp-content/uploads/2025/10/photo.bak.jpg%20300w,' 220)" 0 49
+ss_band "real-name-dot-old"   "$(srcset_score '/wp-content/uploads/2025/10/photo.old.jpg%20300w,' 220)" 0 49
+ss_band "real-name-dot-tmp"   "$(srcset_score '/wp-content/uploads/2025/10/image.tmp.jpg%20300w,' 220)" 0 49
+ss_band "real-name-dot-copy"  "$(srcset_score '/wp-content/uploads/2025/10/hero.copy.jpg%20300w,' 220)" 0 49
+ss_band "real-name-dot-orig"  "$(srcset_score '/wp-content/uploads/2025/10/banner.orig.jpg%20300w,' 220)" 0 49
+ss_band "real-name-dot-svg"   "$(srcset_score '/wp-content/uploads/2025/10/logo.svg.jpg%20300w,' 220)" 0 49
+# A stem with NO dot cannot be a double extension at all, so the deny list must
+# not look at it -- these short names were being banned on the bare token.
+ss_band "real-name-bare-old"  "$(srcset_score '/wp-content/uploads/2025/10/old.jpg%20300w,' 220)" 0 49
+ss_band "real-name-bare-tmp"  "$(srcset_score '/wp-content/uploads/2025/10/tmp.jpg%20300w,' 220)" 0 49
+ss_band "real-name-bare-copy" "$(srcset_score '/wp-content/uploads/2025/10/copy.jpg%20300w,' 220)" 0 49
+ss_band "real-name-bare-env"  "$(srcset_score '/wp-content/uploads/2025/10/env.jpg%20300w,' 220)" 0 49
+# ...but a genuine double extension still scores, including the leading-dot form.
+ss_band "cloak-still-wp-config" "$(srcset_score '/wp-content/uploads/2025/10/wp-config.php.jpg%20300w,' 220)" 75 100
+ss_band "cloak-still-htaccess"  "$(srcset_score '/wp-content/uploads/2025/10/.htaccess.jpg%20300w,' 220)" 75 100
+ss_band "cloak-still-dot-env"   "$(srcset_score '/wp-content/uploads/2025/10/secrets.env.jpg%20300w,' 220)" 75 100
+
+# --- multi-digit PHP versions ------------------------------------------------
+# php[0-9] matched one digit, so php81/php82/php74 -- the spellings a modern
+# multi-PHP host actually uses -- sailed through while php5 was caught.
+ss_band "cloak-php81" "$(srcset_score '/wp-content/uploads/2025/10/x.php81.jpg%20300w,' 220)" 75 100
+ss_band "cloak-php82" "$(srcset_score '/wp-content/uploads/2025/10/x.php82.jpg%20300w,' 220)" 75 100
+ss_band "cloak-php74" "$(srcset_score '/wp-content/uploads/2025/10/x.php74.jpg%20300w,' 220)" 75 100
+
+# --- a COMPLETE final candidate at the 256 boundary must be fully validated ---
+# candidate_prefix_ok() is a SUPERSET of complete candidates, so skipping the
+# final element whenever it looked like a prefix let a finished attack candidate
+# ride: the same tail scored 75 at 255 bytes and was exempt at 256. A final
+# element that parses as a complete candidate is now held to the full check,
+# stem_is_safe() included; only a genuinely incomplete one gets prefix treatment.
+B256() { python3 -c "
+import sys
+h='/wp-content/uploads/2025/10/'; t='.jpg%20300w'; pay=sys.argv[1]
+print(h + 'a'*(256-len(h)-len(t)-len(pay)) + t + pay)" "$1"; }
+ss_band "trunc-256-complete-php-final"  "$(srcset_score "$(B256 ',/x.php.jpg%20300w')" 220)" 75 100
+ss_band "trunc-256-complete-php8-final" "$(srcset_score "$(B256 ',/x.php8.jpg%20300w')" 220)" 75 100
+# ...and a complete SAFE final candidate at the boundary stays exempt.
+ss_band "trunc-256-complete-safe-final" "$(srcset_score "$(B256 ',/b.jpg%20300w')" 220)" 0 49
+
+# --- ROUND 4: the truncation cut lands in the SCHEME, not the filename -------
+# The round-2 truncation fix was tested at ONE offset. SS_LONG_FULL happens to cut
+# mid-filename, so it never exercised the window where ingest lands on a partial
+# "https" -- and a realistic 4-candidate srcset with a 20-character stem is ~354
+# bytes and cuts exactly there. candidate_prefix_ok() rejected an incomplete
+# scheme, so real visitors scored 75 at those offsets. Every cut point is pinned
+# now, not one lucky one.
+CUT() { python3 -c "
+import sys
+h='/wp-content/uploads/2025/10/'; t='.jpg%20300w,'; f=sys.argv[1]
+print(h + 'a'*(256-len(h)-len(t)-len(f)) + t + f)" "$1"; }
+for frag in '%20h' '%20ht' '%20htt' '%20http' '%20https' '%20https:' '%20https:/' '%20https://' '%20https://c' '%20https://cdn.example.com' '%20//cdn.example.com' '%20http://cdn.example.com'; do
+    ss_band "trunc-cut-at-${frag//[^a-z0-9]/_}" "$(srcset_score "$(CUT "$frag")" 220)" 0 49
+done
+# ...and the whole realistic value, cut by ingest exactly as production would.
+SS_REAL4="$(python3 -c "
+stem='family-portrait-2024'
+c=[('/wp-content/uploads/2025/10/%s-%dx%d.jpg %dw'%(stem,w,int(w*.75),w)) for w in (480,768,1024,1536)]
+v=c[0]+', '+', '.join('https://cdn.example.com'+x for x in c[1:])
+print(v.replace(' ','%20')[:256])")"
+ss_band "real-4-candidate-truncated-exempt" "$(srcset_score "$SS_REAL4" 220)" 0 49
+
+# --- ROUND 4: ordinary WORDS are not file extensions -------------------------
+# The deny list banned real uploads for a third round running. These are all
+# ordinary names: an animal, Portuguese "do", a noun, Poland, Shanghai, a
+# conjunction, and three data/markup suffixes that execute nothing when the file
+# is served as .jpg. The list is now scoped to unambiguous, high-signal tokens.
+ss_band "real-name-bat"    "$(srcset_score '/wp-content/uploads/2025/10/the.bat.jpg%20300w,' 220)" 0 49
+ss_band "real-name-do"     "$(srcset_score '/wp-content/uploads/2025/10/foto.do.evento.jpg%20300w,' 220)" 0 49
+ss_band "real-name-key"    "$(srcset_score '/wp-content/uploads/2025/10/my.key.jpg%20300w,' 220)" 0 49
+ss_band "real-name-pl"     "$(srcset_score '/wp-content/uploads/2025/10/warsaw.pl.jpg%20300w,' 220)" 0 49
+ss_band "real-name-sh"     "$(srcset_score '/wp-content/uploads/2025/10/shanghai.sh.jpg%20300w,' 220)" 0 49
+ss_band "real-name-so"     "$(srcset_score '/wp-content/uploads/2025/10/and.so.jpg%20300w,' 220)" 0 49
+ss_band "real-name-html"   "$(srcset_score '/wp-content/uploads/2025/10/x.html.jpg%20300w,' 220)" 0 49
+ss_band "real-name-json"   "$(srcset_score '/wp-content/uploads/2025/10/data.json.jpg%20300w,' 220)" 0 49
+ss_band "real-name-xml"    "$(srcset_score '/wp-content/uploads/2025/10/chart.xml.jpg%20300w,' 220)" 0 49
+# Percent-encoded UTF-8 is what a non-ASCII upload name looks like on the wire.
+ss_band "real-http-scheme-candidate" \
+  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w,%20http://cdn.example.com/wp-content/uploads/2025/10/p.jpg%20900w' 220)" 0 49
+ss_band "real-name-utf8"   "$(srcset_score '/wp-content/uploads/2025/10/caf%c3%a9-768x576.jpg%20300w,' 220)" 0 49
+
+# --- ROUND 4: the cloaks that must still score ------------------------------
+# Editor-backup and pool spellings evade an exact-match deny list.
+ss_band "cloak-php-tilde"   "$(srcset_score '/wp-content/uploads/2025/10/c99.php~.jpg%20300w,' 220)" 75 100
+ss_band "cloak-php-under"   "$(srcset_score '/wp-content/uploads/2025/10/x.php_.jpg%20300w,' 220)" 75 100
+ss_band "cloak-php-backup"  "$(srcset_score '/wp-content/uploads/2025/10/x.php_backup.jpg%20300w,' 220)" 75 100
+ss_band "cloak-php-fpm"     "$(srcset_score '/wp-content/uploads/2025/10/x.php-fpm.jpg%20300w,' 220)" 75 100
+ss_band "cloak-later-tilde" "$(srcset_score '/wp-content/uploads/2025/10/a.jpg%20300w,%20https://e.com/x.php~.jpg%20900w' 220)" 75 100
+# An INCOMPLETE final element at 256 must still be stem-checked. The round-3 fix
+# only full-validated COMPLETE finals, so these rode straight through -- and
+# badpaths.conf has no generic \.php rule, so nothing backstopped them.
+ss_band "trunc-256-incomplete-c99-php"   "$(srcset_score "$(CUT '/c99.php')" 220)" 75 100
+ss_band "trunc-256-incomplete-wp-config" "$(srcset_score "$(CUT '/wp-config.php')" 220)" 75 100
+ss_band "trunc-256-incomplete-no-desc"   "$(srcset_score "$(CUT '/x.php.jpg')" 220)" 75 100
+ss_band "trunc-256-incomplete-cut-desc"  "$(srcset_score "$(CUT '/x.php.jpg%20300')" 220)" 75 100
+# wasm was unpinned; an executable module is exactly what the list is for.
+ss_band "cloak-wasm" "$(srcset_score '/wp-content/uploads/2025/10/x.wasm.jpg%20300w,' 220)" 75 100
+
+# --- ROUND 5: double-encoding evades a substring guard ----------------------
+# Admitting '%' into the stem (needed for percent-encoded UTF-8 names) meant the
+# only thing refusing an encoded dot was the substring guard on %2e/%2f. "%252e"
+# does not CONTAIN "%2e" -- it is % 2 5 2 e -- and a stem with no literal dot never
+# reaches the deny list at all. Works at ANY length, not just the 256 boundary.
+ss_band "cloak-double-encoded-php"    "$(srcset_score '/wp-content/uploads/2025/10/x%252ephp.jpg%20300w,' 220)" 75 100
+ss_band "cloak-double-encoded-config" "$(srcset_score '/wp-content/uploads/2025/10/wp-config%252ephp.jpg%20300w,' 220)" 75 100
+ss_band "cloak-double-encoded-env"    "$(srcset_score '/wp-content/uploads/2025/10/x%252eenv.jpg%20300w,' 220)" 75 100
+ss_band "cloak-double-encoded-slash"  "$(srcset_score '/wp-content/uploads/2025/10/x%252fetc.jpg%20300w,' 220)" 75 100
+ss_band "cloak-encoded-nul"           "$(srcset_score '/wp-content/uploads/2025/10/x%00php.jpg%20300w,' 220)" 75 100
+# ...while a genuine percent-encoded UTF-8 name is still exempt.
+ss_band "real-name-utf8-still-exempt" "$(srcset_score '/wp-content/uploads/2025/10/caf%c3%a9-768x576.jpg%20300w,' 220)" 0 49
+
+# --- ROUND 5: ordinary words, and the WordPress thumbnail suffix ------------
+# conf/jar/war/shadow are ordinary English, and the blanket suffix strip added in
+# round 4 ate WordPress's own -WIDTHxHEIGHT and then matched the leftover: an
+# upload named mens.conf.jpg becomes mens.conf-768x576.jpg in every srcset.
+ss_band "real-name-conf-thumb"  "$(srcset_score '/wp-content/uploads/2025/10/mens.conf-768x576.jpg%20768w,' 220)" 0 49
+ss_band "real-name-conf"        "$(srcset_score '/wp-content/uploads/2025/10/mens.conf.jpg%20300w,' 220)" 0 49
+ss_band "real-name-conf-scaled" "$(srcset_score '/wp-content/uploads/2025/10/youth.conf-scaled.jpg%201024w,' 220)" 0 49
+ss_band "real-name-jar"         "$(srcset_score '/wp-content/uploads/2025/10/cookie.jar.jpg%20300w,' 220)" 0 49
+ss_band "real-name-jar-thumb"   "$(srcset_score '/wp-content/uploads/2025/10/mason.jar-768x576.jpg%20768w,' 220)" 0 49
+ss_band "real-name-war-thumb"   "$(srcset_score '/wp-content/uploads/2025/10/civil.war-768x576.jpg%20768w,' 220)" 0 49
+ss_band "real-name-shadow"      "$(srcset_score '/wp-content/uploads/2025/10/my.shadow-768x576.jpg%20768w,' 220)" 0 49
+
+# --- ROUND 5: ...but the WP suffix must not HIDE a cloak either -------------
+# The same single sub() that detonated conf-768x576 failed to reach php-cgi:
+# it stripped only the dimensions and left a token that is not an exact match.
+# Stripping is now iterative over WELL-DEFINED WordPress/editor forms only.
+ss_band "cloak-php-cgi-thumb"    "$(srcset_score '/wp-content/uploads/2025/10/x.php-cgi-768x576.jpg%20768w,' 220)" 75 100
+ss_band "cloak-php-fpm-thumb"    "$(srcset_score '/wp-content/uploads/2025/10/c99.php-fpm-768x576.jpg%20768w,' 220)" 75 100
+ss_band "cloak-php-backup-thumb" "$(srcset_score '/wp-content/uploads/2025/10/x.php_backup-768x576.jpg%20768w,' 220)" 75 100
+ss_band "cloak-php-scaled"       "$(srcset_score '/wp-content/uploads/2025/10/x.php-scaled.jpg%201024w,' 220)" 75 100
+# Stripping must ITERATE, not run once: a variant suffix sitting BEFORE the
+# dimensions re-exposes a dimension suffix after it is removed, so one pass leaves
+# "php-768x576" and the token is never reached.
+ss_band "cloak-php-variant-before-dims" \
+  "$(srcset_score '/wp-content/uploads/2025/10/x.php-768x576-backup.jpg%20768w,' 220)" 75 100
+# ...and stripping must stay targeted: an ordinary hyphenated word is NOT a suffix.
+ss_band "real-name-conf-room"    "$(srcset_score '/wp-content/uploads/2025/10/my.conf-room-768x576.jpg%20768w,' 220)" 0 49
+
+# --- ROUND 6: a deny token in the FIRST component is not a double extension --
+# Found by sweeping 62,700 generated WordPress-realistic names through the real
+# predicate: 8,316 of 18,216 refusals (46%) were refused ONLY because the first
+# dot-component happened to be a deny token. A cloak puts the dangerous token
+# immediately before the real extension ("wp-config.php.jpg"); a LEADING "cfg." or
+# "env." is just a name prefix and the file is still a .jpg. The deny list now
+# skips component 1, which is what its own stated purpose implies.
+ss_band "real-name-leading-cfg"  "$(srcset_score '/wp-content/uploads/2025/10/cfg.autumn-768x576.jpg%20768w,' 220)" 0 49
+ss_band "real-name-leading-sql"  "$(srcset_score '/wp-content/uploads/2025/10/sql.report-768x576.jpg%20768w,' 220)" 0 49
+ss_band "real-name-leading-py"   "$(srcset_score '/wp-content/uploads/2025/10/py.workshop.jpg%20768w,' 220)" 0 49
+# ...and every genuine cloak, where the token sits in the extension position, still scores.
+ss_band "cloak-still-wp-config-2" "$(srcset_score '/wp-content/uploads/2025/10/wp-config.php.jpg%20768w,' 220)" 75 100
+ss_band "cloak-still-htaccess-2"  "$(srcset_score '/wp-content/uploads/2025/10/.htaccess.jpg%20768w,' 220)" 75 100
+ss_band "cloak-still-trailing-env" "$(srcset_score '/wp-content/uploads/2025/10/secrets.e'"'"'nv.jpg%20768w,' 220)" 75 100
+ss_band "real-name-pen-pal"      "$(srcset_score '/wp-content/uploads/2025/10/the.pen-pal-768x576.jpg%20768w,' 220)" 0 49
+
+# --- ROUND 5: the cut can land INSIDE the inter-candidate separator ---------
+# Between candidates the logged form is ",%20https://...". A cut on the first or
+# second byte of that %20 leaves a tail of exactly "%" or "%2", which the prefix
+# check refused -- the round-4 scheme-cut bug one byte earlier.
+ss_band "trunc-cut-torn-pct"   "$(srcset_score "$(CUT '%')" 220)" 0 49
+ss_band "trunc-cut-torn-pct2"  "$(srcset_score "$(CUT '%2')" 220)" 0 49
+# A torn escape is only benign when it IS the whole tail; anything after it is not
+# a truncation artifact and must not ride in on this allowance.
+ss_band "trunc-torn-pct-with-payload" "$(srcset_score "$(CUT '%/etc/passwd')" 220)" 75 100
+ss_band "trunc-torn-pct-nul"          "$(srcset_score "$(CUT '%00')" 220)" 75 100
+
+# A SINGLE candidate cut at the boundary had no prefix path at all: it was held to
+# the full end-anchored match it cannot satisfy, so it scored. Percent-encoded CJK
+# or accented stems inflate ~3x, so real names reach this length.
+SS_ONE_LONG="$(python3 -c "
+h='/wp-content/uploads/2025/10/'
+print((h + 'sommerfest-familienportraet-' + 'a'*200 + '-768x576.jpg%20768w')[:256])")"
+ss_band "trunc-single-candidate-exempt" "$(srcset_score "$SS_ONE_LONG" 220)" 0 49
+# ...but it must still prove it began as this shape, and still be stem-checked.
+ss_band "trunc-single-not-uploads-tree" \
+  "$(srcset_score "$(python3 -c "print(('/wp-admin/includes/' + 'a'*240 + '.jpg%20768w')[:256])")" 220)" 75 100
+# The stem check still applies to a truncated single candidate. Note the payload
+# must contain a genuine denied COMPONENT: "php-aaaa" is not one ("php-cgi" and
+# "php-fpm" are in the variant list because they are real handler names, an
+# arbitrary "php-<junk>" is not), so an earlier version of this test asserted a
+# cloak that was never a cloak.
+ss_band "trunc-single-unsafe-stem" \
+  "$(srcset_score "$(python3 -c "
+h='/wp-content/uploads/2025/10/'
+print((h + 'wp-config.php.' + 'a'*205 + '-768x576.jpg%20768w')[:256])")" 220)" 75 100
+
+# --- THE UNCONSTRAINED TAIL -------------------------------------------------
+# ^/ anchored the START; nothing anchored the END. Once the alternation took the
+# ',' branch, the whole remainder of the path was unvalidated, so any target could
+# ride behind a valid srcset head. badpaths.conf carries NO '..' or %2e pattern,
+# so path_scores_on_its_own() is blind to traversal and these were dropped at
+# every status -- verified at 200, where the server normalizes the .. and serves
+# the real target. The match is now end-anchored over the WHOLE candidate list.
+ss_band "tail-traversal-etc-passwd" "$(srcset_score '/wp-content/uploads/2025/10/a.jpg%20300w,/../../../../etc/passwd' 220)" 75 100
+ss_band "tail-traversal-encoded"    "$(srcset_score '/wp-content/uploads/2025/10/a.jpg%20300w,/%2e%2e/%2e%2e/wp-admin/' 220)" 75 100
+ss_band "tail-traversal-wp-login"   "$(srcset_score '/wp-content/uploads/2025/10/a.jpg%20300w,/../../../wp-login.php' 220)" 75 100
+ss_band "tail-arbitrary-junk"       "$(srcset_score '/wp-content/uploads/2025/10/a.jpg%20300w,anything-at-all' 220)" 75 100
+
+# --- pins for mutants that survived the first round -------------------------
+# Each of these stayed 49/49 green while changing real behavior.
+# M2b: making the descriptor optional would exempt EVERY missing WP upload.
+ss_band "mutant-descriptor-required" "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg' 220)" 75 100
+# M1: adding php to the extension list would exempt a bare webshell probe.
+ss_band "mutant-php-not-an-image"    "$(srcset_score '/wp-content/uploads/2025/10/backdoor.php%20768w,' 220)" 75 100
+# M4: widening the dir class to admit % would relaunder encoded dots.
+ss_band "mutant-encoded-dot-dir"     "$(srcset_score '/wp-content/uploads/2025/10/foo%2ebar/x.jpg%20768w,' 220)" 75 100
+# NOTE this must still contain uploads/YYYY/MM/, or it fails the prefilter for an
+# unrelated reason and pins nothing -- the first version of this test did exactly
+# that and let the prefix-dir mutant survive.
+ss_band "mutant-encoded-dot-prefix"  "$(srcset_score '/%2egit/uploads/2025/10/x.jpg%20768w,' 220)" 75 100
+# %2c IS a comma. If it is not normalised before the split, the tail after an
+# encoded comma escapes candidate validation entirely.
+ss_band "mutant-encoded-comma-tail"  "$(srcset_score '/wp-content/uploads/2025/10/a.jpg%20300w%2c/../../../etc/passwd' 220)" 75 100
+ss_band "encoded-comma-real-shape-exempt" \
+  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w%2c%20https:/e.com/p.jpg%20900w' 220)" 0 49
+# The extensions the class actually uses must STAY exempt (nothing pinned these).
+ss_band "ext-jpeg-exempt" "$(srcset_score '/wp-content/uploads/2025/10/photo.jpeg%20768w,%20https:/e.com/p.jpeg%20900w' 220)" 0 49
+ss_band "ext-webp-exempt" "$(srcset_score '/wp-content/uploads/2025/10/photo.webp%20768w,%20https:/e.com/p.webp%20900w' 220)" 0 49
+ss_band "ext-avif-exempt" "$(srcset_score '/wp-content/uploads/2025/10/photo.avif%20768w,%20https:/e.com/p.avif%20900w' 220)" 0 49
+ss_band "ext-png-exempt"  "$(srcset_score '/wp-content/uploads/2025/10/photo.png%20768w,%20https:/e.com/p.png%20900w' 220)" 0 49
+
+# --- the widened shape must NOT launder a dot through the new nesting -------
+# uploads/YYYY/MM/ now admits intermediate dirs; they must stay dot-free for the
+# same reason the prefix segments do, and multisite must not become a new prefix.
+ss_band "bypass-nested-dotfile"    "$(srcset_score '/wp-content/uploads/2025/10/.env/x.jpg%20300w,' 220)" 75 100
+ss_band "bypass-nested-git-config" "$(srcset_score '/wp-content/uploads/2025/10/.git/config.jpg%20300w,' 220)" 75 100
+ss_band "bypass-multisite-dotfile" "$(srcset_score '/wp-content/uploads/sites/2/2025/10/.env/x.jpg%20300w,' 220)" 75 100
+ss_band "bypass-multisite-nonnumeric" "$(srcset_score '/wp-content/uploads/sites/.env/2025/10/x.jpg%20300w,' 220)" 75 100
+# ...and the same for the multisite blog id: '.env' above is ALSO a badpath, so it
+# would still be refused if [0-9]+ were loosened. 'foo' is in no badpath pattern,
+# so only the numeric class can refuse it. (Second hole found by mutation.)
+ss_band "bypass-multisite-id-not-numeric" \
+  "$(srcset_score '/wp-content/uploads/sites/foo/2025/10/x.jpg%20300w,' 220)" 75 100
+# The dot refusal is STRUCTURAL, and these pin it as such. Every other bypass case
+# here carries a segment the badpath table also catches (.env, .git, .php), so they
+# would still pass if the dir class were loosened to admit dots -- mutation testing
+# found exactly that hole. These segments are in NO badpath pattern, so the regex
+# is the only thing that can refuse them, on both sides of uploads/YYYY/MM/.
+ss_band "bypass-nested-dot-not-badpath" \
+  "$(srcset_score '/wp-content/uploads/2025/10/foo.bar/x.jpg%20300w,' 220)" 75 100
+ss_band "bypass-prefix-dot-not-badpath" \
+  "$(srcset_score '/foo.bar/uploads/2025/10/x.jpg%20300w,' 220)" 75 100
+# A bad path is never exempted at ANY status, now that status no longer gates.
+ss_band "bypass-badpath-at-301"    "$(srcset_score '/.env/uploads/2025/10/x.jpg%20300w,' 220 301)" 75 100
+ss_band "bypass-honeypot-at-301"   "$(srcset_score '/__trap_a7f3c1d9/uploads/2025/10/x.jpg%20300w,' 220 301)" 90 100
 
 # --- the bypasses both models found in the first version of this fix --------
 # Each of these must STILL score. Named for the reviewer that supplied them.
@@ -152,6 +657,89 @@ if [[ "$BARE" == "$PADDED" ]]; then
     printf 'PASS  %-30s padding is neutral (both %s)\n' "srcset-padding-is-neutral" "$BARE"; PASS=$((PASS+1))
 else
     printf 'FAIL  %-30s bare=%s padded=%s\n' "srcset-padding-is-neutral" "$BARE" "$PADDED"; FAIL=$((FAIL+1))
+fi
+
+# --- THE TRIPWIRE MUST NEVER BE ABLE TO BAN A VISITOR ------------------------
+# The first version of the tripwire used >= 60 exempted requests at >= RATE_SAT,
+# and justified it as "~1300x above the heaviest real client (544/day, 0.006 rps)".
+# That compared a DAILY AVERAGE against a BURST rate and they are not the same
+# quantity. The tripwire measures burst span (last_sr - first_sr), and the real
+# defect class IS a burst: one image-heavy page makes a Chromium client fetch every
+# srcset on it at once. Measured: 70 gallery images in 5s scored 75 -- a TEMP on a
+# visitor who loaded ONE page, three of which is a permanent AbuseIPDB report.
+#
+# A rate tripwire on this shape will always hit gallery bursts, so it must not be
+# able to act. It now tops out at SCORE_WATCH, which the config defines as
+# "log + count, no action", and the threshold is raised far above any page load.
+ss_band "gallery-burst-70-in-5s-not-temped"   "$(srcset_burst 70 5)" 0 49
+ss_band "gallery-burst-200-in-10s-not-temped" "$(srcset_burst 200 10)" 0 49
+ss_band "gallery-burst-400-in-20s-not-temped" "$(srcset_burst 400 20)" 0 49
+# A real DoS in this shape still surfaces -- at WATCH level, never a temp.
+ss_band "srcset-dos-surfaces-at-watch-only"   "$(srcset_burst 3000 30)" 50 69
+RULE2="$(srcset_burst_rule 3000 30)"
+if [[ "$RULE2" == "srcset_flood" ]]; then
+    printf 'PASS  %-30s decisive_rule=%s\n' "srcset-dos-rule-attributed" "$RULE2"; PASS=$((PASS+1))
+else
+    printf 'FAIL  %-30s decisive_rule=%s (want srcset_flood)\n' "srcset-dos-rule-attributed" "$RULE2"; FAIL=$((FAIL+1))
+fi
+# ...and it must be counted for a MIXED client too, not just a srcset-only one.
+# The first version seeded reqs[] only when the IP had none, and the n < MIN_REQS
+# guard ran before the floor, so 10 ordinary requests disabled the tripwire.
+ss_band "srcset-dos-counted-for-mixed-client" "$(srcset_burst_mixed 3000 30 10)" 50 100
+
+# --- REAL LONG srcset VALUES SURVIVE INGEST TRUNCATION -----------------------
+# lib/ingest.sh:72 truncates the path at 256 bytes. End-anchoring every candidate
+# meant a REAL 5-candidate value (461 bytes here) was cut mid-candidate, failed
+# validation, and scored 75 as an ordinary 404 storm -- a false positive created by
+# the end-anchor fix itself. When the path is at the truncation boundary the final
+# candidate is incomplete by construction, so it is not held to the end anchor;
+# every COMPLETE candidate still is, and at least one is required.
+ss_band "real-long-srcset-truncated-still-exempt" "$(srcset_score "$SS_LONG_TRUNC" 220)" 0 49
+
+# ...but tolerating truncation must not hand the tail bypass back. ingest only
+# truncates when length > 256, so a path arriving at EXACTLY 256 is indistinguishable
+# from a truncated one -- and the first version of this tolerance simply skipped the
+# final candidate, so an attacker padded to exactly 256 and rode again. Measured:
+# the same traversal scored 75 at 255 bytes and was DROPPED at 256.
+# The final incomplete candidate is therefore not ignored: it must still be a valid
+# PREFIX of a well-formed candidate. A cut-off real URL is; "/../../../etc/passwd"
+# is not, because its segments carry dots.
+SS_B256="$(python3 -c "
+head='/wp-content/uploads/2025/10/'; tail='.jpg%20300w'; pay=',/../../../../etc/passwd'
+print(head + 'a'*(256-len(head)-len(tail)-len(pay)) + tail + pay)")"
+ss_band "truncation-boundary-256-tail-refused" "$(srcset_score "$SS_B256" 220)" 75 100
+ss_band "truncation-boundary-255-tail-refused" "$(srcset_score "${SS_B256/aaa/aa}" 220)" 75 100
+# ...and the prefix check must refuse a COMPLETE encoded dot/slash in that tail,
+# which is the same cloak wearing the truncation boundary instead of the stem.
+# The payload must be one the STRUCTURAL prefix check would otherwise accept --
+# a single final token, no extra segments -- or the test passes on the structure
+# and pins nothing. (First version of this test did exactly that.)
+SS_B256E="$(python3 -c "
+head='/wp-content/uploads/2025/10/'; tail='.jpg%20300w'; pay=',/x%2fetc%2fpasswd'
+print(head + 'a'*(256-len(head)-len(tail)-len(pay)) + tail + pay)")"
+ss_band "truncation-boundary-encoded-tail-refused" "$(srcset_score "$SS_B256E" 220)" 75 100
+
+# --- the evidence field is part of the contract; pin its NAME and its count ---
+# It only appears for an IP that scores on its OTHER traffic, because END walks
+# reqs[] and a srcset-only client deliberately has no reqs[] entry.
+: > "$tmp/ev.tsv"
+for i in $(seq 1 60); do
+  printf '203.0.113.90\t%s\tGET\t/nope-%s\t404\t-\tcurl/8.0\texample.com\n' \
+    $(( NOW_EPOCH - 300 + i )) $(( i % 30 )) >> "$tmp/ev.tsv"
+done
+for i in $(seq 1 7); do
+  printf '203.0.113.90\t%s\tGET\t%s\t404\t-\tcurl/8.0\texample.com\n' \
+    $(( NOW_EPOCH - 200 + i )) "$SS_REAL" >> "$tmp/ev.tsv"
+done
+EV="$(gawk -v NOW="$NOW_EPOCH" -v WINDOW=600 -v MIN_REQS=15 -v RATE_SAT=8 -v SCORE_WATCH=50 \
+   -v W_RATE=18 -v W_ERR_RATIO=16 -v W_ERR_BURST=12 -v W_FANOUT=12 -v W_BADPATH=22 \
+   -v W_UA=6 -v W_POST_FLOOD=8 -v W_NOVHOST=6 \
+   -v BADPATHS="${ROOT}/config/badpaths.conf" -v HONEYPOTS="$HP" \
+   -f "${ROOT}/lib/score.awk" "$tmp/ev.tsv" | head -1 | grep -o '"srcset_exempt":[0-9]*')"
+if [[ "$EV" == '"srcset_exempt":7' ]]; then
+    printf 'PASS  %-30s %s\n' "evidence-srcset-exempt-count" "$EV"; PASS=$((PASS+1))
+else
+    printf 'FAIL  %-30s got=%s (want "srcset_exempt":7)\n' "evidence-srcset-exempt-count" "${EV:-MISSING}"; FAIL=$((FAIL+1))
 fi
 
 # --- 2: wp-login.php credential brute (HIGH bad-path, repeated, POST) --------

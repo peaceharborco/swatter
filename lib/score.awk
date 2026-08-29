@@ -28,38 +28,308 @@ function sev_weight(cat) {
 
 function clamp100(x) { return (x > 100) ? 100 : ((x < 0) ? 0 : x) }
 
-# is_mangled_srcset(p) : 1 if this request path is a browser faithfully fetching
-# a BROKEN srcset/sizes attribute emitted by the site itself, rather than a probe.
+# is_mangled_srcset(p) : 1 if this request path is a client fetching a whole
+# srcset/sizes ATTRIBUTE VALUE as a single URL, rather than probing us.
 #
-# When markup puts a whole srcset VALUE where a single URL belongs, the browser
-# requests the entire string as one URL and always gets a 404. Found 2026-08-28
-# during the gate D review: 17,829 such requests from 8,767 DISTINCT client IPs
-# across 35 hosted sites, overwhelmingly residential broadband with ordinary
-# consumer browser UAs. Nineteen real visitors had already been temp-blocked,
-# six by rule=error_burst, and one was a live permanent-ban candidate. These are
-# the site's own visitors punished for the site's own markup.
+# Found 2026-08-28 during the gate D review: 17,829 such requests from 8,767
+# DISTINCT client IPs across 35 hosted sites, overwhelmingly residential
+# broadband. Nineteen real visitors had already been temp-blocked, six by
+# rule=error_burst, and one was a live permanent-ban candidate -- which on a
+# publishing host is also an AbuseIPDB report with no delete API, filed against a
+# residential customer of the site's own owner.
 #
-# ONE ANCHORED, POSITIONAL regex, deliberately. The first version used three
-# INDEPENDENT unanchored substring tests, and both review models independently
-# broke it: any path with "/uploads/2025/10/x.jpg%20300w," appended won the
-# exemption, because "image extension" and "NNNw," only had to appear SOMEWHERE
-# rather than adjacently. So:
-#   ^/            - the shape must BE the request, not appear inside it
-#   ([a-z0-9_~-]+/)*  - intermediate dirs, and NO DOT: this is what stops
-#                   /.env/uploads/... , /index.php/uploads/... (PATH_INFO) and
-#                   /scan/path-1.html/uploads/... from being laundered through
-#   uploads/YYYY/MM/  - the WordPress uploads tree
-#   <file>.<imgext>   - an image, then IMMEDIATELY
-#   (%20|+|space)NNN(w|x)  - the srcset/sizes descriptor, adjacent by construction
-#   (,|%2c|end)       - width lists carry a comma; a single-candidate srcset or
-#                   the LAST candidate does not, so end-of-string counts too.
-#                   Density descriptors (2x, 1.5x) are the "sizes" spelling of
-#                   the same defect and are covered.
+# CAUSE, CORRECTED 2026-08-28 -- READ THIS BEFORE REMOVING THE EXEMPTION.
+# This was first diagnosed as the sites emitting broken markup. It is NOT. A
+# dedicated investigation swept all 34 in-scope sites and found the markup
+# CORRECT everywhere; a falsification review by two adversarial models could not
+# refute that finding. The requests are manufactured CLIENT-SIDE by third-party
+# Chromium-based clients that read a *correct* srcset attribute and request its
+# whole value as one URL. The decisive evidence is the browser mix: 14,653 Chrome
+# / 2,635 Edge / 3 Safari / 0 Firefox, against a ~24% Safari / ~7% Firefox
+# baseline on the same traffic. Broken markup breaks in every browser.
+#
+# The consequence for this function: there is no upstream fix coming, and there
+# is no markup repair that would make it obsolete. It originates on machines we
+# do not control, so this is the ONLY layer that can act on it. Do NOT delete it
+# on the grounds that "the markup is clean" -- the markup was always clean.
+#
+# ONE ANCHORED, POSITIONAL shape, deliberately. The first version used three
+# INDEPENDENT unanchored substring tests, and both review models broke it: any
+# path with "/uploads/2025/10/x.jpg%20300w," appended won the exemption, because
+# "image extension" and "NNNw," only had to appear SOMEWHERE rather than
+# adjacently. The first candidate must therefore match, end to end:
+#   ^/                     - the shape must BE the request, not appear inside it
+#   ([a-z0-9_~-]+/)*       - prefix dirs, and NO DOT and NO %: this is what stops
+#                            /.env/uploads/... , /index.php/uploads/... (PATH_INFO),
+#                            /scan/path-1.html/uploads/... and /%2egit/uploads/...
+#   uploads/               - literal
+#   (sites/[0-9]+/)?       - WordPress MULTISITE. The blog id is NUMERIC; a
+#                            permissive class here would be a new prefix to launder.
+#   YYYY/MM/               - the dated uploads tree
+#   ([a-z0-9_~-]+/)*       - nested dirs (plugin thumbnail trees), same dot-free
+#                            and %-free class, for the same reason
+#   [a-z0-9_~@.%-]+        - the STEM. Dots, '@' and '%' ARE allowed (real upload
+#                            names carry them, and a non-ASCII name arrives
+#                            percent-encoded); a COMPLETE %2e/%2f is refused for
+#                            the whole path up front. Vetted by stem_is_safe().
+#   .<imgext>              - then IMMEDIATELY
+#   (%20|+|space)+NNN(w|x) - the srcset/sizes descriptor, adjacent by construction
+#   (%20|+|space)*$        - end of THIS candidate; whitespace before a comma is
+#                            legal srcset. Density descriptors (2x, 1.5x) are the
+#                            "sizes" spelling of the same defect and are covered.
+# Every LATER candidate must match the same shape, optionally preceded by a
+# scheme+host (the observed values are absolute after the first), and a single
+# trailing comma with nothing after it is the one permitted empty element.
 # Suppression is further gated on path_scores_on_its_own() at the call site, so
 # a bad-path or honeypot hit is never exempted however it is dressed.
-function is_mangled_srcset(p,   lp) {
+#
+# THE EXEMPT STATUS SET IS (status < 400 || status == 404) -- that is
+# {0, 1xx, 2xx, 3xx, 404}, AND IT IS EVIDENCE, NOT TASTE.
+# The first attempt at this removed the status gate entirely, reasoning that any
+# status set is itself a dilution lever. That reasoning is WRONG and the pre-ship
+# review measured why: err_ratio is nerr/n, so only a status that stays OUT of
+# cerr[] can dilute. 5xx feeds cerr[]; 403 feeds cerr[] AND cburst[]. Padding a
+# probe run with either RAISES the score, it cannot lower it. Only 2xx/3xx dilute
+# -- and the measured class is 15,299 x 404, 1,936 x 301, 592 x 302, 2 x 200, with
+# ZERO 5xx and ZERO 403. So the set is what the class contains plus every other
+# status that CANNOT dilute, and every status carrying real signal keeps scoring.
+#
+# DO NOT "tidy" the predicate to {2xx,3xx,404}. status 0 is what ingest emits for a
+# line it could not parse, and neither 0 nor 1xx feeds cerr[] -- so narrowing the
+# predicate to the tidier-looking set REOPENS the dilution lever for them. Verified:
+# a 60-probe run padded with 500 srcset-shaped 1xx scores 78 as written, and emits
+# no row at all under the narrowed predicate. Dropping 5xx would have made an
+# origin melt invisible: 400 requests in 20s scored 75 request_flood before that
+# attempt and NONE after it.
+#
+# END-ANCHORED OVER THE WHOLE CANDIDATE LIST. The first version anchored only ^/,
+# so once the alternation took the "," branch the entire remainder of the path was
+# unvalidated and any target could ride behind a valid srcset head --
+# ".../a.jpg%20300w,/../../../../etc/passwd" was dropped at every status.
+# badpaths.conf carries no ".." or %2e pattern, so path_scores_on_its_own() cannot
+# see traversal and was never a backstop for it. The path is now split on commas
+# (%2c normalised first, or the encoded spelling escapes validation) and EVERY
+# candidate must match end-to-end.
+#
+# THE STEM IS [a-z0-9_~-]+, NOT [^/]+. The old stem admitted dots and percent
+# encoding, and everything the exemption requires in order to look like an image
+# is what made these miss path_scores_on_its_own(): wp-config.php.jpg,
+# c99.php.jpg, .htaccess.jpg, %2eenv.jpg, x%2f.env.jpg were all dropped. The
+# badpath table keys on literal spellings and tolower() case-folds WITHOUT
+# decoding. Real WordPress upload names (photo-768x576) fit the same dot-free
+# class the directories already use, so the stem now uses it too.
+#
+# The dot refusal on BOTH sides of uploads/YYYY/MM/ is structural on purpose and
+# is not merely backstopped by the badpath table; mutation testing found that
+# every bypass case pinned before 2026-08-28 carried a segment badpaths ALSO
+# caught, so loosening the dir class broke nothing. test/score_test.sh now pins
+# segments that appear in NO badpath pattern for exactly this reason.
+# candidate_complete(c) : 1 if c parses as a WHOLE srcset candidate (url +
+# descriptor). Used to tell a truncated tail from a finished one at the 256-byte
+# boundary -- see the note at the call site.
+function candidate_complete(c) {
+    return (c ~ /^(%20|\+| )*(https?:)?(\/\/?[a-z0-9_~.-]+(:[0-9]+)?)?\/([a-z0-9_~-]+\/)*[a-z0-9_~@.%-]+\.(jpg|jpeg|png|gif|webp|avif|svg|bmp|heic|heif|jfif)(%20|\+| )+[0-9]+(\.[0-9]+)?[wx](%20|\+| )*$/)
+}
+
+# candidate_prefix_ok(c) : 1 if c could be the BEGINNING of a well-formed srcset
+# candidate. Used for the final element of a path that hit the 256-byte ingest
+# boundary, where the candidate is cut off mid-way.
+#
+# It is NOT enough to skip that element. ingest truncates only when the path is
+# LONGER than 256, so a path arriving at exactly 256 is indistinguishable from a
+# truncated one -- and simply ignoring the tail let an attacker pad to exactly 256
+# and ride the unvalidated-tail bypass again. Measured: the same traversal payload
+# scored 75 at 255 bytes and was dropped at 256.
+#
+# A genuinely cut-off URL is still a valid prefix: whitespace, an optional
+# scheme+host, dot-free segments, then a final partial token that may carry dots
+# because it is a filename being sliced. "/../../../../etc/passwd" is not, because
+# its segments carry dots and it never reaches the partial-token position.
+function candidate_prefix_ok(c) {
+    # A cut-off tail can end mid-percent-escape (".jpg%") or mid-SCHEME ("%20htt",
+    # "%20https", "%20https://"). The first version only modelled the former, so a
+    # realistic 4-candidate srcset -- ~354 bytes, cut by ingest squarely in the
+    # scheme window -- scored 75 and temped a real visitor. Never a COMPLETE
+    # encoded dot or slash, which is how the encoded cloaks would ride in here.
+    if (c ~ /%2e|%2f/) return 0
+    # A cut can also land INSIDE the "%20" that separates candidates, leaving a
+    # tail of exactly "%" or "%2". That is a truncation artifact and nothing else,
+    # so it is accepted ONLY as the entire tail -- never as a prefix that
+    # something follows, which would let ",%/etc/passwd" ride.
+    if (c ~ /^(%20|\+| )*%[0-9a-f]?$/) return 1
+    return (c ~ /^(%20|\+| )*[a-z]*:?\/?\/?[a-z0-9_~.-]*(:[0-9]+)?(\/[a-z0-9_~-]+)*(\/[a-z0-9_~@.%-]*)?$/)
+}
+
+# candidate_stem(c) : the filename stem of one srcset candidate -- everything
+# after the last '/' and before the image extension the regex just matched.
+function candidate_stem(c,   t, n, seg) {
+    n = split(c, seg, "/")
+    t = seg[n]
+    sub(/\.(jpg|jpeg|png|gif|webp|avif|svg|bmp|heic|heif|jfif)(%20|\+| )+[0-9]+(\.[0-9]+)?[wx](%20|\+| )*$/, "", t)
+    return t
+}
+
+# stem_is_safe(stem) : 0 if a dot-separated component of the filename stem is an
+# executable or config EXTENSION.
+#
+# The stem has to admit dots. WordPress sanitize_file_name() strips
+# ?[]\/=<>:;,'"&$#*()|~`!{}%+ and NUL but leaves '.' and '@' alone, so
+# "my.photo-768x576.jpg" and "logo@2x-768x576.jpg" are REAL upload names --
+# refusing every dot scored them at 75, which is the exact irreversible harm this
+# exemption exists to prevent. It must never admit '%', which is how the encoded
+# dot and slash cloaks got in.
+#
+# Admitting dots reopens the double-extension cloak, so safety moves here: a
+# bounded deny list over ONE token. It is a DENY LIST and therefore has a residual
+# tail by construction -- round 2 produced phtm, php-cgi, js, inc, cmd, jspx, ashx,
+# shtml and zip against the first version of it. Do not describe it as a structural
+# guarantee; the structural guarantees are the dot-free, %-free directory segments. That is a different thing from the path
+# substring blocklist this design avoids -- the token is a single dot-component of
+# a single filename, and the structural rules (dot-free, %-free directory segments
+# on BOTH sides of the dated tree) still carry every traversal case on their own.
+function _strip_wp_suffixes(c,   prev) {
+    prev = ""
+    while (c != prev) {
+        prev = c
+        sub(/-[0-9]+x[0-9]+$/, "", c)                                  # -768x576
+        sub(/-scaled$/, "", c)                                         # WP 5.3+
+        sub(/-e[0-9][0-9]*$/, "", c)                                   # -e1699999999
+        sub(/[~]+$/, "", c)                                            # php~
+        sub(/_+$/, "", c)                                              # php_
+        sub(/[-_](cgi|fpm|fcgi|backup|bak|old|new|copy|orig|save|tmp)$/, "", c)
+    }
+    return c
+}
+
+function _deny_token(c) {
+    return (c ~ /^(php|php[0-9]+|phps|phtml|phtm|pht|phar|aspx|ashx|asmx|ascx|cshtml|jsp|jspx|jhtml|cfm|shtml|cgi|fcgi|wsgi|py|rb|ps1|vbs|exe|dll|wasm|env|htaccess|htpasswd|htgroup|ini|cnf|cfg|yml|yaml|toml|sql|sqlite|sqlite3|pem|pfx|p12|jks|keystore|crt|passwd)$/)
+}
+
+# stem_is_safe(stem) : 0 if a dot-component of the filename stem is an executable
+# or secret-bearing EXTENSION.
+#
+# The stem admits dots and '@' because WordPress sanitize_file_name() leaves them
+# alone, so "my.photo-768x576.jpg" and "logo@2x-768x576.jpg" are REAL names, and
+# it admits '%' because a non-ASCII name arrives percent-encoded ("caf%c3%a9").
+# It never admits a COMPLETE %2e or %2f -- that is how the encoded cloaks got in.
+#
+# THE LIST IS DELIBERATELY NARROW, and that is a decision, not an oversight.
+# Rounds 3 AND 4 both shipped false positives from it: photo.bak.jpg, old.jpg,
+# backup.zip.jpg, the.bat.jpg, foto.do.evento.jpg, my.key.jpg, warsaw.pl.jpg,
+# shanghai.sh.jpg, x.html.jpg, data.json.jpg. Every one is an ordinary filename,
+# and each scored 75 -- three of which is a permanent, non-deletable AbuseIPDB
+# report against a residential visitor.
+#
+# The asymmetry settles it. A missed token costs an attacker's request its
+# intent-evidence, on a request that executes nothing (the URL ends in the srcset
+# descriptor, so the server serves no PHP either way). A wrong token bans a real
+# person irreversibly. So: only tokens that are unambiguous file extensions AND
+# rarely ordinary words. Short words (bat, do, key, pl, sh, so, ts, der, inc) and
+# inert data suffixes (html, json, xml, zip, bak, tmp) are OUT by that rule.
+#
+# Not consulted at all when the stem has no dot: a dot-free stem cannot BE a
+# double extension, and checking it banned bare old.jpg / tmp.jpg / env.jpg.
+function stem_is_safe(stem,   k, m, comp, c) {
+    m = split(stem, comp, ".")
+    if (m < 2) return 1
+    # Start at 2, not 1. A double extension is a dangerous token sitting where the
+    # REAL extension should be -- "wp-config.php.jpg". A token in the FIRST
+    # component is a name prefix and the file is still a .jpg, so refusing it is a
+    # false positive by this list's own purpose. Sweeping 62,700 generated
+    # WordPress-realistic names through this predicate found 8,316 of 18,216
+    # refusals (46%) were exactly that: cfg.autumn-768x576.jpg, sql.report.jpg,
+    # py.workshop.jpg. ".htaccess.jpg" still scores -- its components are
+    # ("", "htaccess"), so the token is in position 2 where it belongs.
+    for (k = 2; k <= m; k++) {
+        c = comp[k]
+        if (_deny_token(c)) return 0
+        # Editor backups, pool variants and WordPress's own resize suffix.
+        # ITERATIVE and TARGETED, both deliberately. A single strip let
+        # "php-cgi-768x576" keep its dimensions and never reach "php"; a BLANKET
+        # strip of any trailing -word detonated on "conf-768x576" -> "conf" and
+        # banned mens.conf.jpg. So: only forms WordPress or an editor actually
+        # produces, applied until stable. An ordinary hyphenated word
+        # ("conf-room", "pen-pal") is not one of them and is left alone.
+        c = _strip_wp_suffixes(c)
+        if (_deny_token(c)) return 0
+    }
+    return 1
+}
+
+function is_mangled_srcset(p,   lp, n, parts, i, trunc, last) {
+    # Cheap prefilter. Also restores the short-circuit the old status==404 gate
+    # gave us, now that this runs on every line.
+    if (index(p, "uploads/") == 0) return 0
+    # lib/ingest.sh:72 cuts the path at 256 bytes, so at the boundary the FINAL
+    # candidate is incomplete BY CONSTRUCTION. Holding it to the end anchor scored
+    # real long srcset values as ordinary 404 storms -- a false positive the
+    # end-anchoring itself created (measured: a real 5-candidate value of 461 bytes
+    # scored 75). Measured on p BEFORE the %2c rewrite, which changes the length.
+    trunc = (length(p) >= 256)
     lp = tolower(p)
-    return (lp ~ /^\/([a-z0-9_~-]+\/)*uploads\/[0-9][0-9][0-9][0-9]\/[0-9][0-9]\/[^\/]+\.(jpg|jpeg|png|gif|webp|avif|svg)(%20|\+| )[0-9]+(\.[0-9]+)?[wx](,|%2c|$)/)
+    # An encoded comma is a comma. Normalise before splitting so the two
+    # spellings cannot be used to hide a candidate from validation.
+    gsub(/%2c/, ",", lp)
+    # %2e / %2f are never legitimate here (WordPress does not emit them) and are
+    # how the encoded cloaks ride. Checked AFTER the %2c rewrite so a legitimate
+    # encoded comma is not caught, and once for the whole path so that admitting
+    # '%' into the stem -- needed for percent-encoded UTF-8 names -- cannot
+    # reopen %2eenv.jpg or x%2f.env.jpg.
+    # %25 closes the DOUBLE-encoded family: "%252e" does not contain the substring
+    # "%2e" (it is % 2 5 2 e), so a substring guard alone missed it entirely, and a
+    # stem with no literal dot never reaches the deny list. %00 is never legitimate.
+    # Overlong/fullwidth spellings (%c0%ae, %ef%bc%8e) are NOT closed here -- see
+    # the Known note in CHANGELOG.md.
+    if (lp ~ /%2e|%2f|%25|%00/) return 0
+    n = split(lp, parts, ",")
+
+    # The FIRST candidate is the request path itself: always root-relative, and
+    # always inside the uploads tree. END-ANCHORED -- see the comment above.
+    if (trunc && n == 1 && !candidate_complete(parts[1])) {
+        if (parts[1] !~ /^\/([a-z0-9_~-]+\/)*uploads\/(sites\/[0-9]+\/)?[0-9][0-9][0-9][0-9]\/[0-9][0-9]\//)
+            return 0
+        if (!candidate_prefix_ok(parts[1])) return 0
+        if (!stem_is_safe(candidate_stem(parts[1]))) return 0
+        return 1
+    }
+    if (parts[1] !~ /^\/([a-z0-9_~-]+\/)*uploads\/(sites\/[0-9]+\/)?[0-9][0-9][0-9][0-9]\/[0-9][0-9]\/([a-z0-9_~-]+\/)*[a-z0-9_~@.%-]+\.(jpg|jpeg|png|gif|webp|avif|svg|bmp|heic|heif|jfif)(%20|\+| )+[0-9]+(\.[0-9]+)?[wx](%20|\+| )*$/)
+        return 0
+    if (!stem_is_safe(candidate_stem(parts[1]))) return 0
+
+    # EVERY later candidate must also be a well-formed one. A trailing comma with
+    # nothing after it is the one permitted empty element.
+    # Every COMPLETE candidate is still validated, and the first one always is, so
+    # a truncated value must still prove it began as this shape.
+    last = n
+    # candidate_prefix_ok() OVERLAPS complete candidates without being a strict
+    # superset (a literal-space candidate parses complete but not as a prefix), so
+    # skipping the final element whenever it merely LOOKED like a prefix let a
+    # finished attack candidate ride: ",/x.php.jpg%20300w" scored 75 at 255 bytes
+    # and was exempt at 256. candidate_complete() is therefore checked FIRST: a
+    # complete final stays in the full loop below, and only a genuinely incomplete
+    # one gets prefix treatment -- which is itself stem-checked, because
+    # prefix-shaped is not the same as safe.
+    # A SINGLE candidate cut at the boundary had no prefix path at all -- it was
+    # held to the full end-anchored match it cannot satisfy, and scored. Real
+    # names reach this: percent-encoded CJK or accented stems inflate ~3x, so the
+    # threshold is far below "213 ASCII characters". It still has to prove it
+    # began as this shape (the uploads-tree anchor) before the tail is forgiven.
+    if (trunc && n > 1 && !candidate_complete(parts[n])) {
+        # Prefix-shaped is NOT the same as safe: the round-3 fix full-validated a
+        # COMPLETE final candidate but let an INCOMPLETE one skip the stem check
+        # entirely, so ",/c99.php" and ",/wp-config.php" rode at exactly 256 bytes.
+        # badpaths.conf has no generic \.php rule, so nothing backstopped them.
+        if (!candidate_prefix_ok(parts[n])) return 0
+        if (!stem_is_safe(candidate_stem(parts[n]))) return 0
+        last = n - 1
+    }
+    for (i = 2; i <= last; i++) {
+        if (i == n && parts[i] ~ /^(%20|\+| )*$/) continue
+        if (parts[i] !~ /^(%20|\+| )*(https?:)?(\/\/?[a-z0-9_~.-]+(:[0-9]+)?)?\/([a-z0-9_~-]+\/)*[a-z0-9_~@.%-]+\.(jpg|jpeg|png|gif|webp|avif|svg|bmp|heic|heif|jfif)(%20|\+| )+[0-9]+(\.[0-9]+)?[wx](%20|\+| )*$/)
+            return 0
+        if (!stem_is_safe(candidate_stem(parts[i]))) return 0
+    }
+    return 1
 }
 
 # path_scores_on_its_own(p) : 1 if p hits a bad-path pattern or a honeypot trap.
@@ -154,15 +424,16 @@ BEGIN {
     # the first-line filter so garbage never even reaches scoring.)
     if (!ip_plausible(ip)) next
 
-    # A 404 the site's own broken markup asked for is not an event this IP
-    # caused, so it is not scored AT ALL -- not merely kept out of the error
-    # counters. Counting it in reqs[] while excluding it from cerr[] would hand
+    # A request the visitor's own client manufactured from a correct srcset is
+    # not an event this IP caused, so it is not scored AT ALL -- not merely kept
+    # out of the error counters. Statuses below 400, plus 404: see the predicate
+    # note on is_mangled_srcset(). 403/5xx/429 deliberately still score. Counting it in reqs[] while excluding it from cerr[] would hand
     # an attacker a DILUTION lever: err_ratio is nerr/n, so padding a real scan
     # with exempted 404s would drive the ratio down (50 probes at 100% becomes
     # 500 requests at 10%). It would also inflate rps and feed request_flood,
     # which is one of the two rules that produced the false positives. Dropping
     # the request outright removes both. Recorded in csrcset[] so it stays
-    # counted in csrcset[] and surfaced as "404_srcset" in the evidence JSON --
+    # counted in csrcset[] and surfaced as "srcset_exempt" in the evidence JSON --
     # but note that only shows up for an IP that scores on its OTHER traffic,
     # because END walks reqs[] and a srcset-only client deliberately has no
     # reqs[] entry. That is the intended outcome (such a client is not an
@@ -170,8 +441,16 @@ BEGIN {
     # a borderline IP, not for census of the affected population.
     # Gated on path_scores_on_its_own(): a path that hits a bad-path pattern or a
     # honeypot is NEVER exempted, however it is dressed up.
-    if (status == 404 && is_mangled_srcset(path) && !path_scores_on_its_own(path)) {
-        csrcset[ip]++; next
+    if ((status < 400 || status == 404) && is_mangled_srcset(path) \
+        && !path_scores_on_its_own(path)) {
+        csrcset[ip]++
+        if (first_sr[ip] == 0 || ep < first_sr[ip]) first_sr[ip] = ep
+        if (ep > last_sr[ip]) last_sr[ip] = ep
+        # Deliberately NOT tracking topvh here. An exempted request is not evidence
+        # of anything this IP did wrong, and letting it win the vhost vote pointed
+        # the CF-plane block at the wrong zone (measured: 30 real requests on one
+        # vhost lost to 80 exempted ones on another).
+        next
     }
 
     reqs[ip]++
@@ -247,6 +526,37 @@ END {
     wsum = W_RATE + W_ERR_RATIO + W_ERR_BURST + W_FANOUT + W_BADPATH + W_UA + W_POST_FLOOD + W_NOVHOST
     if (wsum <= 0) wsum = 1
 
+    # --- srcset volume tripwire ---------------------------------------------
+    # Exempted requests are dropped before reqs[], which is what closes the
+    # dilution lever -- but it also means a client flooding purely in this shape
+    # produces no row at all, at any volume. The exempted requests are therefore
+    # still counted, and an implausible volume of them surfaces.
+    #
+    # IT CAN NEVER TEMP, AND THAT IS THE POINT. The first version made this a 75
+    # floor at >= 60 requests and >= RATE_SAT rps, justified as "~1300x above the
+    # heaviest real client (544/day = 0.006 rps)". That compared a DAILY AVERAGE
+    # against a BURST rate. The tripwire measures burst span, and the real class IS
+    # a burst -- one image-heavy page makes the client fetch every srcset on it at
+    # once. Measured: 70 gallery images in 5s scored 75, temp-blocking a visitor for
+    # loading ONE page, and three of those is a permanent AbuseIPDB report. A rate
+    # tripwire on this shape will always hit gallery bursts, so it tops out at
+    # SCORE_WATCH -- which the config defines as "log + count, no action" -- and the
+    # threshold sits far above any page load. Visibility without ban risk.
+    for (ip in csrcset) {
+        sn = csrcset[ip] + 0
+        sspan = last_sr[ip] - first_sr[ip]
+        if (sspan < 1) sspan = 1
+        if (sn >= 500 && (sn / sspan) >= 25) {
+            srflood[ip] = 1
+            if (!(ip in reqs)) {      # srcset-only client: give it a row to carry
+                reqs[ip] = sn
+                first_ep[ip] = first_sr[ip]
+                last_ep[ip]  = last_sr[ip]
+                seeded[ip]   = 1
+            }
+        }
+    }
+
     for (ip in reqs) {
         n = reqs[ip]
         # Coerce every per-IP counter to a numeric scalar ONCE. An IP with no
@@ -260,11 +570,18 @@ END {
         nnov = novhost[ip] + 0; nuae = ua_empty[ip] + 0; nuas = ua_susp[ip] + 0
 
         hp = honeypot[ip] + 0
-        if (n < MIN_REQS && bm < 100 && hp == 0) continue   # below floor (CRITICAL/honeypot bypass)
+        # srflood bypasses this too: the first version seeded reqs[] only for an IP
+        # that had none, and this guard ran BEFORE the tripwire, so ten ordinary
+        # requests were enough to switch the whole channel back off.
+        if (n < MIN_REQS && bm < 100 && hp == 0 && !srflood[ip]) continue
 
         span = last_ep[ip] - first_ep[ip]
         if (span < 1) span = 1
         rps = n / span
+        # A seeded row has no SCORED requests behind it, so it must not inherit a
+        # rate from the exempted ones -- that would let the watch-only tripwire
+        # reach the request_flood floor and temp after all.
+        if (seeded[ip]) rps = 0
 
         s_rate = clamp100(100 * (rps / RATE_SAT))
 
@@ -322,6 +639,14 @@ END {
 
         if (floor > composite) composite = floor
 
+        # WATCH-ONLY, and never an override: it lifts a quiet row up to the
+        # reporting line so the channel is visible, and never touches a score that
+        # already earned more on its own.
+        if (srflood[ip] && composite < SCORE_WATCH) {
+            composite = SCORE_WATCH
+            frule = "srcset_flood"
+        }
+
         score = int(composite + 0.5)
         if (score < SCORE_WATCH) continue
 
@@ -341,7 +666,7 @@ END {
         ev = ev ",\"distinct_paths\":" ndist
         ev = ev ",\"status\":{\"2xx\":" (c2xx[ip]+0) ",\"3xx\":" (c3xx[ip]+0) \
                 ",\"401\":" (c401[ip]+0) ",\"403\":" (c403[ip]+0) ",\"404\":" (c404[ip]+0) \
-                ",\"404_srcset\":" (csrcset[ip]+0) \
+                ",\"srcset_exempt\":" (csrcset[ip]+0) \
                 ",\"444\":" (c444[ip]+0) ",\"5xx\":" (c5xx[ip]+0) "}"
         ev = ev ",\"post\":" npost
         ev = ev ",\"badpath_cat\":\"" (badcat[ip] == "" ? "" : badcat[ip]) "\""
