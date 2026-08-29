@@ -64,22 +64,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against a residential visitor: precisely the harm this exemption exists to
   prevent, reintroduced while closing a bypass.
 
-  The stem now admits `.` and `@` but **never `%`** (which is how the encoded dot
-  and slash cloaks got in), and safety moved to `stem_is_safe()`: a **bounded deny
-  list over one token** — the dot-separated components of a single filename, tested
-  against executable and config extensions. That is a different thing from the path
-  substring blocklist this design avoids, and the structural rules (dot-free,
-  `%`-free directory segments on both sides of the dated tree) still carry every
-  traversal case on their own.
+  The stem now admits `.`, `@` and `%` (a non-ASCII upload name arrives
+  percent-encoded). A COMPLETE `%2e` / `%2f` / `%25` / `%00` is refused on the
+  whole path before the stem is consulted. Safety on the stem itself is
+  `stem_is_safe()`: a **bounded deny list over one token** — the dot-separated
+  components of a single filename, tested against executable and secret-bearing
+  extensions. That is a different thing from the path substring blocklist this
+  design avoids, and the structural rules (dot-free, `%`-free directory segments
+  on both sides of the dated tree) still carry every traversal case on their own.
 
   Dilution is closed for the statuses that could actually dilute: a 60-probe run
   scores 78 bare, and 78 when padded with 500 srcset-shaped 404s, 301s or 1xx.
   Padding with 500s or 403s also reads 78, but for a different reason worth stating
   plainly rather than claiming as a win — those are **not** exempted, and the score
   holds because `scanner_profile` already floors at 78 and 5xx/403 feed `cerr[]`.
-  The real class is still fully protected: two-candidate
-  values, multisite, nested subdirs, single-candidate, and density descriptors all
-  remain exempt.
+  The real class is still fully protected: two-candidate values, multisite,
+  nested subdirs, single-candidate, and density descriptors all remain exempt.
+  Descriptor-less first candidates (`logo.png, logo@2x.png 2x`) are legal HTML
+  and are **not** exempt — every candidate regex requires a descriptor, because
+  making it optional would exempt every missing WP upload. Not widened without
+  archive evidence that the measured class contains that shape.
+
+  **4. The watch-only claim was not enforced, and the 256-byte cut still
+  scored real `+` separators.** Found by an independent Claude review after
+  six Grok rounds. The WATCH band accrued persist sightings with no rule
+  filter, so six hourly buckets in three days was a real temp
+  (`lib/score.sh:780`). `candidate_prefix_ok` admitted `%` in the final token
+  but omitted `+`, so a truncation landing on `…jpg+` / `…jpg+9` scored
+  (`lib/score.awk:170`). The deny list still carried ordinary words (`py` is
+  Paraguay, the same class as the `pl` round 4 removed, plus `rb`/`ini`/`cnf`/
+  `cfm`/`crt`). Later-candidate hosts allowed a single slash, so
+  `/wp-config.php/x.jpg` parsed as a host (dots legal in a host, illegal in a
+  directory) and `badpaths.conf` does not backstop it. All four are closed
+  and pinned. A 256-byte sweep of 171 well-formed `+` / `%20` prefixes scored
+  0 IPs.
 
 ### Added
 - **A volume tripwire on the exemption (`decisive_rule=srcset_flood`).** Dropping
@@ -89,7 +107,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exempted requests are now still counted, and an implausible volume of them
   surfaces.
 
-  **It can never temp, and that is the point.** The first version made it a 75
+  **It can never temp, and that is the point.** Two properties, both under
+  test: `score.awk` caps the row at `SCORE_WATCH` and will not overwrite a
+  genuine floor if `SCORE_WATCH` is raised; `score.sh` then caps any
+  reputation/ASN fold back below `SCORE_TEMP` *and* skips WATCH-band persist
+  accrual for `decisive_rule=srcset_flood`. Without the persist filter, six
+  hourly buckets in three days was a real `action=temp` that fed the
+  recidivism ladder. The first version made it a 75
   floor at `>= 60` requests and `>= RATE_SAT` rps, justified as "~1300× above the
   heaviest real client (544/day, ~0.006 rps)". That compared a **daily average**
   against a **burst rate**, which are not the same quantity — the tripwire measures
@@ -121,7 +145,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known
 - **The pre-fix temps are still on the ledger.** The recidivism lookback is a
-  trailing window over stored temps (`lib/score.sh:735`, window applied in
+  trailing window over stored temps (`lib/score.sh:749`, window applied in
   `lib/store_sqlite.sh:144`), not a forward-only rule, so raising
   `REPEAT_WINDOW_DAYS` re-includes temps that already aged out. Nineteen
   residential visitors carry temps from this class placed before v2.17.0. Stopping
@@ -148,10 +172,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are not exempted. Not observed on the reference fleet; recorded so it is a known
   boundary rather than a surprise.
 
-  Verified by mutation across three rounds. Each round's survivors were missing
-  tests rather than code defects, and each round found survivors the previous one
-  had not thought to try — so this is evidence the pinned behaviours are pinned,
-  **not** evidence the suite is complete. `test/score_test.sh` is at 169 assertions.
+  Verified by mutation across nine rounds (eight on the original surface, one
+  unique-match round on the persist filter, the `+` prefix class, `passwd`,
+  the `floor == 0` guard, and the later-candidate `//` host group). Each
+  round's survivors were missing tests rather than code defects — so this is
+  evidence the pinned behaviours are pinned, **not** evidence the suite is
+  complete. `test/score_test.sh` is at 220 assertions.
 
   `stem_is_safe()` is a **deny list** and therefore has a residual tail by
   construction: round 2 produced `phtm`, `php-cgi`, `js`, `inc`, `cmd`, `jspx`,

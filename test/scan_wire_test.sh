@@ -285,6 +285,66 @@ case "$scanlog2" in *"shared-egress perm-capped"*) echo "FAIL shared-cap-quiet-w
 check shared-cap-metric "$(SWATTER_RUN_SHARED_CAPS=4 swatter_metrics_emit | grep '^swatter_scan_shared_caps ')" "swatter_scan_shared_caps 4"
 SHARED_EGRESS_ENABLE="false"
 
+# 21) srcset_flood is WATCH-ONLY. The awk cap and the folded>=SCORE_TEMP cap
+#     are not enough: the WATCH band accrues persist sightings with no rule
+#     filter, and PERSIST_N buckets in PERSIST_WINDOW_DAYS is a real temp
+#     (dry_run=0) that feeds the recidivism ladder. Deleting the rule filter
+#     on that path must fail the persist cases below; deleting the fold cap
+#     must fail the >=SCORE_TEMP case.
+seed_older_sightings() {
+    local ip="$1" n="$2" now k b
+    now="$(swatter_now)"
+    for (( k=1; k<=n; k++ )); do
+        b=$(( (now - k * 7200) / 3600 ))
+        sqlite3 "$STATE_DIR/swatter.db" \
+            "INSERT INTO sightings(ip,bucket,hits,worst_score,last_ts) VALUES('${ip}',${b},1,50,$((now - k * 7200)));"
+    done
+}
+
+_SW_TOTAL_BLOCKS=0
+BLOCK_RC=0
+ASN_SIGNAL_ENABLE="false"
+swatter_intel_score() { printf '0\t\t0\n'; }
+swatter_classify() { echo "DIRECT"; }
+swatter_cf_manages_plane() { return 1; }
+
+# Control: persist still temps any OTHER watch-band rule. The filter is
+# rule-specific, not a persist disable.
+LAST_CSF=""
+: > "$LOG_DIR/decisions.jsonl"
+seed_older_sightings "198.51.100.21" 2
+feed $'198.51.100.21\t50\t20\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"scanner_profile","honeypot":0,"top_vhost":"x.com"}'
+swatter_scan >/dev/null 2>&1
+check persist-other-rule-still-temps "$(last_action)" "temp"
+
+LAST_CSF=""
+: > "$LOG_DIR/decisions.jsonl"
+seed_older_sightings "198.51.100.22" 2
+feed $'198.51.100.22\t50\t500\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"srcset_flood","honeypot":0,"top_vhost":"x.com"}'
+swatter_scan >/dev/null 2>&1
+check srcset-flood-persist-stays-watch "$(last_action)" "watch"
+check srcset-flood-persist-no-backend "${LAST_CSF}" ""
+check srcset-flood-persist-no-temp-row "$(swatter_store_recent_temp_count 198.51.100.22)" "0"
+check srcset-flood-no-sighting-accrual "$(swatter_store_sighting_buckets 198.51.100.22 3)" "2"
+
+# Folded >= SCORE_TEMP with the watch-only rule (reputation/ASN fold, or an
+# operator raising SCORE_WATCH) must still not temp — that is the cap at
+# lib/score.sh, and it was previously untested.
+LAST_CSF=""
+: > "$LOG_DIR/decisions.jsonl"
+feed $'198.51.100.23\t80\t500\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"srcset_flood","honeypot":0,"top_vhost":"x.com"}'
+swatter_scan >/dev/null 2>&1
+check srcset-flood-cap-stays-watch "$(last_action)" "watch"
+check srcset-flood-cap-no-backend "${LAST_CSF}" ""
+
+LAST_CSF=""
+: > "$LOG_DIR/decisions.jsonl"
+seed_older_sightings "198.51.100.24" 2
+feed $'198.51.100.24\t80\t500\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"srcset_flood","honeypot":0,"top_vhost":"x.com"}'
+swatter_scan >/dev/null 2>&1
+check srcset-flood-capped-persist-stays-watch "$(last_action)" "watch"
+check srcset-flood-capped-persist-no-backend "${LAST_CSF}" ""
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -703,13 +703,15 @@ swatter_scan() {
         local drule; drule="$(printf '%s' "$ev" | sed -n 's/.*"decisive_rule":"\([^"]*\)".*/\1/p')"
         [[ -n "$drule" ]] && reason="${reason} rule=${drule}"
 
-        # srcset_flood is WATCH-ONLY, and this is the line that MAKES it so.
-        # score.awk caps it at SCORE_WATCH, but reputation and ASN fold in HERE,
-        # afterwards -- so "cannot temp" was arithmetic coincidence at the shipped
-        # defaults (50 + 14 + 12 = 76 would have crossed a SCORE_TEMP of 70 the
-        # moment anyone raised SCORE_WATCH or W_ASN), not an enforced property.
-        # The exempted class is residential by construction; it must never reach
-        # the ladder, and therefore never an AbuseIPDB report.
+        # srcset_flood is WATCH-ONLY. score.awk caps it at SCORE_WATCH, but
+        # reputation and ASN fold in HERE afterwards -- so "cannot temp" was
+        # arithmetic coincidence at the shipped defaults (50 + 14 + 12 = 76
+        # would have crossed a SCORE_TEMP of 70 the moment anyone raised
+        # SCORE_WATCH or W_ASN), not an enforced property. This cap keeps the
+        # TEMP band off it. The WATCH-band persist filter below is the other
+        # half: without it, PERSIST_N hourly buckets still become a real temp.
+        # The exempted class is residential by construction; it must never
+        # reach the ladder, and therefore never an AbuseIPDB report.
         if [[ "$drule" == "srcset_flood" ]] && (( folded >= SCORE_TEMP )); then
             folded=$(( SCORE_TEMP - 1 ))
             reason="${reason} watch-only-capped"
@@ -773,7 +775,10 @@ swatter_scan() {
         else
             # WATCH band: low-and-slow accrual + escalation.
             _swatter_audit "$ip" "$folded" "watch" "none" 0 "$reason" "$ev" "$rep"
-            if [[ "${PERSIST_ENABLE:-true}" == "true" && "${STORE}" == "sqlite" ]]; then
+            # srcset_flood is watch-only. Sighting accrual is a real temp at
+            # PERSIST_N buckets — without this filter the cap above is theatre.
+            if [[ "$drule" != "srcset_flood" ]] \
+               && [[ "${PERSIST_ENABLE:-true}" == "true" && "${STORE}" == "sqlite" ]]; then
                 swatter_store_sighting_add "$ip" "$folded" "${PERSIST_BUCKET_SECONDS:-3600}"
                 local nb; nb="$(swatter_store_sighting_buckets "$ip" "${PERSIST_WINDOW_DAYS:-3}")"
                 if [[ "$nb" =~ ^[0-9]+$ ]] && (( nb >= ${PERSIST_N:-6} )); then

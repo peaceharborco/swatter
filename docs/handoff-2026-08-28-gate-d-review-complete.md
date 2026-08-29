@@ -236,7 +236,7 @@ are now DONE** (see the Unreleased section of `CHANGELOG.md` for the measurement
 item 4 is the only part still open, and it is what actually gates the widen.
 
 1. ~~It was gated on `status == 404`~~ **DONE.** The exempt set is now
-   `status < 400 || status == 404` (`lib/score.awk:392`), calibrated to the measured class.
+   `status < 400 || status == 404` (`lib/score.awk:459`), calibrated to the measured class.
    Note the intermediate attempt that removed the status gate entirely was wrong —
    5xx and 403 feed `cerr[]` and so cannot dilute, and dropping them made an origin
    melt invisible.
@@ -245,9 +245,9 @@ item 4 is the only part still open, and it is what actually gates the widen.
    unvalidated (traversal payloads were dropped at every status), and the filename
    stem admitted dots and percent-encoding (`wp-config.php.jpg`, `%2eenv.jpg`,
    `x%2f.env.jpg` were all dropped). Both closed.
-3. ~~No test feeds a non-404~~ **DONE.** 166 assertions; six mutation rounds. Four review rounds, every one HOLD.
+3. ~~No test feeds a non-404~~ **DONE.** 220 assertions; nine mutation rounds. Six review rounds, every one HOLD.
 4. **STILL OPEN — the pre-fix temps are on the ledger.**
-   `swatter_store_recent_temp_count` (`lib/score.sh:735`, window applied in
+   `swatter_store_recent_temp_count` (`lib/score.sh:749`, window applied in
    `lib/store_sqlite.sh:144`) is a trailing lookback, so widening 7 → 30
    re-includes temps that already aged out — including those on the 19 residential
    visitors this class already hit. Stopping new scoring does not expunge the

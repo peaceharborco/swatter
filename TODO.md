@@ -249,14 +249,15 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       cds1 is still on v2.17.0. It carries the exempt set
       `status < 400 || status == 404`, end-anchored candidate-list validation, a
       dot-free-*directory* rule with a vetted stem, and a `srcset_flood` volume
-      tripwire — 202 assertions, eight mutation rounds, **six review rounds, every
-      one HOLD**, and a clean 3.1M-row prod dry run. **Two Blockers are still
-      open** — see the dedicated block below and
+      tripwire — 220 assertions, nine mutation rounds, **six review rounds, every
+      one HOLD**, and a clean 3.1M-row prod dry run. **The two Blockers from
+      that review are closed on this branch (not shipped).** Remaining: re-review,
+      prod dry-run, 2.18.0. See the dedicated block below and
       `docs/handoff-2026-08-28-srcset-residual-surface.md`.
 
       **What ALSO still gates the widen is the ledger**: the pre-fix temps remain,
       and `swatter_store_recent_temp_count` (`lib/store_sqlite.sh:141`, called at
-      `lib/score.sh:747`) is a trailing lookback, so 7d -> 30d re-includes temps
+      `lib/score.sh:749`) is a trailing lookback, so 7d -> 30d re-includes temps
       that already aged out — including those on the 19 residential visitors.
       Stopping new scoring does not expunge the ladder. Decide that
       (`swatter rollback-ladder`) before widening.
@@ -265,10 +266,9 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       blocker that could never be satisfied; it does not clear the ones that can.
       **Read `docs/handoff-2026-08-28-gate-d-review-complete.md`.**
 
-- [ ] **SRCSET RESIDUAL SURFACE — branch open, 2 Blockers. NOT SHIPPABLE.**
-      Branch `fix/srcset-residual-scoring-surface`, uncommitted; cds1 on v2.17.0.
-      **Read `docs/handoff-2026-08-28-srcset-residual-surface.md` first** — it has
-      the measurements, the fix directions and the traps.
+- [ ] **SRCSET RESIDUAL SURFACE — code closed on the branch, NOT SHIPPABLE.**
+      Branch `fix/srcset-residual-scoring-surface`; cds1 on v2.17.0.
+      **Read `docs/handoff-2026-08-28-srcset-residual-surface.md` first.**
 
       Why it matters, measured not argued: a read-only dry run over **3,126,395
       real log rows** found v2.17.0 **temp-blocks a real visitor today** (Chrome,
@@ -284,49 +284,35 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       times by patching a *comment*. Anchor mutation targets to CODE and require a
       unique match.
 
-      - [ ] **BLOCKER 1 — `srcset_flood` can reach a real temp block.** The WATCH
-            band at `lib/score.sh:774` accrues sightings with **no rule filter**
-            (`swatter_store_sighting_add`, `lib/score.sh:777`); at `PERSIST_N=6`
-            buckets in `PERSIST_WINDOW_DAYS=3` (`lib/common.sh:215-218`) that
-            becomes `action=temp`, `dry_run=0`, which feeds the recidivism ladder
-            toward perm + AbuseIPDB. Deleting the cap at `lib/score.sh:715` leaves
-            202/202 green — the whole score.sh half is untested. **Re-verify
-            independently first** (found by review, not yet reproduced in-repo).
-      - [ ] **BLOCKER 2 — `+` separator bans real visitors at the 256 boundary.**
-            `candidate_prefix_ok()`'s final token class (`lib/score.awk:160`)
-            admits `%` but omits `+`, while every other predicate treats
-            `(%20|\+| )` as three legal separator spellings. VERIFIED at exactly
-            256 bytes: `…jpg+9` and `…jpg+` SCORE; `…jpg%209` and `…jpg%20` are
-            exempt. Bare-space cases are unreachable — `lib/ingest.sh:66` splits
-            the request line on space. After fixing, **re-sweep the boundary at
-            every offset**: rounds 4, 5 and 6 each found a distinct FP there.
-      - [ ] **Deny list still carries ordinary words** (`lib/score.awk:204`):
-            `py` (Paraguay ccTLD, same class as the `pl` removed in round 4), plus
-            `rb`, `ini`, `cnf`, `cfm`, `crt`. `asuncion.py-768x576.jpg`,
-            `foto.ini.jpg`, `tv.crt.jpg` all score. Applying the owner's ratified
-            "keep it narrow" decision, not reopening it.
-      - [ ] **Descriptor-less candidates are not exempt.** `srcset="logo.png,
-            logo@2x.png 2x"` is legal and standard; all three candidate regexes
-            require a descriptor. CHANGELOG claims otherwise. **Check the archive**
-            for whether this shape occurs before deciding to support it.
-      - [ ] **Fix line refs this branch broke and reconcile doc counts.**
-            `lib/score.sh:735` -> **747** (cited in CHANGELOG, TODO, handoff);
-            `lib/score.awk:392` -> **444**; `lib/score.awk:586` -> **580**.
-            CHANGELOG says 169 assertions / three mutation rounds; other docs say
-            166 / six. Actual: **202**, eight mutation rounds, six review rounds.
-      - [ ] **Smaller:** `passwd` is an unpinned deny token (mutation survives);
-            the `%2e|%2f` check inside `candidate_prefix_ok` (`lib/score.awk:154`)
-            is dead code whose comment overclaims; later-candidate hosts allow dots
-            the first candidate forbids, so `…,/wp-config.php/x.jpg%20300w` is
-            exempt and unbackstopped (`config/badpaths.conf:18` needs a suffix);
-            the `n == 1` branch (`lib/score.awk:288`) requires no image extension.
+      - [x] **BLOCKER 1 — `srcset_flood` can reach a real temp block.** Reproduced:
+            WATCH-band persist with `PERSIST_N=3` and two seeded buckets placed a
+            real temp (`scan_wire_test.sh`). Filter is `drule != srcset_flood`
+            (`lib/score.sh:780`). Cap at folded>=SCORE_TEMP is also pinned.
+      - [x] **BLOCKER 2 — `+` separator bans real visitors at the 256 boundary.**
+            Final token class is now `[a-z0-9_~@. %+-]` (`lib/score.awk:170`).
+            171-prefix sweep of `+` / `%20` / path-only later candidates at
+            exactly 256 scored 0 IPs.
+      - [x] **Deny list ordinary words removed** (`lib/score.awk:215`): `py`,
+            `rb`, `ini`, `cnf`, `cfm`, `crt`. `passwd` is now pinned.
+      - [x] **Descriptor-less candidates are not exempt.** Pinned; CHANGELOG
+            overclaim narrowed. Matcher not widened — making the descriptor
+            optional exempts every missing WP upload.
+      - [x] **Line refs and assertion counts reconciled.** Call site
+            `lib/score.sh:749`; exempt predicate `lib/score.awk:459`;
+            `request_flood` `lib/score.awk:653`. Suite is **220** assertions,
+            nine mutation rounds, six review rounds.
+      - [x] **Smaller:** `passwd` pinned; `%2e|%2f` in `candidate_prefix_ok`
+            comment no longer credits it with stopping encoded cloaks;
+            later-candidate hosts require `//`; `n == 1` comment states no
+            image extension is required; `srcset_flood` will not overwrite a
+            genuine floor if `SCORE_WATCH` is raised.
       - [ ] **Then:** re-review (Grok budget is EXHAUSTED — record which reviewers
             actually ran), re-run the prod dry run, bump to **2.18.0** (entry is
             still under `[Unreleased]`), release, surgical-scp, sha-verify.
 
 - [ ] **Swatter is swatting our own CI** — see
       `docs/handoff-2026-08-28-ci-self-swat.md`. Verified while reviewing it:
-      **the feedback loop in its open question 1 is real.** `lib/score.awk:464`
+      **the feedback loop in its open question 1 is real.** `lib/score.awk:479`
       makes a 403 feed BOTH `cerr[]` and `cburst[]`, so swatter's own
       managed_challenge responses become evidence against the client. Measured on
       identical traffic: answered 200 -> no row at all; answered 403 -> **78,
@@ -1223,7 +1209,7 @@ withdrawn after review (`docs/superpowers/specs/2026-07-27-ladder-confidence-flo
 see its `-review-grok.md`).
 
 What is true: a WordPress page serving >=60 assets in a burst deterministically
-floors at score 75 with `rule=request_flood` (`lib/score.awk:586`, `rps = n/span`
+floors at score 75 with `rule=request_flood` (`lib/score.awk:653`, `rps = n/span`
 over the observed request span). Four such IPs were verified as real visitors on
 customer sites and allowlisted 2026-07-27 (`unblock` then `allow`, so the ladder
 count reset): three residential-fiber IPv4s and one residential IPv6, one of

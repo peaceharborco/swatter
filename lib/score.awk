@@ -78,8 +78,10 @@ function clamp100(x) { return (x > 100) ? 100 : ((x < 0) ? 0 : x) }
 #                            legal srcset. Density descriptors (2x, 1.5x) are the
 #                            "sizes" spelling of the same defect and are covered.
 # Every LATER candidate must match the same shape, optionally preceded by a
-# scheme+host (the observed values are absolute after the first), and a single
-# trailing comma with nothing after it is the one permitted empty element.
+# scheme+host. The host group requires `//` (`https://host` or `//host`); a
+# single slash is a path, so `/wp-config.php/x.jpg` cannot parse as a host
+# (dots are legal in a host and illegal in a directory). A trailing comma
+# with nothing after it is the one permitted empty element.
 # Suppression is further gated on path_scores_on_its_own() at the call site, so
 # a bad-path or honeypot hit is never exempted however it is dressed.
 #
@@ -128,7 +130,7 @@ function clamp100(x) { return (x > 100) ? 100 : ((x < 0) ? 0 : x) }
 # descriptor). Used to tell a truncated tail from a finished one at the 256-byte
 # boundary -- see the note at the call site.
 function candidate_complete(c) {
-    return (c ~ /^(%20|\+| )*(https?:)?(\/\/?[a-z0-9_~.-]+(:[0-9]+)?)?\/([a-z0-9_~-]+\/)*[a-z0-9_~@.%-]+\.(jpg|jpeg|png|gif|webp|avif|svg|bmp|heic|heif|jfif)(%20|\+| )+[0-9]+(\.[0-9]+)?[wx](%20|\+| )*$/)
+    return (c ~ /^(%20|\+| )*(https?:)?(\/\/[a-z0-9_~.-]+(:[0-9]+)?)?\/([a-z0-9_~-]+\/)*[a-z0-9_~@.%-]+\.(jpg|jpeg|png|gif|webp|avif|svg|bmp|heic|heif|jfif)(%20|\+| )+[0-9]+(\.[0-9]+)?[wx](%20|\+| )*$/)
 }
 
 # candidate_prefix_ok(c) : 1 if c could be the BEGINNING of a well-formed srcset
@@ -149,15 +151,23 @@ function candidate_prefix_ok(c) {
     # A cut-off tail can end mid-percent-escape (".jpg%") or mid-SCHEME ("%20htt",
     # "%20https", "%20https://"). The first version only modelled the former, so a
     # realistic 4-candidate srcset -- ~354 bytes, cut by ingest squarely in the
-    # scheme window -- scored 75 and temped a real visitor. Never a COMPLETE
-    # encoded dot or slash, which is how the encoded cloaks would ride in here.
+    # scheme window -- scored 75 and temped a real visitor.
+    # Defense in depth: is_mangled_srcset already refused %2e|%2f|%25|%00 on
+    # the whole path before either call site, so this branch cannot fire today.
+    # It is not what stops the encoded cloaks. Left in place so a future
+    # narrowing of that guard does not reopen them on a truncated tail.
     if (c ~ /%2e|%2f/) return 0
     # A cut can also land INSIDE the "%20" that separates candidates, leaving a
     # tail of exactly "%" or "%2". That is a truncation artifact and nothing else,
     # so it is accepted ONLY as the entire tail -- never as a prefix that
     # something follows, which would let ",%/etc/passwd" ride.
     if (c ~ /^(%20|\+| )*%[0-9a-f]?$/) return 1
-    return (c ~ /^(%20|\+| )*[a-z]*:?\/?\/?[a-z0-9_~.-]*(:[0-9]+)?(\/[a-z0-9_~-]+)*(\/[a-z0-9_~@.%-]*)?$/)
+    # Final token admits + and literal space: they are the other two spellings
+    # of the srcset separator already accepted as (%20|\+| ) everywhere else.
+    # Omitting + scored a truncation landing on …jpg+ / …jpg+9. Space is
+    # unreachable via ingest (request-line split) and is included so this
+    # predicate does not depend on its caller.
+    return (c ~ /^(%20|\+| )*[a-z]*:?\/?\/?[a-z0-9_~.-]*(:[0-9]+)?(\/[a-z0-9_~-]+)*(\/[a-z0-9_~@. %+-]*)?$/)
 }
 
 # candidate_stem(c) : the filename stem of one srcset candidate -- everything
@@ -176,8 +186,9 @@ function candidate_stem(c,   t, n, seg) {
 # ?[]\/=<>:;,'"&$#*()|~`!{}%+ and NUL but leaves '.' and '@' alone, so
 # "my.photo-768x576.jpg" and "logo@2x-768x576.jpg" are REAL upload names --
 # refusing every dot scored them at 75, which is the exact irreversible harm this
-# exemption exists to prevent. It must never admit '%', which is how the encoded
-# dot and slash cloaks got in.
+# exemption exists to prevent. '%' is admitted because a non-ASCII name arrives
+# percent-encoded; a COMPLETE %2e/%2f/%25/%00 is refused on the whole path
+# before the stem is consulted.
 #
 # Admitting dots reopens the double-extension cloak, so safety moves here: a
 # bounded deny list over ONE token. It is a DENY LIST and therefore has a residual
@@ -202,7 +213,7 @@ function _strip_wp_suffixes(c,   prev) {
 }
 
 function _deny_token(c) {
-    return (c ~ /^(php|php[0-9]+|phps|phtml|phtm|pht|phar|aspx|ashx|asmx|ascx|cshtml|jsp|jspx|jhtml|cfm|shtml|cgi|fcgi|wsgi|py|rb|ps1|vbs|exe|dll|wasm|env|htaccess|htpasswd|htgroup|ini|cnf|cfg|yml|yaml|toml|sql|sqlite|sqlite3|pem|pfx|p12|jks|keystore|crt|passwd)$/)
+    return (c ~ /^(php|php[0-9]+|phps|phtml|phtm|pht|phar|aspx|ashx|asmx|ascx|cshtml|jsp|jspx|jhtml|shtml|cgi|fcgi|wsgi|ps1|vbs|exe|dll|wasm|env|htaccess|htpasswd|htgroup|cfg|yml|yaml|toml|sql|sqlite|sqlite3|pem|pfx|p12|jks|keystore|passwd)$/)
 }
 
 # stem_is_safe(stem) : 0 if a dot-component of the filename stem is an executable
@@ -224,7 +235,8 @@ function _deny_token(c) {
 # intent-evidence, on a request that executes nothing (the URL ends in the srcset
 # descriptor, so the server serves no PHP either way). A wrong token bans a real
 # person irreversibly. So: only tokens that are unambiguous file extensions AND
-# rarely ordinary words. Short words (bat, do, key, pl, sh, so, ts, der, inc) and
+# rarely ordinary words. Short words (bat, do, key, pl, sh, so, ts, der, inc,
+# py, rb, ini, cnf, cfm, crt) and
 # inert data suffixes (html, json, xml, zip, bak, tmp) are OUT by that rule.
 #
 # Not consulted at all when the stem has no dot: a dot-free stem cannot BE a
@@ -286,6 +298,9 @@ function is_mangled_srcset(p,   lp, n, parts, i, trunc, last) {
     # The FIRST candidate is the request path itself: always root-relative, and
     # always inside the uploads tree. END-ANCHORED -- see the comment above.
     if (trunc && n == 1 && !candidate_complete(parts[1])) {
+        # No image extension required here: a 256-byte cut can land before
+        # one exists. The uploads-tree anchor, prefix check, and stem check
+        # still have to pass. Contained by the dot-free directory rule.
         if (parts[1] !~ /^\/([a-z0-9_~-]+\/)*uploads\/(sites\/[0-9]+\/)?[0-9][0-9][0-9][0-9]\/[0-9][0-9]\//)
             return 0
         if (!candidate_prefix_ok(parts[1])) return 0
@@ -325,7 +340,7 @@ function is_mangled_srcset(p,   lp, n, parts, i, trunc, last) {
     }
     for (i = 2; i <= last; i++) {
         if (i == n && parts[i] ~ /^(%20|\+| )*$/) continue
-        if (parts[i] !~ /^(%20|\+| )*(https?:)?(\/\/?[a-z0-9_~.-]+(:[0-9]+)?)?\/([a-z0-9_~-]+\/)*[a-z0-9_~@.%-]+\.(jpg|jpeg|png|gif|webp|avif|svg|bmp|heic|heif|jfif)(%20|\+| )+[0-9]+(\.[0-9]+)?[wx](%20|\+| )*$/)
+        if (parts[i] !~ /^(%20|\+| )*(https?:)?(\/\/[a-z0-9_~.-]+(:[0-9]+)?)?\/([a-z0-9_~-]+\/)*[a-z0-9_~@.%-]+\.(jpg|jpeg|png|gif|webp|avif|svg|bmp|heic|heif|jfif)(%20|\+| )+[0-9]+(\.[0-9]+)?[wx](%20|\+| )*$/)
             return 0
         if (!stem_is_safe(candidate_stem(parts[i]))) return 0
     }
@@ -639,10 +654,12 @@ END {
 
         if (floor > composite) composite = floor
 
-        # WATCH-ONLY, and never an override: it lifts a quiet row up to the
-        # reporting line so the channel is visible, and never touches a score that
-        # already earned more on its own.
-        if (srflood[ip] && composite < SCORE_WATCH) {
+        # Lift a quiet row up to the reporting line. Never an override: a
+        # genuine floor (request_flood at 75, etc.) stays put even if an
+        # operator raises SCORE_WATCH above it. The first version used only
+        # `composite < SCORE_WATCH`, which rewrote frule and lifted the score
+        # the moment SCORE_WATCH sat above 75.
+        if (srflood[ip] && composite < SCORE_WATCH && floor == 0) {
             composite = SCORE_WATCH
             frule = "srcset_flood"
         }

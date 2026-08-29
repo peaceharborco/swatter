@@ -123,7 +123,7 @@ _srcset_burst_tsv() {  # <count> <seconds> [other_requests]
     local cnt="$1" secs="$2" other="${3:-0}" i
     : > "$tmp/burst.tsv"
     for (( i=1; i<=cnt; i++ )); do
-        printf '198.51.100.7\t%s\tGET\t/wp-content/uploads/2025/10/gallery-img%s-768x576.jpg%%20768w,%%20https:/e.com/g%s-900x675.jpg%%20900w\t404\t-\tMozilla/5.0\texample.com\n' \
+        printf '198.51.100.7\t%s\tGET\t/wp-content/uploads/2025/10/gallery-img%s-768x576.jpg%%20768w,%%20https://e.com/g%s-900x675.jpg%%20900w\t404\t-\tMozilla/5.0\texample.com\n' \
             $(( NOW_EPOCH - 300 + (i * secs / cnt) )) "$i" "$i" >> "$tmp/burst.tsv"
     done
     for (( i=1; i<=other; i++ )); do
@@ -168,12 +168,12 @@ srcset_score_fast() {  # <path> <count> <status> -> score, all inside 20s (rps>=
 }
 
 # The real production shapes must NOT score.
-SS_REAL='/wp-content/uploads/2025/10/photo-768x576.jpg%20768w,%20https:/example.com/photo-900x675.jpg%20900w'
+SS_REAL='/wp-content/uploads/2025/10/photo-768x576.jpg%20768w,%20https://example.com/photo-900x675.jpg%20900w'
 ss_band "srcset-real-shape-not-banned" "$(srcset_score "$SS_REAL" 220)" 0 49
 # Single-candidate srcset has no trailing comma; density (sizes) descriptors use Nx.
 # Both are the same defect and were MISSED by the first version of the fix.
 ss_band "srcset-single-candidate-no-comma"  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w' 220)" 0 49
-ss_band "srcset-density-descriptor"         "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%202x,%20https:/e/y.jpg%203x' 220)" 0 49
+ss_band "srcset-density-descriptor"         "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%202x,%20https://e.example/y.jpg%203x' 220)" 0 49
 
 # --- 2026-08-28 falsification review: the class is not all 404 --------------
 # The report that overturned the markup diagnosis measured the class's status
@@ -267,7 +267,7 @@ fi
 # --- regex gaps the review found (all real shapes on this fleet) ------------
 # WordPress MULTISITE puts uploads under sites/N/ -- unexempted before this fix.
 ss_band "srcset-multisite-path" \
-  "$(srcset_score '/wp-content/uploads/sites/2/2025/10/photo-768x576.jpg%20768w,%20https:/e.com/p.jpg%20900w' 220)" 0 49
+  "$(srcset_score '/wp-content/uploads/sites/2/2025/10/photo-768x576.jpg%20768w,%20https://e.com/p.jpg%20900w' 220)" 0 49
 # Nested subdirectories under uploads/YYYY/MM/ (plugin thumbnail trees).
 ss_band "srcset-nested-subdir" \
   "$(srcset_score '/wp-content/uploads/2025/10/thumbs/photo.jpg%20768w,' 220)" 0 49
@@ -275,7 +275,7 @@ ss_band "srcset-bmp-extension" \
   "$(srcset_score '/wp-content/uploads/2025/10/photo.bmp%20768w,' 220)" 0 49
 # A space BEFORE the comma is legal srcset whitespace.
 ss_band "srcset-space-before-comma" \
-  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w%20,%20https:/e.com/p.jpg%20900w' 220)" 0 49
+  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w%20,%20https://e.com/p.jpg%20900w' 220)" 0 49
 
 # --- THE STEM CLOAK: [^/]+ let any name wear an image extension -------------
 # Found by pre-ship review. The stem between YYYY/MM/ and the extension was
@@ -365,12 +365,12 @@ ss_band "cloak-php5"     "$(srcset_score '/wp-content/uploads/2025/10/x.php5.jpg
 ss_band "cloak-phar"     "$(srcset_score '/wp-content/uploads/2025/10/x.phar.jpg%20768w,' 220)" 75 100
 # ...and the deny list must be applied to LATER candidates too, not only the first.
 ss_band "cloak-later-candidate-php" \
-  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w,%20https:/e.com/c99.php.jpg%20900w' 220)" 75 100
+  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w,%20https://e.com/c99.php.jpg%20900w' 220)" 75 100
 ss_band "cloak-later-candidate-phar" \
-  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w,%20https:/e.com/x.phar.jpg%20900w' 220)" 75 100
+  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w,%20https://e.com/x.phar.jpg%20900w' 220)" 75 100
 # An empty element in the MIDDLE is not a candidate and must not be skipped.
 ss_band "empty-middle-element-refused" \
-  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w,,%20https:/e.com/p.jpg%20900w' 220)" 75 100
+  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w,,%20https://e.com/p.jpg%20900w' 220)" 75 100
 
 # --- the deny list must not ban REAL upload names (round 3) -----------------
 # Scoping it to "anything that looks like an extension" temp-banned ordinary
@@ -531,6 +531,20 @@ ss_band "cloak-still-htaccess-2"  "$(srcset_score '/wp-content/uploads/2025/10/.
 ss_band "cloak-still-trailing-env" "$(srcset_score '/wp-content/uploads/2025/10/secrets.e'"'"'nv.jpg%20768w,' 220)" 75 100
 ss_band "real-name-pen-pal"      "$(srcset_score '/wp-content/uploads/2025/10/the.pen-pal-768x576.jpg%20768w,' 220)" 0 49
 
+# --- ROUND 7: short/ordinary words still on the deny list --------------------
+# The comment names the rule (unambiguous extensions AND rarely ordinary words;
+# short words and inert data suffixes are OUT) while the list still carried py
+# (Paraguay ccTLD — same class as the pl round 4 removed), rb, ini, cnf, cfm, crt.
+ss_band "real-name-py-cctld"  "$(srcset_score '/wp-content/uploads/2025/10/asuncion.py-768x576.jpg%20768w,' 220)" 0 49
+ss_band "real-name-rb"        "$(srcset_score '/wp-content/uploads/2025/10/logo.rb.jpg%20300w,' 220)" 0 49
+ss_band "real-name-ini"       "$(srcset_score '/wp-content/uploads/2025/10/foto.ini.jpg%20300w,' 220)" 0 49
+ss_band "real-name-cnf"       "$(srcset_score '/wp-content/uploads/2025/10/my.cnf.jpg%20300w,' 220)" 0 49
+ss_band "real-name-cfm"       "$(srcset_score '/wp-content/uploads/2025/10/notes.cfm.jpg%20300w,' 220)" 0 49
+ss_band "real-name-crt"       "$(srcset_score '/wp-content/uploads/2025/10/tv.crt.jpg%20300w,' 220)" 0 49
+# passwd was an unpinned deny token: removing it from _deny_token left the suite
+# green. A cloak named x.passwd.jpg must still score.
+ss_band "cloak-passwd"        "$(srcset_score '/wp-content/uploads/2025/10/x.passwd.jpg%20300w,' 220)" 75 100
+
 # --- ROUND 5: the cut can land INSIDE the inter-candidate separator ---------
 # Between candidates the logged form is ",%20https://...". A cut on the first or
 # second byte of that %20 leaves a tail of exactly "%" or "%2", which the prefix
@@ -562,6 +576,105 @@ ss_band "trunc-single-unsafe-stem" \
 h='/wp-content/uploads/2025/10/'
 print((h + 'wp-config.php.' + 'a'*205 + '-768x576.jpg%20768w')[:256])")" 220)" 75 100
 
+# --- ROUND 7: + is a legal srcset separator, including at the 256 cut ------
+# candidate_prefix_ok admitted % in the final token but omitted +, while every
+# complete-candidate predicate treats (%20|\+| ) as three equal spellings. A
+# truncation landing on the + spelling of the descriptor scored a real visitor.
+# Bare-space cases are unreachable (ingest splits the request line on space) and
+# are still accepted here so the function does not depend on its caller.
+PAD256() { python3 -c "
+import sys
+h='/wp-content/uploads/2025/10/'
+s=sys.argv[1]
+print(h + 'a'*(256-len(h)-len(s)) + s)" "$1"; }
+ss_band "trunc-256-plus-sep-jpg-plus"    "$(srcset_score "$(PAD256 '.jpg+')" 220)" 0 49
+ss_band "trunc-256-plus-sep-jpg-plus-9"  "$(srcset_score "$(PAD256 '.jpg+9')" 220)" 0 49
+ss_band "trunc-256-pct20-sep-jpg-pct20"  "$(srcset_score "$(PAD256 '.jpg%20')" 220)" 0 49
+ss_band "trunc-256-pct20-sep-jpg-pct209" "$(srcset_score "$(PAD256 '.jpg%209')" 220)" 0 49
+PLUS_CUT() { python3 -c "
+import sys
+h='/wp-content/uploads/2025/10/'; t='.jpg+300w,'; f=sys.argv[1]
+print(h + 'a'*(256-len(h)-len(t)-len(f)) + t + f)" "$1"; }
+ss_band "trunc-256-plus-cut-jpg-plus"    "$(srcset_score "$(PLUS_CUT '/p.jpg+')" 220)" 0 49
+ss_band "trunc-256-plus-cut-jpg-plus-9"  "$(srcset_score "$(PLUS_CUT '/p.jpg+9')" 220)" 0 49
+
+# Later-candidate host group used to allow a single slash, so a path-only
+# candidate `/wp-config.php/x.jpg` parsed as host `wp-config.php` (dots legal
+# in a host, illegal in a directory). badpaths.conf requires a suffix after
+# wp-config.php, so nothing backstopped it. Hosts now require `//`.
+ss_band "later-path-dots-not-a-host" \
+  "$(srcset_score '/wp-content/uploads/2025/10/a.jpg%20300w,/wp-config.php/x.jpg%20300w' 220)" 75 100
+
+# Descriptor-less first candidates are legal HTML (`logo.png, logo@2x.png 2x`)
+# and are NOT exempt: every candidate regex requires a descriptor. Making the
+# descriptor optional would exempt every missing WP upload (pinned below as
+# mutant-descriptor-required). Documented, not widened.
+ss_band "descriptor-less-first-candidate-not-exempt" \
+  "$(srcset_score '/wp-content/uploads/2025/10/logo.png,%20/wp-content/uploads/2025/10/logo@2x.png%202x' 220)" 75 100
+
+# n==1 truncated branch: uploads-tree + prefix + stem, no image extension
+# required. Wider than a complete candidate; contained by the dot-free
+# directory rule.
+ss_band "trunc-single-no-image-ext" \
+  "$(srcset_score "$(python3 -c "
+h='/wp-content/uploads/2025/10/'
+print(h + 'a'*(256-len(h)))")" 220)" 0 49
+
+# Re-sweep the 256-byte cut at every offset of a well-formed + -separated
+# later candidate, and of the %20 spelling, and of a single-candidate
+# descriptor. Rounds 4, 5 and 6 each found a distinct FP at a different
+# offset of this area. One gawk run; any IP that scores is a new FP.
+python3 - "$tmp/plus_sweep.tsv" "$NOW_EPOCH" <<'PY'
+import sys
+out, now = sys.argv[1], int(sys.argv[2])
+head = '/wp-content/uploads/2025/10/'
+first_end = '.jpg+300w,'
+seconds = [
+    'https://cdn.example.com/wp-content/uploads/2025/10/photo-900.jpg+900w',
+    '%20https://cdn.example.com/wp-content/uploads/2025/10/photo-900.jpg%20900w',
+    '/photo-900.jpg+900w',
+]
+nreq = 120
+idx = 0
+with open(out, 'w') as f:
+    def emit(path):
+        global idx
+        idx += 1
+        ip = '198.51.{}.{}'.format(1 + idx // 250, 1 + idx % 250)
+        for i in range(nreq):
+            f.write('%s\t%s\tGET\t%s\t404\t-\tMozilla/5.0\texample.com\n' %
+                    (ip, now - 300 + i, path))
+        return ip
+    ips = []
+    for second in seconds:
+        for n in range(0, len(second) + 1):
+            frag = second[:n]
+            pad = 256 - len(head) - len(first_end) - len(frag)
+            if pad < 1:
+                continue
+            path = head + ('a' * pad) + first_end + frag
+            assert len(path) == 256, (len(path), path[-20:])
+            ips.append(emit(path))
+    # single-candidate: cut through the +descriptor
+    for n in range(0, len('+300w') + 1):
+        s = '.jpg' + '+300w'[:n]
+        pad = 256 - len(head) - len(s)
+        path = head + ('a' * pad) + s
+        assert len(path) == 256
+        ips.append(emit(path))
+    # ips counted only to build the TSV; gawk reports scoring IPs.
+PY
+SWEEP_HITS="$(gawk -v NOW="$NOW_EPOCH" -v WINDOW=600 -v MIN_REQS=15 -v RATE_SAT=8 -v SCORE_WATCH=50 \
+     -v W_RATE=18 -v W_ERR_RATIO=16 -v W_ERR_BURST=12 -v W_FANOUT=12 -v W_BADPATH=22 \
+     -v W_UA=6 -v W_POST_FLOOD=8 -v W_NOVHOST=6 \
+     -v BADPATHS="${ROOT}/config/badpaths.conf" -v HONEYPOTS="$HP" \
+     -f "${ROOT}/lib/score.awk" "$tmp/plus_sweep.tsv" | awk -F'\t' '$2+0>=50{c++} END{print c+0}')"
+if [[ "$SWEEP_HITS" == "0" ]]; then
+    printf 'PASS  %-30s scoring-IPs=0\n' "trunc-256-plus-every-offset"; PASS=$((PASS+1))
+else
+    printf 'FAIL  %-30s scoring-IPs=%s (want 0)\n' "trunc-256-plus-every-offset" "$SWEEP_HITS"; FAIL=$((FAIL+1))
+fi
+
 # --- THE UNCONSTRAINED TAIL -------------------------------------------------
 # ^/ anchored the START; nothing anchored the END. Once the alternation took the
 # ',' branch, the whole remainder of the path was unvalidated, so any target could
@@ -590,12 +703,12 @@ ss_band "mutant-encoded-dot-prefix"  "$(srcset_score '/%2egit/uploads/2025/10/x.
 # encoded comma escapes candidate validation entirely.
 ss_band "mutant-encoded-comma-tail"  "$(srcset_score '/wp-content/uploads/2025/10/a.jpg%20300w%2c/../../../etc/passwd' 220)" 75 100
 ss_band "encoded-comma-real-shape-exempt" \
-  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w%2c%20https:/e.com/p.jpg%20900w' 220)" 0 49
+  "$(srcset_score '/wp-content/uploads/2025/10/photo.jpg%20768w%2c%20https://e.com/p.jpg%20900w' 220)" 0 49
 # The extensions the class actually uses must STAY exempt (nothing pinned these).
-ss_band "ext-jpeg-exempt" "$(srcset_score '/wp-content/uploads/2025/10/photo.jpeg%20768w,%20https:/e.com/p.jpeg%20900w' 220)" 0 49
-ss_band "ext-webp-exempt" "$(srcset_score '/wp-content/uploads/2025/10/photo.webp%20768w,%20https:/e.com/p.webp%20900w' 220)" 0 49
-ss_band "ext-avif-exempt" "$(srcset_score '/wp-content/uploads/2025/10/photo.avif%20768w,%20https:/e.com/p.avif%20900w' 220)" 0 49
-ss_band "ext-png-exempt"  "$(srcset_score '/wp-content/uploads/2025/10/photo.png%20768w,%20https:/e.com/p.png%20900w' 220)" 0 49
+ss_band "ext-jpeg-exempt" "$(srcset_score '/wp-content/uploads/2025/10/photo.jpeg%20768w,%20https://e.com/p.jpeg%20900w' 220)" 0 49
+ss_band "ext-webp-exempt" "$(srcset_score '/wp-content/uploads/2025/10/photo.webp%20768w,%20https://e.com/p.webp%20900w' 220)" 0 49
+ss_band "ext-avif-exempt" "$(srcset_score '/wp-content/uploads/2025/10/photo.avif%20768w,%20https://e.com/p.avif%20900w' 220)" 0 49
+ss_band "ext-png-exempt"  "$(srcset_score '/wp-content/uploads/2025/10/photo.png%20768w,%20https://e.com/p.png%20900w' 220)" 0 49
 
 # --- the widened shape must NOT launder a dot through the new nesting -------
 # uploads/YYYY/MM/ now admits intermediate dirs; they must stay dot-free for the
@@ -648,7 +761,7 @@ ss_band "bare-honeypot-still-floors"        "$(srcset_score '/__trap_a7f3c1d9' 2
 emit_spread "$tmp/probe_only.log" "203.0.113.81" "GET /nope-page HTTP/1.1" 404 "curl/8.0" 120
 BARE="$(score_of example.com "$tmp/probe_only.log")"
 : > "$tmp/probe_padded.log"
-PAD='/wp-content/uploads/2025/10/photo-768x576.jpg%20768w,%20https:/example.com/photo-900x675.jpg%20900w'
+PAD='/wp-content/uploads/2025/10/photo-768x576.jpg%20768w,%20https://example.com/photo-900x675.jpg%20900w'
 emit_spread "$tmp/probe_padded.log" "203.0.113.82" "GET /nope-page HTTP/1.1" 404 "curl/8.0" 120
 emit_spread "$tmp/probe_padded.log" "203.0.113.82" "GET ${PAD} HTTP/1.1" 404 "curl/8.0" 440
 PADDED="$(score_of example.com "$tmp/probe_padded.log")"
@@ -686,6 +799,38 @@ fi
 # The first version seeded reqs[] only when the IP had none, and the n < MIN_REQS
 # guard ran before the floor, so 10 ordinary requests disabled the tripwire.
 ss_band "srcset-dos-counted-for-mixed-client" "$(srcset_burst_mixed 3000 30 10)" 50 100
+
+# Raising SCORE_WATCH above a genuine floor must not let srcset_flood overwrite
+# that floor's rule or lift its score. Safe at the shipped default (50); the
+# first version overstated "never an override".
+: > "$tmp/sw80.tsv"
+for i in $(seq 1 80); do
+    printf '198.51.100.31\t%s\tGET\t/page-%s\t200\t-\tMozilla/5.0\texample.com\n' \
+        $(( NOW_EPOCH - 10 + (i % 8) )) "$i" >> "$tmp/sw80.tsv"
+done
+for i in $(seq 1 500); do
+    printf '198.51.100.31\t%s\tGET\t/wp-content/uploads/2025/10/g%s-768x576.jpg%%20768w,%%20https://e.com/g%s-900.jpg%%20900w\t404\t-\tMozilla/5.0\texample.com\n' \
+        $(( NOW_EPOCH - 20 + (i * 20 / 500) )) "$i" "$i" >> "$tmp/sw80.tsv"
+done
+SW80="$(gawk -v NOW="$NOW_EPOCH" -v WINDOW=600 -v MIN_REQS=15 -v RATE_SAT=8 -v SCORE_WATCH=80 \
+     -v W_RATE=18 -v W_ERR_RATIO=16 -v W_ERR_BURST=12 -v W_FANOUT=12 -v W_BADPATH=22 \
+     -v W_UA=6 -v W_POST_FLOOD=8 -v W_NOVHOST=6 \
+     -v BADPATHS="${ROOT}/config/badpaths.conf" -v HONEYPOTS="$HP" \
+     -f "${ROOT}/lib/score.awk" "$tmp/sw80.tsv" | head -1)"
+SW80_SCORE="$(printf '%s' "$SW80" | cut -f2)"
+SW80_RULE="$(printf '%s' "$SW80" | grep -o '"decisive_rule":"[^"]*"' | cut -d'"' -f4)"
+# SCORE_WATCH=80 hides a 75 request_flood (score < watch is dropped). The
+# defect was lifting that 75 to 80 and relabeling it srcset_flood. Either
+# no row, or request_flood at 75, is fine; a srcset_flood row at 80 is not.
+if [[ "$SW80_RULE" == "srcset_flood" || "$SW80_SCORE" == "80" ]]; then
+    printf 'FAIL  %-30s score=%s rule=%s (must not lift/relabel a genuine floor)\n' \
+        "srcset-flood-does-not-override-floor" "${SW80_SCORE:-NONE}" "$SW80_RULE"
+    FAIL=$((FAIL+1))
+else
+    printf 'PASS  %-30s score=%s rule=%s\n' \
+        "srcset-flood-does-not-override-floor" "${SW80_SCORE:-NONE}" "${SW80_RULE:-none}"
+    PASS=$((PASS+1))
+fi
 
 # --- REAL LONG srcset VALUES SURVIVE INGEST TRUNCATION -----------------------
 # lib/ingest.sh:72 truncates the path at 256 bytes. End-anchoring every candidate
