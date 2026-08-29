@@ -210,7 +210,8 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       (`/root/gate-d-review/round-20260828T123856Z/decisions.tsv`). Bucket 2
       collapsed into review: its "no UA on ANY request" predicate was false for
       4 of 7 once the ROTATED archive was audited, not just live logs.
-- [ ] **THE WIDEN IS BLOCKED — do not run step 4 yet.** The review found two
+- [ ] **THE WIDEN IS NOT YET RUN — the two blockers that held it are done.**
+      Do not skip the freeze. The review found two
       false positives, both real people, and the second is an active fleet-wide
       class: broken srcset markup makes browsers request the whole srcset value
       as one URL (always 404). 17,829 requests, **8,767 distinct client IPs**,
@@ -254,12 +255,21 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       See the dedicated block below and
       `docs/handoff-2026-08-28-srcset-residual-surface.md`.
 
-      **What ALSO still gates the widen is the ledger**: the pre-fix temps remain,
-      and `swatter_store_recent_temp_count` (`lib/store_sqlite.sh:141`, called at
-      `lib/score.sh:749`) is a trailing lookback, so 7d -> 30d re-includes temps
-      that already aged out — including those on the 19 residential visitors.
-      Stopping new scoring does not expunge the ladder. Decide that
-      (`swatter rollback-ladder`) before widening.
+      **The ledger call is made (2026-08-29).** `rollback-ladder` was the wrong
+      tool — it only undoes `recidivism=`-stamped **perms**, and none of these
+      visitors were permed. The mechanism that actually resets `prior` is
+      `swatter unblock`, which writes the watermark `recent_temp_count` honours.
+      Reconstructed against live 40d logs ∩ 30d `error_burst`/`request_flood`
+      temps, no hard intel: **9 srcset-class IPs** (1 already one-away at 30d,
+      8 at prior=1) plus the reviewed `request_flood` DO-NOT-BAN (also
+      one-away). All 10 unblocked 2026-08-29 04:29 UTC; the request_flood FP
+      was also allowlisted (same class as the 2026-07-27 four). Srcset IPs
+      were **not** allowlisted — 2.18.0 already exempts the class, and allow
+      would also mute honeypot. After the watermark they contribute **0** to a
+      30d `prior` and **0** of them appear in `escalate-preview --window 30`.
+      The original "19" was a wider-archive count; the window that actually
+      feeds the widen is 30d. **The widen itself is not done** — freeze
+      AbuseIPDB, then `REPEAT_WINDOW_DAYS=30`.
 
       **Do NOT read "no markup bug" as progress toward the widen.** It removes a
       blocker that could never be satisfied; it does not clear the ones that can.
@@ -339,10 +349,12 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       rule that surfaces without acting. Its option 1 (pace the checker) is still
       the right first move, but it fixes CI's symptom, not the loop.
 
-> **2026-08-28: the review is COMPLETE and the widen is BLOCKED. Read
-> `docs/handoff-2026-08-28-gate-d-review-complete.md` FIRST** — it supersedes
-> the 08-20 handoff for everything through step 3 and explains why step 4 must
-> wait. The 08-20 document below is still correct for step 4 itself.
+> **2026-08-29: the review is COMPLETE, the srcset scorer is live, and the
+> leftover temps are watermarked.** Read
+> `docs/handoff-2026-08-28-gate-d-review-complete.md` FIRST — it supersedes
+> the 08-20 handoff for everything through step 3. The 08-20 document below is
+> still the sequence for step 4 itself (freeze, then the knob). The widen has
+> not run.
 >
 > **Picking this up on the 26th? Read
 > `docs/handoff-2026-08-20-gate-d-widen.md` first.** It is the single

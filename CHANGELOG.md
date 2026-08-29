@@ -157,13 +157,15 @@ changed (75 → 50).
   exemption is no longer 404-only. Its name and count are now under test.
 
 ### Known
-- **The pre-fix temps are still on the ledger.** The recidivism lookback is a
-  trailing window over stored temps (`lib/score.sh:749`, window applied in
-  `lib/store_sqlite.sh:144`), not a forward-only rule, so raising
-  `REPEAT_WINDOW_DAYS` re-includes temps that already aged out. Nineteen
-  residential visitors carry temps from this class placed before v2.17.0. Stopping
-  new scoring does not expunge the ladder; that is a separate operator decision
-  (`swatter rollback-ladder`) and it gates the 7 → 30 widen.
+- **The pre-fix temps were on the ledger; the operator call is made
+  (2026-08-29).** The recidivism lookback is a trailing window over stored temps
+  (`lib/score.sh:749`, window applied in `lib/store_sqlite.sh:144`), so raising
+  `REPEAT_WINDOW_DAYS` would have re-included temps that already aged out.
+  `rollback-ladder` does not apply — it undoes `recidivism=`-stamped perms, and
+  none of this class was permed. Nine srcset-class IPs still inside a 30d window
+  (plus the reviewed `request_flood` DO-NOT-BAN) were watermarked with
+  `swatter unblock`; they now contribute 0 to a 30d `prior`. The 7 → 30 widen
+  itself is still unrun.
 - **`lib/ingest.sh:72` truncates paths at 256 bytes**, and anything beyond that is
   invisible to *all* scoring, badpath and honeypot included. A path can therefore
   be padded so a probe suffix falls past the boundary while the visible prefix is a

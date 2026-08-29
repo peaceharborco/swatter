@@ -157,18 +157,27 @@ Line numbers re-resolved by grep after the edits.
    states no image extension; `srcset_flood` will not overwrite a genuine
    floor (`floor == 0` at `lib/score.awk:662`).
 
-### 7. Still gating the widen — operator decision, not code
+### 7. Ledger decision — DONE 2026-08-29 (operator, not code)
 
-**The 19 pre-fix temps are on the ledger.** `swatter_store_recent_temp_count`
-(`lib/store_sqlite.sh:141`, called at `lib/score.sh:749`) is a trailing lookback,
-not forward-only, so raising `REPEAT_WINDOW_DAYS` from 7 to 30 re-includes temps
-that already aged out — including those on residential visitors this class
-already hit. Stopping new scoring does not expunge the ladder. Decide this
-(`swatter rollback-ladder`) before widening. **This, not the code, is what
-actually gates gate D.**
+`rollback-ladder` does **not** apply: it selects `recidivism=`-stamped **perms**,
+and none of this class was permed. `swatter_store_recent_temp_count` honours an
+`unblock` watermark, so the correction is `swatter unblock` even when the temp
+has already expired.
 
-Also unchanged from the 08-20 decision: `ABUSEIPDB_REPORT="false"` is to be set
-**at** the widen, and someone has to actually execute it.
+Reconstructed 2026-08-29 on cds1 (40d rotated logs ∩ 30d `error_burst` /
+`request_flood` temps, no hard intel / `critical_badpath` / perm): **9
+srcset-class IPs** still in the 30d window (1 already one-away, 8 at prior=1)
+plus the reviewed `request_flood` DO-NOT-BAN (also one-away). The "19" was a
+wider-archive count; 30d is the window the widen actually reads.
+
+All 10 unblocked 2026-08-29 04:29 UTC. The request_flood FP was also
+allowlisted (same class as the 2026-07-27 four). The srcset nine were not —
+2.18.0 already exempts the class. After the watermark they contribute **0** to
+a 30d `prior` and **0** of them appear in `escalate-preview --window 30`.
+Work product (mode 0600) on the host: `/root/gate-d-review/ledger-watermark-20260829.log`.
+
+**The widen itself is not done.** `ABUSEIPDB_REPORT="false"` is still to be set
+**at** the widen, then `REPEAT_WINDOW_DAYS=30`.
 
 ---
 

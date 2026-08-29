@@ -1,19 +1,20 @@
-# Handoff — gate D review COMPLETE, widen BLOCKED
+# Handoff — gate D review COMPLETE; srcset + ledger done; widen unrun
 
 Written 2026-08-28. Supersedes `docs/handoff-2026-08-20-gate-d-widen.md` for
-everything through step 3. **Do not run step 4 (the widen) until the srcset
-item below is resolved.**
+everything through step 3. Srcset residual closed in v2.18.0; leftover temps
+watermarked 2026-08-29. **Step 4 (the widen) is now the remaining work** —
+freeze AbuseIPDB first, then the knob.
 
 ---
 
 ## Start here
 
 The gate D review is done. All 1,118 candidates are dispositioned. **The widen
-did not happen and should not happen yet**, because the review found an active,
-fleet-wide source of false positives that the widen would multiply.
-
-**The ladder itself is untouched:** `REPEAT_WINDOW_DAYS` is still 7,
-`ABUSEIPDB_REPORT` is still `true`, and no ban was placed or lifted.
+has not run** (`REPEAT_WINDOW_DAYS` is still 7, `ABUSEIPDB_REPORT` is still
+`true`). The two things that *blocked* it are now done: the srcset scorer
+(v2.18.0) and the leftover temps (watermarked 2026-08-29). What is left is
+step 4 of the 08-20 handoff — freeze AbuseIPDB, then the knob, then the 48h
+watch.
 
 Two changes WERE made to cds1 on 2026-08-28, both detailed below: `lib/score.awk`
 was deployed (the false-positive fix), and `AS137409` was added to
@@ -108,7 +109,7 @@ zgrep -h -E 'uploads/[0-9]{4}/[0-9]{2}/[^ ]*%20[0-9]+w,%20https:' /home/*/logs/*
 
 ---
 
-## Why the widen is blocked
+## Why the widen was blocked
 
 The widen takes `REPEAT_WINDOW_DAYS` from 7 to 30. An IP perms at 3 temps
 **inside the window**. Today these visitors mostly collect one temp and age out
@@ -120,7 +121,7 @@ public abuse accusation, with no delete API, against a residential broadband
 customer of a Peace Harbor client. That is the exact harm the step-4 freeze
 bounds, and the exact thing gate D exists to catch.
 
-**Two things gate the widen. The first is done; the second is not.**
+**Two things gated the widen. Both are now done.** The widen itself has not run.
 
 ---
 
@@ -246,12 +247,12 @@ item 4 is the only part still open, and it is what actually gates the widen.
    stem admitted dots and percent-encoding (`wp-config.php.jpg`, `%2eenv.jpg`,
    `x%2f.env.jpg` were all dropped). Both closed.
 3. ~~No test feeds a non-404~~ **DONE.** 224 assertions; nine mutation rounds. Six review rounds, every one HOLD.
-4. **STILL OPEN — the pre-fix temps are on the ledger.**
-   `swatter_store_recent_temp_count` (`lib/score.sh:749`, window applied in
-   `lib/store_sqlite.sh:144`) is a trailing lookback, so widening 7 → 30
-   re-includes temps that already aged out — including those on the 19 residential
-   visitors this class already hit. Stopping new scoring does not expunge the
-   ladder. This is an operator decision (`swatter rollback-ladder`), not code.
+4. **DONE 2026-08-29 — leftover temps watermarked.** `rollback-ladder` was the
+   wrong tool (it undoes `recidivism=` perms; these were temps). `swatter unblock`
+   writes the watermark `recent_temp_count` honours. Nine srcset-class IPs still
+   in the 30d window (1 one-away) plus the reviewed `request_flood` DO-NOT-BAN
+   were unblocked; the request_flood FP was allowlisted. After that they
+   contribute 0 to a 30d `prior`. The widen itself is still unrun.
 
 **Do not read "no markup bug" as progress toward the widen.** It removes a blocker
 that could never have been satisfied. It does not clear the ones that can be.
@@ -299,8 +300,10 @@ should stop being described as "empty = healthy" — it is not empty.
    (see §2).** Replaced by: **close the residual srcset scoring surface** in
    swatter — the `status == 404` gate, the regex gaps (multisite, nested subdirs),
    tests for each, and a decision on the 19 pre-fix temps still on the ledger.
+   **Code half: v2.18.0, deployed 2026-08-29. Ledger half: watermarked 2026-08-29
+   (`swatter unblock`, not `rollback-ladder`).**
 5. Only then: step 4 of the 08-20 handoff (freeze AbuseIPDB, `REPEAT_WINDOW_DAYS=30`,
-   48h baseline, `shared-egress-audit`, restore reporting).
+   48h baseline, `shared-egress-audit`, restore reporting). **This is what is left.**
 
 Re-run `escalate-preview` fresh at that point. This preview is now days old, and
 reviewing a saved list is what the gate forbids.
