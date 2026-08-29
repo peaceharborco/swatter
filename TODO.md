@@ -223,8 +223,126 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       `AS137409` added to `shared-egress-asns.txt` the same day. **Released as
       v2.17.0 and fully deployed** — all 32 installed files sha-match the tag,
       zero drift; the release also carried the previously-undeployed `d396ad6`.
-      The WordPress markup bug is still untouched.
+
+      **2026-08-28, CAUSE CORRECTED — there is no WordPress markup bug.** A
+      dedicated investigation (private report + its falsification review, both on
+      the owner's Desktop; not in this public repo) found the fleet's markup is
+      correct on all 34 in-scope sites. The requests are manufactured client-side
+      by third-party Chromium-based clients that read a *correct* `srcset` and
+      request its whole value as one URL. Decisive evidence: 14,653 Chrome /
+      2,635 Edge / **3 Safari / 0 Firefox**, against a ~24% Safari / ~7% Firefox
+      baseline on the same traffic. Broken markup breaks in every browser. Two
+      adversarial models tried and failed to refute this.
+
+      **Consequence: the old gate 2 ("fix the srcset markup on the fleet") has a
+      VOID PREMISE and can never be satisfied — but it is REPLACED, not closed.**
+      The falsification review found the exemption does not carry the class:
+      it is gated on `status == 404` while 2,528 of the 17,829 (14%) are 301/302,
+      it missed WordPress multisite and nested-subdir upload paths, and nothing in
+      the suite tested a non-404. A pre-ship review of the fix then found worse:
+      the match was anchored only at its start, so traversal payloads rode through
+      unvalidated after the first comma, and the filename stem admitted dots and
+      percent-encoding.
+
+      **The code half of gate 2 is NOT done.** Branch
+      `fix/srcset-residual-scoring-surface` is **uncommitted and not deployed**;
+      cds1 is still on v2.17.0. It carries the exempt set
+      `status < 400 || status == 404`, end-anchored candidate-list validation, a
+      dot-free-*directory* rule with a vetted stem, and a `srcset_flood` volume
+      tripwire — 202 assertions, eight mutation rounds, **six review rounds, every
+      one HOLD**, and a clean 3.1M-row prod dry run. **Two Blockers are still
+      open** — see the dedicated block below and
+      `docs/handoff-2026-08-28-srcset-residual-surface.md`.
+
+      **What ALSO still gates the widen is the ledger**: the pre-fix temps remain,
+      and `swatter_store_recent_temp_count` (`lib/store_sqlite.sh:141`, called at
+      `lib/score.sh:747`) is a trailing lookback, so 7d -> 30d re-includes temps
+      that already aged out — including those on the 19 residential visitors.
+      Stopping new scoring does not expunge the ladder. Decide that
+      (`swatter rollback-ladder`) before widening.
+
+      **Do NOT read "no markup bug" as progress toward the widen.** It removes a
+      blocker that could never be satisfied; it does not clear the ones that can.
       **Read `docs/handoff-2026-08-28-gate-d-review-complete.md`.**
+
+- [ ] **SRCSET RESIDUAL SURFACE — branch open, 2 Blockers. NOT SHIPPABLE.**
+      Branch `fix/srcset-residual-scoring-surface`, uncommitted; cds1 on v2.17.0.
+      **Read `docs/handoff-2026-08-28-srcset-residual-surface.md` first** — it has
+      the measurements, the fix directions and the traps.
+
+      Why it matters, measured not argued: a read-only dry run over **3,126,395
+      real log rows** found v2.17.0 **temp-blocks a real visitor today** (Chrome,
+      Divi assets, zero badpath hits, 549 requests in one 60s burst; 75 under
+      v2.17.0 vs 50 under the candidate, in a production-realistic 600s window).
+      Fleet-wide the diff was 0 IPs losing detection, 0 newly scoring, 1 changed —
+      that one, in the safe direction.
+
+      **The pattern to expect** (six rounds, no exceptions): every fix in one
+      direction created a defect in the other, and the suite stayed green either
+      way. Five tests in this suite passed for the WRONG reason and were only
+      caught by mutation; the mutation harness itself reported false survivors six
+      times by patching a *comment*. Anchor mutation targets to CODE and require a
+      unique match.
+
+      - [ ] **BLOCKER 1 — `srcset_flood` can reach a real temp block.** The WATCH
+            band at `lib/score.sh:774` accrues sightings with **no rule filter**
+            (`swatter_store_sighting_add`, `lib/score.sh:777`); at `PERSIST_N=6`
+            buckets in `PERSIST_WINDOW_DAYS=3` (`lib/common.sh:215-218`) that
+            becomes `action=temp`, `dry_run=0`, which feeds the recidivism ladder
+            toward perm + AbuseIPDB. Deleting the cap at `lib/score.sh:715` leaves
+            202/202 green — the whole score.sh half is untested. **Re-verify
+            independently first** (found by review, not yet reproduced in-repo).
+      - [ ] **BLOCKER 2 — `+` separator bans real visitors at the 256 boundary.**
+            `candidate_prefix_ok()`'s final token class (`lib/score.awk:160`)
+            admits `%` but omits `+`, while every other predicate treats
+            `(%20|\+| )` as three legal separator spellings. VERIFIED at exactly
+            256 bytes: `…jpg+9` and `…jpg+` SCORE; `…jpg%209` and `…jpg%20` are
+            exempt. Bare-space cases are unreachable — `lib/ingest.sh:66` splits
+            the request line on space. After fixing, **re-sweep the boundary at
+            every offset**: rounds 4, 5 and 6 each found a distinct FP there.
+      - [ ] **Deny list still carries ordinary words** (`lib/score.awk:204`):
+            `py` (Paraguay ccTLD, same class as the `pl` removed in round 4), plus
+            `rb`, `ini`, `cnf`, `cfm`, `crt`. `asuncion.py-768x576.jpg`,
+            `foto.ini.jpg`, `tv.crt.jpg` all score. Applying the owner's ratified
+            "keep it narrow" decision, not reopening it.
+      - [ ] **Descriptor-less candidates are not exempt.** `srcset="logo.png,
+            logo@2x.png 2x"` is legal and standard; all three candidate regexes
+            require a descriptor. CHANGELOG claims otherwise. **Check the archive**
+            for whether this shape occurs before deciding to support it.
+      - [ ] **Fix line refs this branch broke and reconcile doc counts.**
+            `lib/score.sh:735` -> **747** (cited in CHANGELOG, TODO, handoff);
+            `lib/score.awk:392` -> **444**; `lib/score.awk:586` -> **580**.
+            CHANGELOG says 169 assertions / three mutation rounds; other docs say
+            166 / six. Actual: **202**, eight mutation rounds, six review rounds.
+      - [ ] **Smaller:** `passwd` is an unpinned deny token (mutation survives);
+            the `%2e|%2f` check inside `candidate_prefix_ok` (`lib/score.awk:154`)
+            is dead code whose comment overclaims; later-candidate hosts allow dots
+            the first candidate forbids, so `…,/wp-config.php/x.jpg%20300w` is
+            exempt and unbackstopped (`config/badpaths.conf:18` needs a suffix);
+            the `n == 1` branch (`lib/score.awk:288`) requires no image extension.
+      - [ ] **Then:** re-review (Grok budget is EXHAUSTED — record which reviewers
+            actually ran), re-run the prod dry run, bump to **2.18.0** (entry is
+            still under `[Unreleased]`), release, surgical-scp, sha-verify.
+
+- [ ] **Swatter is swatting our own CI** — see
+      `docs/handoff-2026-08-28-ci-self-swat.md`. Verified while reviewing it:
+      **the feedback loop in its open question 1 is real.** `lib/score.awk:464`
+      makes a 403 feed BOTH `cerr[]` and `cburst[]`, so swatter's own
+      managed_challenge responses become evidence against the client. Measured on
+      identical traffic: answered 200 -> no row at all; answered 403 -> **78,
+      `scanner_profile`**. Being challenged is by itself enough to promote an IP to
+      a HIGHER floor than the `request_flood` that got it challenged.
+
+      **This is not only a CI problem** — a temp block on the CF plane IS a
+      managed_challenge, so the residential visitors swatted by the srcset class
+      feed the same loop and escalate across block cycles. It amplifies exactly
+      the harm the srcset branch prevents.
+
+      Prior art for that handoff's open question 2 (partial exemption) now exists
+      in the srcset branch: `path_scores_on_its_own()` suppresses behavioural
+      scoring while leaving honeypot/critical_badpath live, and `srcset_flood` is a
+      rule that surfaces without acting. Its option 1 (pace the checker) is still
+      the right first move, but it fixes CI's symptom, not the loop.
 
 > **2026-08-28: the review is COMPLETE and the widen is BLOCKED. Read
 > `docs/handoff-2026-08-28-gate-d-review-complete.md` FIRST** — it supersedes
@@ -1105,7 +1223,7 @@ withdrawn after review (`docs/superpowers/specs/2026-07-27-ladder-confidence-flo
 see its `-review-grok.md`).
 
 What is true: a WordPress page serving >=60 assets in a burst deterministically
-floors at score 75 with `rule=request_flood` (`lib/score.awk:254`, `rps = n/span`
+floors at score 75 with `rule=request_flood` (`lib/score.awk:586`, `rps = n/span`
 over the observed request span). Four such IPs were verified as real visitors on
 customer sites and allowlisted 2026-07-27 (`unblock` then `allow`, so the ladder
 count reset): three residential-fiber IPv4s and one residential IPv6, one of

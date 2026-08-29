@@ -194,17 +194,67 @@ too-aggressive prefix floor there could have dropped a real Cloudflare edge rang
 from the lock. It did not. Shared-egress still resolves for WARP v4, WARP v6,
 `AS206092` and the new `AS137409`. The 17:40 scheduled enforce scan ran clean.
 
-## 2. NOT DONE — the WordPress markup bug itself
+## 2. SUPERSEDED — there is no WordPress markup bug
 
-Swatter now refuses to punish the symptom; the sites still emit it. The bad
-markup is on the homepage of each affected site and the fleet shares the
-component. Candidates worth checking first, by how many affected sites carry
-them: `imagify` (23), `docket-cache` (16), `wp-rocket` (12),
-`divi-contact-form-helper` (19). The paths mix root-relative and absolute URLs
-in one srcset, which suggests a CDN/URL-rewrite pass rather than core WordPress.
+**Corrected 2026-08-28.** This section originally read "NOT DONE — the WordPress
+markup bug itself," and blamed a shared CDN/URL-rewrite component on the strength
+of the paths mixing root-relative and absolute URLs in one srcset. **Both halves
+were wrong.** Kept rather than deleted, because the reasoning error is instructive
+and someone will otherwise re-derive it from the same log.
 
-This is web work in the hosting fleet, not a swatter change, and it was left
-alone deliberately rather than diagnosed blind across 35 customer sites.
+A dedicated investigation swept all 34 in-scope sites and found the markup
+**correct everywhere**. The requests are manufactured client-side by third-party
+Chromium-based clients that read a *correct* `srcset` attribute and request its
+entire value as a single URL.
+
+- **The decisive evidence is the browser mix**: 14,653 Chrome / 2,635 Edge /
+  **3 Safari / 0 Firefox**, against a ~24% Safari / ~7% Firefox baseline measured
+  on ordinary image requests in the same logs. Broken markup breaks in every
+  browser. A markup cause predicts ~4,300 Safari and ~1,300 Firefox here.
+- **The "mixed root-relative and absolute" clue was an artifact, not evidence.**
+  An HTTP request line carries only the path, so a leading `https://host` becomes
+  the `Host` header and vanishes, while later candidates survive verbatim inside
+  the path. A fully-absolute srcset and a rewritten mixed one resolve to
+  **byte-identical** request paths — verified independently with the WHATWG URL
+  parser by a reviewing model. The observation could never have implicated a
+  rewriter. The `https:/` single slash is consecutive-slash collapse at the edge,
+  not a client mangling anything.
+- `imagify`, `docket-cache`, `wp-rocket` and the Divi plugins were each eliminated
+  by experiment, not argument — including WP Rocket lazyload, which was scrolled
+  and then force-promoted and never put a srcset into `src`.
+
+The full report and its falsification review are on the owner's Desktop; they name
+customer domains and are deliberately not in this public repo.
+
+### What replaces this gate
+
+The premise of "fix the markup" is void, so it cannot be completed as written —
+**but it is replaced, not closed.** A falsification review found the v2.17.0
+exemption did not carry the class on its own, and a pre-ship review of the fix for
+that then found the exemption could itself be worn as a disguise. **Items 1–3 below
+are now DONE** (see the Unreleased section of `CHANGELOG.md` for the measurements);
+item 4 is the only part still open, and it is what actually gates the widen.
+
+1. ~~It was gated on `status == 404`~~ **DONE.** The exempt set is now
+   `status < 400 || status == 404` (`lib/score.awk:392`), calibrated to the measured class.
+   Note the intermediate attempt that removed the status gate entirely was wrong —
+   5xx and 403 feed `cerr[]` and so cannot dilute, and dropping them made an origin
+   melt invisible.
+2. ~~The regex missed real shapes~~ **DONE**, and the review found worse than gaps:
+   the match was anchored only at the start, so anything after the first comma was
+   unvalidated (traversal payloads were dropped at every status), and the filename
+   stem admitted dots and percent-encoding (`wp-config.php.jpg`, `%2eenv.jpg`,
+   `x%2f.env.jpg` were all dropped). Both closed.
+3. ~~No test feeds a non-404~~ **DONE.** 166 assertions; six mutation rounds. Four review rounds, every one HOLD.
+4. **STILL OPEN — the pre-fix temps are on the ledger.**
+   `swatter_store_recent_temp_count` (`lib/score.sh:735`, window applied in
+   `lib/store_sqlite.sh:144`) is a trailing lookback, so widening 7 → 30
+   re-includes temps that already aged out — including those on the 19 residential
+   visitors this class already hit. Stopping new scoring does not expunge the
+   ladder. This is an operator decision (`swatter rollback-ladder`), not code.
+
+**Do not read "no markup bug" as progress toward the widen.** It removes a blocker
+that could never have been satisfied. It does not clear the ones that can be.
 
 ---
 
@@ -245,7 +295,10 @@ should stop being described as "empty = healthy" — it is not empty.
    DNS armed; `206092` control still resolves and an ordinary attacker still does
    not. Backup at `/etc/swatter/shared-egress-asns.txt.bak-20260828`.
 3. **Cut a release** to close the v2.16.1 + one-file drift described above.
-4. Fix the srcset markup on the fleet.
+4. ~~Fix the srcset markup on the fleet.~~ **Void premise — there is no markup bug
+   (see §2).** Replaced by: **close the residual srcset scoring surface** in
+   swatter — the `status == 404` gate, the regex gaps (multisite, nested subdirs),
+   tests for each, and a decision on the 19 pre-fix temps still on the ledger.
 5. Only then: step 4 of the 08-20 handoff (freeze AbuseIPDB, `REPEAT_WINDOW_DAYS=30`,
    48h baseline, `shared-egress-audit`, restore reporting).
 
