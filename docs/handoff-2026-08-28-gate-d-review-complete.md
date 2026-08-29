@@ -1,20 +1,20 @@
-# Handoff — gate D review COMPLETE; srcset + ledger done; widen unrun
+# Handoff — gate D review COMPLETE; widen live; 48h watch open
 
 Written 2026-08-28. Supersedes `docs/handoff-2026-08-20-gate-d-widen.md` for
 everything through step 3. Srcset residual closed in v2.18.0; leftover temps
-watermarked 2026-08-29. **Step 4 (the widen) is now the remaining work** —
-freeze AbuseIPDB first, then the knob.
+watermarked 2026-08-29; widen applied 2026-08-29 04:49 UTC. **Remaining: 48h
+baseline, `shared-egress-audit`, restore reporting.**
 
 ---
 
 ## Start here
 
 The gate D review is done. All 1,118 candidates are dispositioned. **The widen
-has not run** (`REPEAT_WINDOW_DAYS` is still 7, `ABUSEIPDB_REPORT` is still
-`true`). The two things that *blocked* it are now done: the srcset scorer
-(v2.18.0) and the leftover temps (watermarked 2026-08-29). What is left is
-step 4 of the 08-20 handoff — freeze AbuseIPDB, then the knob, then the 48h
-watch.
+is live** as of 2026-08-29 04:49 UTC: `REPEAT_WINDOW_DAYS=30`,
+`ABUSEIPDB_REPORT=false`, `SWARM_PUBLISH` still `true`. Backup
+`/etc/swatter/swatter.conf.bak-20260829-gate-d-widen`. Back-out:
+`swatter rollback-ladder --since 1787978948`. Do not restore reporting before
+2026-08-31 04:49 UTC, and not before `shared-egress-audit` is clean.
 
 Two changes WERE made to cds1 on 2026-08-28, both detailed below: `lib/score.awk`
 was deployed (the false-positive fix), and `AS137409` was added to
@@ -252,7 +252,7 @@ item 4 is the only part still open, and it is what actually gates the widen.
    writes the watermark `recent_temp_count` honours. Nine srcset-class IPs still
    in the 30d window (1 one-away) plus the reviewed `request_flood` DO-NOT-BAN
    were unblocked; the request_flood FP was allowlisted. After that they
-   contribute 0 to a 30d `prior`. The widen itself is still unrun.
+   contribute 0 to a 30d `prior`. Widen applied 2026-08-29 04:49 UTC.
 
 **Do not read "no markup bug" as progress toward the widen.** It removes a blocker
 that could never have been satisfied. It does not clear the ones that can be.
@@ -295,15 +295,17 @@ should stop being described as "empty = healthy" — it is not empty.
    resolve as `AS137409(GSL Networks…)` shared egress, verified end-to-end with
    DNS armed; `206092` control still resolves and an ordinary attacker still does
    not. Backup at `/etc/swatter/shared-egress-asns.txt.bak-20260828`.
-3. **Cut a release** to close the v2.16.1 + one-file drift described above.
+3. ~~Cut a release~~ **DONE** — v2.17.0 then v2.18.0, both fully deployed.
 4. ~~Fix the srcset markup on the fleet.~~ **Void premise — there is no markup bug
    (see §2).** Replaced by: **close the residual srcset scoring surface** in
    swatter — the `status == 404` gate, the regex gaps (multisite, nested subdirs),
    tests for each, and a decision on the 19 pre-fix temps still on the ledger.
    **Code half: v2.18.0, deployed 2026-08-29. Ledger half: watermarked 2026-08-29
    (`swatter unblock`, not `rollback-ladder`).**
-5. Only then: step 4 of the 08-20 handoff (freeze AbuseIPDB, `REPEAT_WINDOW_DAYS=30`,
-   48h baseline, `shared-egress-audit`, restore reporting). **This is what is left.**
+5. Step 4 of the 08-20 handoff: freeze AbuseIPDB, `REPEAT_WINDOW_DAYS=30`,
+   48h baseline, `shared-egress-audit`, restore reporting.
+   **Freeze + knob: DONE 2026-08-29 04:49 UTC.** Left: 48h baseline (not
+   before 2026-08-31 04:49 UTC), `shared-egress-audit`, restore reporting.
 
 Re-run `escalate-preview` fresh at that point. This preview is now days old, and
 reviewing a saved list is what the gate forbids.

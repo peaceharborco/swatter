@@ -165,7 +165,10 @@ changed (75 → 50).
   none of this class was permed. Nine srcset-class IPs still inside a 30d window
   (plus the reviewed `request_flood` DO-NOT-BAN) were watermarked with
   `swatter unblock`; they now contribute 0 to a 30d `prior`. The 7 → 30 widen
-  itself is still unrun.
+  was applied 2026-08-29 04:49 UTC with AbuseIPDB frozen
+  (`ABUSEIPDB_REPORT=false`). 48h watch is open; reporting stays off until
+  the baseline and `shared-egress-audit` are clean. Back-out:
+  `swatter rollback-ladder --since 1787978948`.
 - **`lib/ingest.sh:72` truncates paths at 256 bytes**, and anything beyond that is
   invisible to *all* scoring, badpath and honeypot included. A path can therefore
   be padded so a probe suffix falls past the boundary while the visible prefix is a

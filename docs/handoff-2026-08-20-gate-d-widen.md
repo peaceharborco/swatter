@@ -3,6 +3,13 @@
 Written 2026-08-20. Everything in the run-up is done; the floor is the only thing
 left to wait on. This is the one document to open on the 26th.
 
+**STATUS 2026-08-29 04:49 UTC — freeze + knob applied.**
+`REPEAT_WINDOW_DAYS=30`, `ABUSEIPDB_REPORT=false`, swarm left on. Backup
+`/etc/swatter/swatter.conf.bak-20260829-gate-d-widen`. Back-out:
+`swatter rollback-ladder --since 1787978948`. Remaining: 48h baseline (not
+before 2026-08-31 04:49 UTC), `shared-egress-audit`, restore reporting. The
+sequence below is still the source of truth for those leftover steps.
+
 ---
 
 ## Start here

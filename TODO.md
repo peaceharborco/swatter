@@ -210,8 +210,15 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       (`/root/gate-d-review/round-20260828T123856Z/decisions.tsv`). Bucket 2
       collapsed into review: its "no UA on ANY request" predicate was false for
       4 of 7 once the ROTATED archive was audited, not just live logs.
-- [ ] **THE WIDEN IS NOT YET RUN — the two blockers that held it are done.**
-      Do not skip the freeze. The review found two
+- [x] **Gate D widen APPLIED 2026-08-29 04:49 UTC.** Freeze first, then the
+      knob. `test-config`: `window=30d`, `abuseipdb reporting: off`,
+      `swarm=true`. Backup `/etc/swatter/swatter.conf.bak-20260829-gate-d-widen`.
+      Back-out: `swatter rollback-ladder --since 1787978948`
+      (`2026-08-29T04:49:08Z`). First post-widen scan (04:50:01–04:50:05)
+      completed in enforce, 1 acted (a temp), 0 perms, no AbuseIPDB report
+      lines. **48h watch is open** — do not restore reporting before
+      2026-08-31 04:49 UTC, and not before `shared-egress-audit` is clean.
+      The review found two
       false positives, both real people, and the second is an active fleet-wide
       class: broken srcset markup makes browsers request the whole srcset value
       as one URL (always 404). 17,829 requests, **8,767 distinct client IPs**,
@@ -268,8 +275,9 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       would also mute honeypot. After the watermark they contribute **0** to a
       30d `prior` and **0** of them appear in `escalate-preview --window 30`.
       The original "19" was a wider-archive count; the window that actually
-      feeds the widen is 30d. **The widen itself is not done** — freeze
-      AbuseIPDB, then `REPEAT_WINDOW_DAYS=30`.
+      feeds the widen is 30d. **Widen applied 2026-08-29 04:49 UTC**
+      (freeze, then `REPEAT_WINDOW_DAYS=30`). Remaining: 48h baseline,
+      `shared-egress-audit`, restore reporting.
 
       **Do NOT read "no markup bug" as progress toward the widen.** It removes a
       blocker that could never be satisfied; it does not clear the ones that can.
@@ -349,12 +357,12 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       rule that surfaces without acting. Its option 1 (pace the checker) is still
       the right first move, but it fixes CI's symptom, not the loop.
 
-> **2026-08-29: the review is COMPLETE, the srcset scorer is live, and the
-> leftover temps are watermarked.** Read
-> `docs/handoff-2026-08-28-gate-d-review-complete.md` FIRST — it supersedes
-> the 08-20 handoff for everything through step 3. The 08-20 document below is
-> still the sequence for step 4 itself (freeze, then the knob). The widen has
-> not run.
+> **2026-08-29: the widen is live.** Review complete, srcset scorer live
+> (v2.18.0), leftover temps watermarked, `REPEAT_WINDOW_DAYS=30`,
+> `ABUSEIPDB_REPORT=false`. Read
+> `docs/handoff-2026-08-28-gate-d-review-complete.md` FIRST. Remaining: 48h
+> baseline (not before 2026-08-31 04:49 UTC), `shared-egress-audit`, then
+> restore reporting. Back-out: `swatter rollback-ladder --since 1787978948`.
 >
 > **Picking this up on the 26th? Read
 > `docs/handoff-2026-08-20-gate-d-widen.md` first.** It is the single
@@ -571,18 +579,13 @@ implies. No customer IPs, no vhost mappings.
       shared-egress" below. This is a multi-session job at 4.9× the window=7
       population — do not compress it to fit a date. The floor is a floor, not a
       schedule.
-- [ ] **Step 1 — freeze AbuseIPDB, BEFORE the knob change.** Back up
-      `/etc/swatter/swatter.conf` (dated `.bak`, per the 2026-08-04 precedent),
-      set `ABUSEIPDB_REPORT="false"`, confirm with `swatter test-config` that the
-      line reads `abuseipdb reporting: off` (that is the exact string —
-      `bin/swatter:457`; anything other than the literal `true` renders `off`).
-      Config is read per-process, so
-      it takes effect on the next `*/5` scan; no cron hold. Leave
-      `SWARM_PUBLISH="true"` alone — toggling swarm would flush its whole
-      deferred backlog on re-enable. Do this first: a widen that runs even one
-      `*/5` with reporting live can publish a false positive that cannot be
-      retracted.
-- [ ] **Step 2 — only after the review AND step 1:** set `REPEAT_WINDOW_DAYS=30`.
+- [x] **Step 1 — freeze AbuseIPDB, BEFORE the knob change.** Done 2026-08-29
+      04:49 UTC. Backup `/etc/swatter/swatter.conf.bak-20260829-gate-d-widen`.
+      `test-config` reads `abuseipdb reporting: off`. `SWARM_PUBLISH` left
+      `true`.
+- [x] **Step 2 — only after the review AND step 1:** set `REPEAT_WINDOW_DAYS=30`.
+      Done in the same inter-scan window, after the freeze was confirmed.
+      `test-config`: `REPEAT_N=3 window=30d crit-single=4`.
 - [ ] Watch the first 48h to establish gate D's **own** rate baseline. Judge
       against that, never against gate C's band. `PERM_RATE_ALERT_*` only
       notifies — a silent tripwire is not a green light, and ladder perms keep
