@@ -102,9 +102,10 @@ checker got the same spacing. Costs a slower origin-mode CI job, gives up
 no protection, needs no allowlist. It is still calibration against
 thresholds that can move.
 
-The rest of this document is not moot: the 403→`scanner_profile` loop is
-real and still open. Option 1 only stops the checker from being the
-traffic that trips `request_flood`.
+The 403→`scanner_profile` loop is narrowed in score.awk: static-asset and
+mangled-srcset 403s drop before `reqs[]` (timestamps still widen span).
+`/index.php` 403s and path-scan 403s still score. Option 1 still matters:
+it stops the checker from being the traffic that trips `request_flood`.
 
 **2 — A narrow exemption requiring TWO independent signals.**
 A distinctive User-Agent on the checker **and** membership of GitHub's

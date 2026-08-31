@@ -91,8 +91,10 @@ function clamp100(x) { return (x > 100) ? 100 : ((x < 0) ? 0 : x) }
 # The first attempt at this removed the status gate entirely, reasoning that any
 # status set is itself a dilution lever. That reasoning is WRONG and the pre-ship
 # review measured why: err_ratio is nerr/n, so only a status that stays OUT of
-# cerr[] can dilute. 5xx feeds cerr[]; 403 feeds cerr[] AND cburst[]. Padding a
-# probe run with either RAISES the score, it cannot lower it. Only 2xx/3xx dilute
+# cerr[] can dilute. 5xx feeds cerr[]; non-asset 403 feeds cerr[] AND cburst[].
+# Static-asset 403s are dropped before reqs[] (own-challenge loop) and so
+# neither raise nor dilute. Padding a probe run with 5xx RAISES the score, it
+# cannot lower it. Only 2xx/3xx dilute
 # -- and the measured class is 15,299 x 404, 1,936 x 301, 592 x 302, 2 x 200, with
 # ZERO 5xx and ZERO 403. So the set is what the class contains plus every other
 # status that CANNOT dilute, and every status carrying real signal keeps scoring.
@@ -368,6 +370,21 @@ function path_scores_on_its_own(p,   i, h) {
     return 0
 }
 
+# Static subresource. The 403 loop is "we challenged them, they retried the
+# page's CSS/JS/fonts/images, every retry is 403, ndist is free". html/php
+# 403s are application/WAF signal and must keep scoring. Path is already
+# lowercased and query-stripped (see the file header).
+function is_static_asset(p,   n, segs, last) {
+    # Traversal and PATH_INFO are not a stylesheet. A bare suffix test
+    # would drop /c99.php.png and /a.php/x.css at 403 -- WAF-answered
+    # probes, not our challenge retrying assets.
+    if (p ~ /\.\.|%2e|%2f|%25|%00/) return 0
+    if (p ~ /\.(php|phtml|asp|aspx|cgi|pl|jsp)\//) return 0
+    n = split(p, segs, "/")
+    last = segs[n]
+    return last ~ /^[a-z0-9_-]+\.(css|js|mjs|map|woff2?|ttf|otf|eot|png|jpe?g|gif|webp|svg|ico|avif)$/
+}
+
 function jesc(s,   t) {
     t = s
     gsub(/\\/, "\\\\", t)
@@ -450,7 +467,10 @@ BEGIN {
     # A request the visitor's own client manufactured from a correct srcset is
     # not an event this IP caused, so it is not scored AT ALL -- not merely kept
     # out of the error counters. Statuses below 400, plus 404: see the predicate
-    # note on is_mangled_srcset(). 403/5xx/429 deliberately still score. Counting it in reqs[] while excluding it from cerr[] would hand
+    # note on is_mangled_srcset(). 5xx/429 still score; static-asset and
+    # mangled-srcset 403s are dropped further down (own-challenge loop),
+    # but their timestamps still widen span so rps cannot collapse.
+    # Counting it in reqs[] while excluding it from cerr[] would hand
     # an attacker a DILUTION lever: err_ratio is nerr/n, so padding a real scan
     # with exempted 404s would drive the ratio down (50 probes at 100% becomes
     # 500 requests at 10%). It would also inflate rps and feed request_flood,
@@ -473,6 +493,38 @@ BEGIN {
         # of anything this IP did wrong, and letting it win the vhost vote pointed
         # the CF-plane block at the wrong zone (measured: 30 real requests on one
         # vhost lost to 80 exempted ones on another).
+        next
+    }
+
+    # Static-asset 403s are the own-challenge loop: the first swat makes
+    # every later CSS/JS/font/image retry 403, nerr/n climbs, ndist is
+    # free, and scanner_profile (78) outranks the request_flood (75) that
+    # earned the challenge. Drop those before reqs[] (not merely out of
+    # cerr[]): keep-in-reqs would let anyone who can elicit 403s dilute
+    # err_ratio. Do NOT drop other 403s -- a WAF/mod_security 403 on
+    # /index.php, a directory deny, or a direct-to-origin scan answered
+    # 403 is hostile traffic, not our challenge retrying assets. A 403
+    # on a bad-path or honeypot still scores either way.
+    if (status == 403 && !path_scores_on_its_own(path) \
+        && (is_static_asset(path) || is_mangled_srcset(path))) {
+        c403ex[ip]++
+        if (first_403ex[ip] == 0 || ep < first_403ex[ip]) first_403ex[ip] = ep
+        if (ep > last_403ex[ip]) last_403ex[ip] = ep
+        # Span must include these timestamps. Dropping them from n while
+        # leaving first_ep/last_ep on the surviving 200s collapses rps
+        # (60 assets in 5s + 50 challenged retries over 5 minutes ->
+        # request_flood at 15 rps). Same fail-quieter direction as keeping
+        # them out of cerr[].
+        if (first_ep[ip] == 0 || ep < first_ep[ip]) first_ep[ip] = ep
+        if (ep > last_ep[ip]) last_ep[ip] = ep
+        # Srcset-shaped 403s still feed the volume tripwire. 403 is the
+        # status a challenged client's srcset retries carry; skipping
+        # csrcset[] made that control dark at the one status it needed.
+        if (is_mangled_srcset(path)) {
+            csrcset[ip]++
+            if (first_sr[ip] == 0 || ep < first_sr[ip]) first_sr[ip] = ep
+            if (ep > last_sr[ip]) last_sr[ip] = ep
+        }
         next
     }
 
@@ -580,6 +632,25 @@ END {
         }
     }
 
+    # --- 403-exempt volume tripwire -----------------------------------------
+    # Same hole as srcset: drop-before-reqs[] means a 403-only asset flood
+    # produces no row at any volume. Watch-only, same thresholds as
+    # srcset_flood. Cannot temp -- score.sh caps it and skips persist.
+    for (ip in c403ex) {
+        en = c403ex[ip] + 0
+        espan = last_403ex[ip] - first_403ex[ip]
+        if (espan < 1) espan = 1
+        if (en >= 500 && (en / espan) >= 25) {
+            exflood[ip] = 1
+            if (!(ip in reqs)) {
+                reqs[ip] = en
+                first_ep[ip] = first_403ex[ip]
+                last_ep[ip]  = last_403ex[ip]
+                seeded[ip]   = 1
+            }
+        }
+    }
+
     for (ip in reqs) {
         n = reqs[ip]
         # Coerce every per-IP counter to a numeric scalar ONCE. An IP with no
@@ -596,7 +667,7 @@ END {
         # srflood bypasses this too: the first version seeded reqs[] only for an IP
         # that had none, and this guard ran BEFORE the tripwire, so ten ordinary
         # requests were enough to switch the whole channel back off.
-        if (n < MIN_REQS && bm < 100 && hp == 0 && !srflood[ip]) continue
+        if (n < MIN_REQS && bm < 100 && hp == 0 && !srflood[ip] && !exflood[ip]) continue
 
         span = last_ep[ip] - first_ep[ip]
         if (span < 1) span = 1
@@ -667,6 +738,10 @@ END {
         # operator raises SCORE_WATCH above it. The first version used only
         # `composite < SCORE_WATCH`, which rewrote frule and lifted the score
         # the moment SCORE_WATCH sat above 75.
+        if (exflood[ip] && composite < SCORE_WATCH && floor == 0) {
+            composite = SCORE_WATCH
+            frule = "403ex_flood"
+        }
         if (srflood[ip] && composite < SCORE_WATCH && floor == 0) {
             composite = SCORE_WATCH
             frule = "srcset_flood"
@@ -692,6 +767,7 @@ END {
         ev = ev ",\"status\":{\"2xx\":" (c2xx[ip]+0) ",\"3xx\":" (c3xx[ip]+0) \
                 ",\"401\":" (c401[ip]+0) ",\"403\":" (c403[ip]+0) ",\"404\":" (c404[ip]+0) \
                 ",\"srcset_exempt\":" (csrcset[ip]+0) \
+                ",\"403_exempt\":" (c403ex[ip]+0) \
                 ",\"444\":" (c444[ip]+0) ",\"5xx\":" (c5xx[ip]+0) "}"
         ev = ev ",\"post\":" npost
         ev = ev ",\"badpath_cat\":\"" (badcat[ip] == "" ? "" : badcat[ip]) "\""

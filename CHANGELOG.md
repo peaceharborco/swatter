@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A 403 from our own challenge was evidence against the client.** `status
+  == 403` fed `cerr[]` and `cburst[]`, so the first swat made every later
+  asset request look like a scanner: `nerr/n` climbed, `ndist` is easy on a
+  page with fonts and images, and `scanner_profile` (78) outranked the
+  `request_flood` (75) that earned the challenge. Static-asset 403s
+  (css/js/fonts/images) are now dropped before `reqs[]`. Application 403s
+  (`/index.php`, directory denies, direct-to-origin path scans) and
+  bad-path/honeypot 403s still score. Dropped 403s still widen the IP's
+  span so rps cannot collapse into `request_flood`. Srcset-shaped 403s
+  still feed the `srcset_flood` watch tripwire. A 403-only asset flood at
+  srcset-flood volume surfaces as watch-only `403ex_flood` (cannot temp).
+  The evidence JSON `"403"` field is now only scored 403s; dropped ones
+  are `"403_exempt"`. This reverses the v2.18.0 pin that srcset-shaped
+  403s scored as error_burst.
+
 ## [2.18.0] - 2026-08-29
 
 The residual srcset scoring surface: v2.17.0's 404-only exemption left 14% of

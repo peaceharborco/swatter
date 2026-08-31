@@ -139,6 +139,15 @@ _srcset_burst_run() {
          -f "${ROOT}/lib/score.awk" "$tmp/burst.tsv" | head -1
 }
 srcset_burst()       { _srcset_burst_tsv "$1" "$2";     local r; r="$(_srcset_burst_run | cut -f2)"; printf '%s' "${r:-NONE}"; }
+srcset_burst_status() {  # <count> <seconds> <status>
+    local cnt="$1" secs="$2" st="$3" i
+    : > "$tmp/burst.tsv"
+    for (( i=1; i<=cnt; i++ )); do
+        printf '198.51.100.7\t%s\tGET\t/wp-content/uploads/2025/10/gallery-img%s-768x576.jpg%%20768w,%%20https://e.com/g%s-900x675.jpg%%20900w\t%s\t-\tMozilla/5.0\texample.com\n' \
+            $(( NOW_EPOCH - 300 + (i * secs / cnt) )) "$i" "$i" "$st" >> "$tmp/burst.tsv"
+    done
+    local r; r="$(_srcset_burst_run | cut -f2)"; printf '%s' "${r:-NONE}"
+}
 srcset_burst_mixed() { _srcset_burst_tsv "$1" "$2" "$3"; local r; r="$(_srcset_burst_run | cut -f2)"; printf '%s' "${r:-NONE}"; }
 srcset_burst_rule()  { _srcset_burst_tsv "$1" "$2";     _srcset_burst_run | grep -o '"decisive_rule":"[^"]*"' | cut -d'"' -f4; }
 
@@ -195,14 +204,22 @@ ss_band "srcset-density-descriptor"         "$(srcset_score '/wp-content/uploads
 # The first version of this fix removed the status gate entirely, on the argument
 # that any status set is itself a dilution lever. That argument is WRONG, and the
 # review measured why: err_ratio is nerr/n, so only a status that stays OUT of
-# cerr[] dilutes. 5xx feeds cerr[]; 403 feeds cerr[] AND cburst[]. Padding a probe
-# run with either RAISES the score (78 -> 78), it does not lower it. Only 2xx/3xx
-# dilute -- and the measured class is 15,299x404 + 1,936x301 + 592x302 + 2x200,
-# with ZERO 5xx and ZERO 403. So the set is calibrated to the evidence: drop what
-# the class actually contains, and keep every status that carries real signal.
-# Dropping 5xx would have made an origin melt invisible (measured: 400 requests in
-# 20s scored 75 request_flood before, NONE after).
-ss_band "srcset-403-still-scores" "$(srcset_score "$SS_REAL" 220 403)" 75 100
+# cerr[] dilutes. 5xx feeds cerr[]. 403 used to feed cerr[] AND cburst[] -- and
+# that was the own-challenge loop, closed separately: non-badpath 403s are now
+# dropped before reqs[] (see own-403-not-scanner), so they neither raise nor
+# dilute. Padding a probe run with 5xx RAISES the score, it does not lower it.
+# Only 2xx/3xx dilute -- and the measured srcset class is 15,299x404 + 1,936x301
+# + 592x302 + 2x200, with ZERO 5xx and ZERO 403. So the set is calibrated to
+# the evidence: drop what the class actually contains, and keep every status
+# that carries real signal. Dropping 5xx would have made an origin melt
+# invisible (measured: 400 requests in 20s scored 75 request_flood before,
+# NONE after).
+# 403 is often OUR answer (CSF deny / a challenge that still hit origin).
+# Counting it in cerr[]/cburst[] is the scanner_profile feedback loop: being
+# challenged drives nerr/n up across every distinct asset path the client
+# retries. Non-badpath 403s are dropped before reqs[], same dilution split as
+# srcset. A srcset-shaped 403 is not a probe; it is a challenged client.
+ss_band "srcset-403-not-our-challenge" "$(srcset_score "$SS_REAL" 220 403)" 0 49
 ss_band "srcset-500-flood-still-scores" "$(srcset_score_fast "$SS_REAL" 400 500)" 75 100
 ss_band "srcset-401-still-scores" "$(srcset_score_fast "$SS_REAL" 400 401)" 75 100
 # 429 is a rate-limiter answering. It feeds cerr[] so it cannot dilute, but
@@ -916,6 +933,130 @@ for i in $(seq 1 80); do
     emit_spread "$tmp/scanner.log" "104.152.52.20" "GET /scan/path-$i.html HTTP/1.1" 404 "Go-http-client/1.1" 1
 done
 assert_band "path-scanner" "$(score_of example.com "$tmp/scanner.log")" 70 100
+
+# --- 403 is our answer, not their probe (CI / challenged-visitor loop) ------
+# Same shape as path-scanner (80 distinct paths, 300s) but answered 403.
+# Today that is scanner_profile 78 -- the challenge promoting the client.
+# After the drop it must produce no row.
+: > "$tmp/own403.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/own403.log" "203.0.113.40" "GET /assets/file-$i.css HTTP/1.1" 403 "Mozilla/5.0" 1
+done
+assert_band "own-403-not-scanner" "$(score_of example.com "$tmp/own403.log")" 0 49
+
+# Claude HOLD B1: 60 asset 200s in 5s plus 50 challenged .css retries over
+# ~5 minutes must NOT collapse into request_flood. The 403 timestamps have
+# to stay in the span even though they leave n.
+: > "$tmp/403span.tsv"
+for i in $(seq 1 60); do
+    printf '203.0.113.46\t%s\tGET\t/assets/ok-%s.css\t200\t-\tMozilla/5.0\texample.com\n' \
+        $(( NOW_EPOCH - 300 + (i % 5) )) "$i" >> "$tmp/403span.tsv"
+done
+for i in $(seq 1 50); do
+    printf '203.0.113.46\t%s\tGET\t/assets/retry-%s.css\t403\t-\tMozilla/5.0\texample.com\n' \
+        $(( NOW_EPOCH - 290 + i*5 )) "$i" >> "$tmp/403span.tsv"
+done
+assert_band "403-drop-does-not-collapse-span" "$(
+    gawk -v NOW="$NOW_EPOCH" -v WINDOW=600 -v MIN_REQS=15 -v RATE_SAT=8 -v SCORE_WATCH=50 \
+         -v W_RATE=18 -v W_ERR_RATIO=16 -v W_ERR_BURST=12 -v W_FANOUT=12 -v W_BADPATH=22 \
+         -v W_UA=6 -v W_POST_FLOOD=8 -v W_NOVHOST=6 \
+         -v BADPATHS="${ROOT}/config/badpaths.conf" \
+         -f "${ROOT}/lib/score.awk" "$tmp/403span.tsv" \
+      | awk -F'\t' 'NR==1{print $2; f=1} END{if(!f) print "NONE"}'
+)" 0 49
+
+# Claude HOLD B2: srcset-shaped 403s still feed the volume tripwire.
+ss_band "srcset-403-tripwire-still-fires" "$(srcset_burst_status 500 10 403)" 50 69
+# Claude EXECUTE B1: a 403-only static-asset flood must surface as watch,
+# not vanish and not temp. 500 .css in 10s is past 500@25rps.
+: > "$tmp/403flood.tsv"
+for i in $(seq 1 500); do
+    printf '203.0.113.47\t%s\tGET\t/assets/x-%s.css\t403\t-\tGo-http-client/1.1\texample.com\n' \
+        $(( NOW_EPOCH - 300 + (i * 10 / 500) )) "$i" >> "$tmp/403flood.tsv"
+done
+FLOODROW="$(gawk -v NOW="$NOW_EPOCH" -v WINDOW=600 -v MIN_REQS=15 -v RATE_SAT=8 -v SCORE_WATCH=50 \
+   -v W_RATE=18 -v W_ERR_RATIO=16 -v W_ERR_BURST=12 -v W_FANOUT=12 -v W_BADPATH=22 \
+   -v W_UA=6 -v W_POST_FLOOD=8 -v W_NOVHOST=6 \
+   -v BADPATHS="${ROOT}/config/badpaths.conf" \
+   -f "${ROOT}/lib/score.awk" "$tmp/403flood.tsv" | head -1)"
+FLOOD_S="$(printf '%s' "$FLOODROW" | awk -F'\t' '{print $2}')"
+FLOOD_R="$(printf '%s' "$FLOODROW" | grep -o '"decisive_rule":"[^"]*"' | cut -d'"' -f4)"
+if [[ -n "$FLOOD_S" ]] && (( FLOOD_S >= 50 && FLOOD_S <= 69 )) && [[ "$FLOOD_R" == "403ex_flood" ]]; then
+    printf 'PASS  %-30s score=%s rule=%s\n' "403ex-flood-watch-only" "$FLOOD_S" "$FLOOD_R"; PASS=$((PASS+1))
+else
+    printf 'FAIL  %-30s score=%s rule=%s (want 50-69 403ex_flood)\n' "403ex-flood-watch-only" "${FLOOD_S:-NONE}" "${FLOOD_R:-NONE}"; FAIL=$((FAIL+1))
+fi
+
+# A 403 on a path that is independently hostile still scores.
+: > "$tmp/403login.log"
+emit_spread "$tmp/403login.log" "203.0.113.41" "POST /wp-login.php HTTP/1.1" 403 "python-requests/2.31" 60
+assert_band "403-on-wp-login-still-scores" "$(score_of example.com "$tmp/403login.log")" 80 100
+: > "$tmp/403env.log"
+emit_spread "$tmp/403env.log" "203.0.113.42" "GET /.env HTTP/1.1" 403 "curl/8.0" 1
+assert_band "403-on-env-still-scores" "$(score_of example.com "$tmp/403env.log")" 90 100
+# Claude HOLD B2: a WAF 403 on /index.php must not vanish. 200 copies over
+# 300s is error_burst, not scanner_profile (ndist=1).
+: > "$tmp/403index.log"
+emit_spread "$tmp/403index.log" "203.0.113.44" "GET /index.php HTTP/1.1" 403 "python-requests/2.31" 200
+assert_band "403-on-index-php-still-scores" "$(score_of example.com "$tmp/403index.log")" 75 100
+# Distinct-path 403s that are NOT static assets (direct-to-origin /p-N).
+: > "$tmp/403scan.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/403scan.log" "203.0.113.45" "GET /p-$i HTTP/1.1" 403 "Go-http-client/1.1" 1
+done
+assert_band "403-html-paths-still-scanner" "$(score_of example.com "$tmp/403scan.log")" 70 100
+# Claude HOLD B1: extension-suffixing a probe must not hide it.
+: > "$tmp/403cloak.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/403cloak.log" "203.0.113.48" "GET /x/c99-$i.php.png HTTP/1.1" 403 "Go-http-client/1.1" 1
+done
+assert_band "403-php-png-not-asset" "$(score_of example.com "$tmp/403cloak.log")" 70 100
+: > "$tmp/403trav.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/403trav.log" "203.0.113.49" "GET /x/..%2fetc/passwd-$i.css HTTP/1.1" 403 "Go-http-client/1.1" 1
+done
+assert_band "403-traversal-css-not-asset" "$(score_of example.com "$tmp/403trav.log")" 70 100
+: > "$tmp/403pi.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/403pi.log" "203.0.113.50" "GET /index.php/x-$i.css HTTP/1.1" 403 "Go-http-client/1.1" 1
+done
+assert_band "403-pathinfo-css-not-asset" "$(score_of example.com "$tmp/403pi.log")" 70 100
+ss_band "honeypot-403-still-floors" "$(srcset_score '/__trap_a7f3c1d9' 2 403)" 90 100
+
+# Mixed: 60 404 probes + 200 of our 403s on assets. reqs must stay 60 (the
+# 403s must not enter n, or err_ratio and rps both lie). 403_exempt=200.
+: > "$tmp/403mix.tsv"
+for i in $(seq 1 60); do
+    printf '203.0.113.43\t%s\tGET\t/nope-%s\t404\t-\tcurl/8.0\texample.com\n' \
+        $(( NOW_EPOCH - 300 + i*4 )) $(( i % 30 )) >> "$tmp/403mix.tsv"
+done
+for i in $(seq 1 200); do
+    printf '203.0.113.43\t%s\tGET\t/assets/x-%s.css\t403\t-\tMozilla/5.0\texample.com\n' \
+        $(( NOW_EPOCH - 280 + i )) "$i" >> "$tmp/403mix.tsv"
+done
+MIXROW="$(gawk -v NOW="$NOW_EPOCH" -v WINDOW=600 -v MIN_REQS=15 -v RATE_SAT=8 -v SCORE_WATCH=50 \
+   -v W_RATE=18 -v W_ERR_RATIO=16 -v W_ERR_BURST=12 -v W_FANOUT=12 -v W_BADPATH=22 \
+   -v W_UA=6 -v W_POST_FLOOD=8 -v W_NOVHOST=6 \
+   -v BADPATHS="${ROOT}/config/badpaths.conf" \
+   -f "${ROOT}/lib/score.awk" "$tmp/403mix.tsv" | head -1)"
+MIX_N="$(printf '%s' "$MIXROW" | awk -F'\t' '{print $3}')"
+MIX_EX="$(printf '%s' "$MIXROW" | grep -o '"403_exempt":[0-9]*')"
+if [[ "$MIX_N" == "60" ]]; then
+    printf 'PASS  %-30s reqs=%s\n' "403-exempt-not-in-n" "$MIX_N"; PASS=$((PASS+1))
+else
+    printf 'FAIL  %-30s reqs=%s (want 60)\n' "403-exempt-not-in-n" "${MIX_N:-MISSING}"; FAIL=$((FAIL+1))
+fi
+if [[ "$MIX_EX" == '"403_exempt":200' ]]; then
+    printf 'PASS  %-30s %s\n' "evidence-403-exempt-count" "$MIX_EX"; PASS=$((PASS+1))
+else
+    printf 'FAIL  %-30s got=%s (want "403_exempt":200)\n' "evidence-403-exempt-count" "${MIX_EX:-MISSING}"; FAIL=$((FAIL+1))
+fi
+MIX_S="$(printf '%s' "$MIXROW" | awk -F'\t' '{print $2}')"
+if [[ -n "$MIX_S" ]] && (( MIX_S >= 75 && MIX_S <= 100 )); then
+    printf 'PASS  %-30s score=%s (probes still score)\n' "403-pad-does-not-dilute" "$MIX_S"; PASS=$((PASS+1))
+else
+    printf 'FAIL  %-30s score=%s (want 75-100 -- dropping 403s must not dilute the probes)\n' "403-pad-does-not-dilute" "${MIX_S:-MISSING}"; FAIL=$((FAIL+1))
+fi
 
 # --- 5: direct-to-origin exploit scan on the raw IP (cgi-bin/shell probes) ---
 : > "$tmp/rawip.log"

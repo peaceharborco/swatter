@@ -25,7 +25,7 @@ _abuseipdb_categories() {
         # to an actionable rule, 4 (DDoS) is the category, NOT the 21 (Web
         # App Attack) default -- this shape is volume, not an exploit
         # attempt, and the population behind it is residential.
-        srcset_flood)                      echo "4"     ;;  # DDoS Attack
+        srcset_flood|403ex_flood)          echo "4"     ;;  # DDoS Attack (watch-only)
         *)                                 echo "21"    ;;  # Web App Attack
     esac
 }

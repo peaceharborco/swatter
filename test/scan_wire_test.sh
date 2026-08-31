@@ -345,6 +345,22 @@ swatter_scan >/dev/null 2>&1
 check srcset-flood-capped-persist-stays-watch "$(last_action)" "watch"
 check srcset-flood-capped-persist-no-backend "${LAST_CSF}" ""
 
+LAST_CSF=""
+: > "$LOG_DIR/decisions.jsonl"
+seed_older_sightings "198.51.100.25" 2
+feed $'198.51.100.25\t50\t500\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"403ex_flood","honeypot":0,"top_vhost":"x.com"}'
+swatter_scan >/dev/null 2>&1
+check 403ex-flood-persist-stays-watch "$(last_action)" "watch"
+check 403ex-flood-persist-no-backend "${LAST_CSF}" ""
+check 403ex-flood-persist-no-temp-row "$(swatter_store_recent_temp_count 198.51.100.25)" "0"
+
+LAST_CSF=""
+: > "$LOG_DIR/decisions.jsonl"
+feed $'198.51.100.26\t80\t500\t{"sub":{"burst":0},"novhost":0,"hibad_fail":0,"decisive_rule":"403ex_flood","honeypot":0,"top_vhost":"x.com"}'
+swatter_scan >/dev/null 2>&1
+check 403ex-flood-cap-stays-watch "$(last_action)" "watch"
+check 403ex-flood-cap-no-backend "${LAST_CSF}" ""
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -28,6 +28,7 @@ _RPT_RULE_LABELS='{
   "error_burst":         "error-response burst (fuzzing)",
   "request_flood":       "request flood",
   "srcset_flood":        "srcset-shaped request volume (watch only)",
+  "403ex_flood":         "static-asset 403 volume (watch only)",
   "unspecified":         "combined suspicious signals"
 }'
 

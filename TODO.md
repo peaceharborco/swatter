@@ -345,17 +345,14 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       spacing. No Swatter change — the first hit is `request_flood` on 200s,
       and the checker header cannot skip IP Access Rules.
 
-      **The 403 feedback loop is still open.** `lib/score.awk:487` still
-      makes a 403 feed BOTH `cerr[]` and `cburst[]`, so swatter's own
-      managed_challenge responses become evidence against the client.
-      Measured on identical traffic: answered 200 -> no row at all;
-      answered 403 -> **78, `scanner_profile`**. Being challenged is by
-      itself enough to promote an IP to a HIGHER floor than the
-      `request_flood` that got it challenged. A temp block on the CF plane
-      IS a managed_challenge, so the same loop would re-escalate a
-      challenged visitor. Option 1 does not close this; it only stops CI
-      (and a workstation origin run) from being the traffic that fires
-      `request_flood` in the first place.
+      **The 403 loop is narrowed, not "all 403s are noise."** Static-asset
+      403s (css/js/fonts/images) drop before `reqs[]` (`403_exempt`).
+      `/index.php` 403s, path-scan 403s, bad-path and honeypot 403s still
+      score. Claude HOLD (B2): a fleet-wide non-badpath drop made a WAF
+      403 storm on `/index.php` vanish (was 75, then no row). Archive
+      check of whether CF `managed_challenge` 403s even reach origin
+      logs is still the handoff's open question 1 — this rule is scoped
+      to the loop's described shape either way. Not deployed until `/grok`.
 
 > **2026-08-31: gate D 48h watch is closed.** Review complete, srcset scorer
 > live (v2.18.0), leftover temps watermarked, `REPEAT_WINDOW_DAYS=30`,

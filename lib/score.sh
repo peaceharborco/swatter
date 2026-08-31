@@ -712,7 +712,8 @@ swatter_scan() {
         # half: without it, PERSIST_N hourly buckets still become a real temp.
         # The exempted class is residential by construction; it must never
         # reach the ladder, and therefore never an AbuseIPDB report.
-        if [[ "$drule" == "srcset_flood" ]] && (( folded >= SCORE_TEMP )); then
+        if { [[ "$drule" == "srcset_flood" ]] || [[ "$drule" == "403ex_flood" ]]; } \
+           && (( folded >= SCORE_TEMP )); then
             folded=$(( SCORE_TEMP - 1 ))
             reason="${reason} watch-only-capped"
         fi
@@ -777,7 +778,7 @@ swatter_scan() {
             _swatter_audit "$ip" "$folded" "watch" "none" 0 "$reason" "$ev" "$rep"
             # srcset_flood is watch-only. Sighting accrual is a real temp at
             # PERSIST_N buckets — without this filter the cap above is theatre.
-            if [[ "$drule" != "srcset_flood" ]] \
+            if [[ "$drule" != "srcset_flood" && "$drule" != "403ex_flood" ]] \
                && [[ "${PERSIST_ENABLE:-true}" == "true" && "${STORE}" == "sqlite" ]]; then
                 swatter_store_sighting_add "$ip" "$folded" "${PERSIST_BUCKET_SECONDS:-3600}"
                 local nb; nb="$(swatter_store_sighting_buckets "$ip" "${PERSIST_WINDOW_DAYS:-3}")"
