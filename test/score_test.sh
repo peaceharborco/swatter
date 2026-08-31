@@ -205,9 +205,9 @@ ss_band "srcset-density-descriptor"         "$(srcset_score '/wp-content/uploads
 # that any status set is itself a dilution lever. That argument is WRONG, and the
 # review measured why: err_ratio is nerr/n, so only a status that stays OUT of
 # cerr[] dilutes. 5xx feeds cerr[]. 403 used to feed cerr[] AND cburst[] -- and
-# that was the own-challenge loop, closed separately: non-badpath 403s are now
-# dropped before reqs[] (see own-403-not-scanner), so they neither raise nor
-# dilute. Padding a probe run with 5xx RAISES the score, it does not lower it.
+# that was the own-challenge loop, closed separately: static-asset and
+# mangled-srcset 403s are now dropped before reqs[] (see own-403-not-scanner),
+# so they neither raise nor dilute. Padding a probe run with 5xx RAISES the score, it does not lower it.
 # Only 2xx/3xx dilute -- and the measured srcset class is 15,299x404 + 1,936x301
 # + 592x302 + 2x200, with ZERO 5xx and ZERO 403. So the set is calibrated to
 # the evidence: drop what the class actually contains, and keep every status
@@ -943,6 +943,33 @@ for i in $(seq 1 80); do
     emit_spread "$tmp/own403.log" "203.0.113.40" "GET /assets/file-$i.css HTTP/1.1" 403 "Mozilla/5.0" 1
 done
 assert_band "own-403-not-scanner" "$(score_of example.com "$tmp/own403.log")" 0 49
+# One-dot /assets/file-N.css is not the fleet. jquery.min.js / dashicons.min.css
+# / logo@2x.png are. A challenged WP page of those must not promote.
+: > "$tmp/own403min.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/own403min.log" "203.0.113.60" "GET /wp-includes/js/jquery/jquery-$i.min.js HTTP/1.1" 403 "Mozilla/5.0" 1
+done
+assert_band "own-403-minjs-not-scanner" "$(score_of example.com "$tmp/own403min.log")" 0 49
+: > "$tmp/own403mincss.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/own403mincss.log" "203.0.113.61" "GET /wp-includes/css/dashicons-$i.min.css HTTP/1.1" 403 "Mozilla/5.0" 1
+done
+assert_band "own-403-mincss-not-scanner" "$(score_of example.com "$tmp/own403mincss.log")" 0 49
+: > "$tmp/own403at2x.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/own403at2x.log" "203.0.113.62" "GET /wp-content/uploads/2025/10/logo-$i@2x.png HTTP/1.1" 403 "Mozilla/5.0" 1
+done
+assert_band "own-403-at2x-not-scanner" "$(score_of example.com "$tmp/own403at2x.log")" 0 49
+: > "$tmp/own403hash.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/own403hash.log" "203.0.113.64" "GET /static/js/app-$i.a3f9c2b1.js HTTP/1.1" 403 "Mozilla/5.0" 1
+done
+assert_band "own-403-hashed-not-scanner" "$(score_of example.com "$tmp/own403hash.log")" 0 49
+: > "$tmp/own403map.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/own403map.log" "203.0.113.65" "GET /static/js/app-$i.js.map HTTP/1.1" 403 "Mozilla/5.0" 1
+done
+assert_band "own-403-map-not-scanner" "$(score_of example.com "$tmp/own403map.log")" 0 49
 
 # Claude HOLD B1: 60 asset 200s in 5s plus 50 challenged .css retries over
 # ~5 minutes must NOT collapse into request_flood. The 403 timestamps have
@@ -966,7 +993,15 @@ assert_band "403-drop-does-not-collapse-span" "$(
 )" 0 49
 
 # Claude HOLD B2: srcset-shaped 403s still feed the volume tripwire.
+# Attribution must stay srcset_flood (lifted first); 403ex_flood used to
+# win because both counters increment on this class.
 ss_band "srcset-403-tripwire-still-fires" "$(srcset_burst_status 500 10 403)" 50 69
+SS403_RULE="$(_srcset_burst_run | grep -o '"decisive_rule":"[^"]*"' | cut -d'"' -f4)"
+if [[ "$SS403_RULE" == "srcset_flood" ]]; then
+    printf 'PASS  %-30s rule=srcset_flood\n' "srcset-403-tripwire-rule"; PASS=$((PASS+1))
+else
+    printf 'FAIL  %-30s rule=%s (want srcset_flood)\n' "srcset-403-tripwire-rule" "${SS403_RULE:-NONE}"; FAIL=$((FAIL+1))
+fi
 # Claude EXECUTE B1: a 403-only static-asset flood must surface as watch,
 # not vanish and not temp. 500 .css in 10s is past 500@25rps.
 : > "$tmp/403flood.tsv"
@@ -1011,6 +1046,66 @@ for i in $(seq 1 80); do
     emit_spread "$tmp/403cloak.log" "203.0.113.48" "GET /x/c99-$i.php.png HTTP/1.1" 403 "Go-http-client/1.1" 1
 done
 assert_band "403-php-png-not-asset" "$(score_of example.com "$tmp/403cloak.log")" 70 100
+: > "$tmp/403phpjs.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/403phpjs.log" "203.0.113.63" "GET /x/c99-$i.php.js HTTP/1.1" 403 "Go-http-client/1.1" 1
+done
+assert_band "403-php-js-not-asset" "$(score_of example.com "$tmp/403phpjs.log")" 70 100
+: > "$tmp/403phpsp.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/403phpsp.log" "203.0.113.66" "GET /x/c99-$i.php%20.png HTTP/1.1" 403 "Go-http-client/1.1" 1
+done
+assert_band "403-php-space-png-not-asset" "$(score_of example.com "$tmp/403phpsp.log")" 70 100
+: > "$tmp/403phppct.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/403phppct.log" "203.0.113.67" "GET /x/c99-$i.%70%68%70.png HTTP/1.1" 403 "Go-http-client/1.1" 1
+done
+assert_band "403-php-pct-png-not-asset" "$(score_of example.com "$tmp/403phppct.log")" 70 100
+: > "$tmp/403phpmid.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/403phpmid.log" "203.0.113.68" "GET /x/c99-$i.p%68p.png HTTP/1.1" 403 "Go-http-client/1.1" 1
+done
+assert_band "403-php-midpct-png-not-asset" "$(score_of example.com "$tmp/403phpmid.log")" 70 100
+: > "$tmp/403phpend.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/403phpend.log" "203.0.113.71" "GET /x/c99-$i.ph%70.png HTTP/1.1" 403 "Go-http-client/1.1" 1
+done
+assert_band "403-php-endpct-png-not-asset" "$(score_of example.com "$tmp/403phpend.log")" 70 100
+: > "$tmp/403barephp.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/403barephp.log" "203.0.113.69" "GET /x/$i/php.png HTTP/1.1" 403 "Go-http-client/1.1" 1
+done
+assert_band "403-bare-php-png-not-asset" "$(score_of example.com "$tmp/403barephp.log")" 70 100
+: > "$tmp/403asp.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/403asp.log" "203.0.113.70" "GET /x/shell-$i.asp.png HTTP/1.1" 403 "Go-http-client/1.1" 1
+done
+assert_band "403-asp-png-not-asset" "$(score_of example.com "$tmp/403asp.log")" 70 100
+: > "$tmp/403phpat.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/403phpat.log" "203.0.113.72" "GET /x/c99-$i.php@2x.png HTTP/1.1" 403 "Go-http-client/1.1" 1
+done
+assert_band "403-php-at2x-not-asset" "$(score_of example.com "$tmp/403phpat.log")" 70 100
+: > "$tmp/403phpat2.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/403phpat2.log" "203.0.113.76" "GET /x/c99-$i.php@2x@2x.png HTTP/1.1" 403 "Go-http-client/1.1" 1
+done
+assert_band "403-php-at2x-at2x-not-asset" "$(score_of example.com "$tmp/403phpat2.log")" 70 100
+: > "$tmp/403php7.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/403php7.log" "203.0.113.73" "GET /index.php7/x-$i.css HTTP/1.1" 403 "Go-http-client/1.1" 1
+done
+assert_band "403-php7-pathinfo-not-asset" "$(score_of example.com "$tmp/403php7.log")" 70 100
+: > "$tmp/403phpscaled.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/403phpscaled.log" "203.0.113.74" "GET /x/$i/php-scaled.png HTTP/1.1" 403 "Go-http-client/1.1" 1
+done
+assert_band "403-php-scaled-basename-not-asset" "$(score_of example.com "$tmp/403phpscaled.log")" 70 100
+: > "$tmp/own403pl.log"
+for i in $(seq 1 80); do
+    emit_spread "$tmp/own403pl.log" "203.0.113.75" "GET /wp-includes/js/tinymce/langs/$i/pl.js HTTP/1.1" 403 "Mozilla/5.0" 1
+done
+assert_band "own-403-pl-js-not-scanner" "$(score_of example.com "$tmp/own403pl.log")" 0 49
 : > "$tmp/403trav.log"
 for i in $(seq 1 80); do
     emit_spread "$tmp/403trav.log" "203.0.113.49" "GET /x/..%2fetc/passwd-$i.css HTTP/1.1" 403 "Go-http-client/1.1" 1

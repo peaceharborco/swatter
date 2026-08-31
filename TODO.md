@@ -352,7 +352,8 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       403 storm on `/index.php` vanish (was 75, then no row). Archive
       check of whether CF `managed_challenge` 403s even reach origin
       logs is still the handoff's open question 1 — this rule is scoped
-      to the loop's described shape either way. Not deployed until `/grok`.
+      to the loop's described shape either way. v2.18.1: `is_static_asset`
+      is last-ext + `stem_is_safe` (`.min.js` / `@2x` / hashes), not one-dot.
 
 > **2026-08-31: gate D 48h watch is closed.** Review complete, srcset scorer
 > live (v2.18.0), leftover temps watermarked, `REPEAT_WINDOW_DAYS=30`,

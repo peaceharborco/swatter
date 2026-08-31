@@ -374,15 +374,70 @@ function path_scores_on_its_own(p,   i, h) {
 # page's CSS/JS/fonts/images, every retry is 403, ndist is free". html/php
 # 403s are application/WAF signal and must keep scoring. Path is already
 # lowercased and query-stripped (see the file header).
-function is_static_asset(p,   n, segs, last) {
+#
+# Last extension is the asset type; the stem is stem_is_safe(). A one-dot
+# filename class was the first cut and it missed the fleet: jquery.min.js,
+# dashicons.min.css, logo@2x.png, hashed webpack names. Those 403s still
+# fed cerr[] and promoted scanner_profile. c99.php.png still fails -- the
+# .php token is in the stem, which is the same deny list the srcset path
+# already uses. PATH_INFO /index.php/x.css is the slash-after-executable
+# guard, not the stem.
+#
+# stem_is_safe was calibrated for srcset, where candidate_stem() already
+# stripped the descriptor so the deny token is terminal. A 403 asset has
+# no descriptor: wp-config.php%20.png keeps php%20 as the token and
+# misses the list. Peel encodings and non-alnum off each stem component
+# HERE, not in stem_is_safe -- that function was swept over 62,700 WP
+# names and this residue is unique to the 403 path.
+function _peel_cloak(c,   prev) {
+    do {
+        prev = c
+        sub(/(%[0-9a-f][0-9a-f])+$/, "", c)
+        sub(/[^a-z0-9]+$/, "", c)
+    } while (c != prev)
+    return c
+}
+
+function is_static_asset(p,   n, segs, last, stem, parts, i, m, rebuilt, peeled, prev) {
     # Traversal and PATH_INFO are not a stylesheet. A bare suffix test
     # would drop /c99.php.png and /a.php/x.css at 403 -- WAF-answered
     # probes, not our challenge retrying assets.
     if (p ~ /\.\.|%2e|%2f|%25|%00/) return 0
-    if (p ~ /\.(php|phtml|asp|aspx|cgi|pl|jsp)\//) return 0
+    if (p ~ /\.(php[0-9]*|phtml|phar|asp|aspx|cgi|pl|jsp|shtml)\//) return 0
     n = split(p, segs, "/")
     last = segs[n]
-    return last ~ /^[a-z0-9_-]+\.(css|js|mjs|map|woff2?|ttf|otf|eot|png|jpe?g|gif|webp|svg|ico|avif)$/
+    if (last !~ /\.(css|js|mjs|map|woff2?|ttf|otf|eot|png|jpe?g|gif|webp|svg|ico|avif)$/)
+        return 0
+    stem = last
+    sub(/\.[a-z0-9]+$/, "", stem)
+    m = split(stem, parts, ".")
+    rebuilt = ""
+    for (i = 1; i <= m; i++) {
+        # Any percent-encoding in a stem component is a cloak (ph%70, p%68p,
+        # %70%68%70). Trailing peel cannot see a mid-token escape. Real
+        # non-ASCII names (caf%c3%a9.jpg) fail louder: they score at 403.
+        if (parts[i] ~ /%/) return 0
+        peeled = _peel_cloak(parts[i])
+        # Residual % is a cloak (p%68p, %70%68%70). Empty after peel of a
+        # non-empty component is the fully-encoded token. Either way this
+        # is not a stylesheet name.
+        if (peeled ~ /%/ || (parts[i] != "" && peeled == "")) return 0
+        do {
+            prev = peeled
+            sub(/@[0-9]+x$/, "", peeled)
+            peeled = _strip_wp_suffixes(peeled)
+        } while (peeled != prev)
+        # Executable class on component 2+ only. First-component `pl.js`
+        # is a real locale file (tinymce/woocommerce i18n); `c99.pl.png`
+        # is the cloak. Same start-at-2 rule as stem_is_safe.
+        if (i >= 2 && peeled ~ /^(php[0-9]*|phtml|phar|asp|aspx|cgi|pl|jsp|shtml)$/) return 0
+        if (i == 1) rebuilt = peeled
+        else rebuilt = rebuilt "." peeled
+    }
+    # /php.png: stem has no dot, stem_is_safe short-circuits to 1. A
+    # deny-basename (after @2x / WP suffix strip) is not a stylesheet.
+    if (m < 2 && _deny_token(rebuilt)) return 0
+    return stem_is_safe(rebuilt)
 }
 
 function jesc(s,   t) {
@@ -738,13 +793,16 @@ END {
         # operator raises SCORE_WATCH above it. The first version used only
         # `composite < SCORE_WATCH`, which rewrote frule and lifted the score
         # the moment SCORE_WATCH sat above 75.
-        if (exflood[ip] && composite < SCORE_WATCH && floor == 0) {
-            composite = SCORE_WATCH
-            frule = "403ex_flood"
-        }
+        # Srcset first: a challenged srcset retry is in BOTH csrcset[] and
+        # c403ex[], and 403 is the status those retries carry. Lifting
+        # 403ex first made srcset_flood unreachable on that class.
         if (srflood[ip] && composite < SCORE_WATCH && floor == 0) {
             composite = SCORE_WATCH
             frule = "srcset_flood"
+        }
+        if (exflood[ip] && composite < SCORE_WATCH && floor == 0) {
+            composite = SCORE_WATCH
+            frule = "403ex_flood"
         }
 
         score = int(composite + 0.5)

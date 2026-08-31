@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.18.1] - 2026-08-31
+
 ### Fixed
 - **A 403 from our own challenge was evidence against the client.** `status
   == 403` fed `cerr[]` and `cburst[]`, so the first swat made every later
@@ -17,11 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`/index.php`, directory denies, direct-to-origin path scans) and
   bad-path/honeypot 403s still score. Dropped 403s still widen the IP's
   span so rps cannot collapse into `request_flood`. Srcset-shaped 403s
-  still feed the `srcset_flood` watch tripwire. A 403-only asset flood at
+  still feed the `srcset_flood` watch tripwire (lifted before `403ex_flood`
+  so a challenged srcset retry keeps that label). A 403-only asset flood at
   srcset-flood volume surfaces as watch-only `403ex_flood` (cannot temp).
   The evidence JSON `"403"` field is now only scored 403s; dropped ones
   are `"403_exempt"`. This reverses the v2.18.0 pin that srcset-shaped
-  403s scored as error_burst.
+  403s scored as error_burst. A first cut of `is_static_asset` required a
+  one-dot filename and missed the fleet (`jquery.min.js`,
+  `dashicons.min.css`, `logo@2x.png`, hashed webpack names); the stem is
+  now `stem_is_safe()`, same deny list as the srcset path, so `.php.png`
+  still scores. Any `%` in a stem component refuses the drop (`php%20`,
+  `p%68p`, `ph%70`, `%70%68%70`); a deny-basename (`/php.png`) does too.
+  `score.sh` must ship with `score.awk` so `403ex_flood` cannot temp
+  under the v2.18.0 persist path.
 
 ## [2.18.0] - 2026-08-29
 
@@ -1755,7 +1765,8 @@ plane-correct blocking (CSF for direct-to-origin, Cloudflare IP Access Rules for
 via-proxy), a hardcoded Cloudflare never-block set, and fail-closed behavior when
 the range list is stale.
 
-[Unreleased]: https://github.com/peaceharborco/swatter/compare/v2.18.0...HEAD
+[Unreleased]: https://github.com/peaceharborco/swatter/compare/v2.18.1...HEAD
+[2.18.1]: https://github.com/peaceharborco/swatter/compare/v2.18.0...v2.18.1
 [2.18.0]: https://github.com/peaceharborco/swatter/compare/v2.17.0...v2.18.0
 [2.12.0]: https://github.com/peaceharborco/swatter/compare/v2.11.0...v2.12.0
 [2.11.0]: https://github.com/peaceharborco/swatter/compare/v2.10.0...v2.11.0
