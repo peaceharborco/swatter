@@ -166,9 +166,10 @@ changed (75 → 50).
   (plus the reviewed `request_flood` DO-NOT-BAN) were watermarked with
   `swatter unblock`; they now contribute 0 to a 30d `prior`. The 7 → 30 widen
   was applied 2026-08-29 04:49 UTC with AbuseIPDB frozen
-  (`ABUSEIPDB_REPORT=false`). 48h watch is open; reporting stays off until
-  the baseline and `shared-egress-audit` are clean. Back-out:
-  `swatter rollback-ladder --since 1787978948`.
+  (`ABUSEIPDB_REPORT=false`). 48h watch closed 2026-08-31: rolling-24h max
+  42 vs 70/day, per-run max 3 vs 5/run; `shared-egress-audit` matched one
+  pre-widen mixed-ASN leftover (left permed); reporting restored. Back-out
+  of the widen: `swatter rollback-ladder --since 1787978948`.
 - **`lib/ingest.sh:72` truncates paths at 256 bytes**, and anything beyond that is
   invisible to *all* scoring, badpath and honeypot included. A path can therefore
   be padded so a probe suffix falls past the boundary while the visible prefix is a

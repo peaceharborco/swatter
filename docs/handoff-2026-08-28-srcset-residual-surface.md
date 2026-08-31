@@ -176,9 +176,9 @@ allowlisted (same class as the 2026-07-27 four). The srcset nine were not —
 a 30d `prior` and **0** of them appear in `escalate-preview --window 30`.
 Work product (mode 0600) on the host: `/root/gate-d-review/ledger-watermark-20260829.log`.
 
-**The widen is live** as of 2026-08-29 04:49 UTC (`ABUSEIPDB_REPORT=false`,
-`REPEAT_WINDOW_DAYS=30`). 48h watch is open; do not restore reporting before
-2026-08-31 04:49 UTC. Back-out: `swatter rollback-ladder --since 1787978948`.
+**The widen is live** as of 2026-08-29 04:49 UTC (`REPEAT_WINDOW_DAYS=30`).
+48h watch closed 2026-08-31 14:34 UTC; `ABUSEIPDB_REPORT` restored. Back-out
+of the widen: `swatter rollback-ladder --since 1787978948`.
 
 ---
 

@@ -160,7 +160,7 @@ on scope (it changes the return contract of four functions used by every alert),
 on merit. Retire the CHANGELOG's "Known and deliberately out of scope" paragraph in
 whatever commit lands this.
 
-## ⏭️ NEXT PICKUP: gate D
+## ✅ CLOSED 2026-08-31 — gate D
 
 **Everything is unfrozen and deployed as of 2026-08-11.** cds1 runs **v2.16.1**
 (confirmed 2026-08-20; this line read "v2.15.1" until then, and "v2.13.0" before
@@ -216,8 +216,8 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       Back-out: `swatter rollback-ladder --since 1787978948`
       (`2026-08-29T04:49:08Z`). First post-widen scan (04:50:01–04:50:05)
       completed in enforce, 1 acted (a temp), 0 perms, no AbuseIPDB report
-      lines. **48h watch is open** — do not restore reporting before
-      2026-08-31 04:49 UTC, and not before `shared-egress-audit` is clean.
+      lines. **48h watch CLOSED 2026-08-31 14:34 UTC** — see the restore
+      checkbox below.
       The review found two
       false positives, both real people, and the second is an active fleet-wide
       class: broken srcset markup makes browsers request the whole srcset value
@@ -276,8 +276,8 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       30d `prior` and **0** of them appear in `escalate-preview --window 30`.
       The original "19" was a wider-archive count; the window that actually
       feeds the widen is 30d. **Widen applied 2026-08-29 04:49 UTC**
-      (freeze, then `REPEAT_WINDOW_DAYS=30`). Remaining: 48h baseline,
-      `shared-egress-audit`, restore reporting.
+      (freeze, then `REPEAT_WINDOW_DAYS=30`). 48h watch closed 2026-08-31
+      14:34 UTC — baseline clean, reporting restored (see restore checkbox).
 
       **Do NOT read "no markup bug" as progress toward the widen.** It removes a
       blocker that could never be satisfied; it does not clear the ones that can.
@@ -357,12 +357,11 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
       rule that surfaces without acting. Its option 1 (pace the checker) is still
       the right first move, but it fixes CI's symptom, not the loop.
 
-> **2026-08-29: the widen is live.** Review complete, srcset scorer live
-> (v2.18.0), leftover temps watermarked, `REPEAT_WINDOW_DAYS=30`,
-> `ABUSEIPDB_REPORT=false`. Read
-> `docs/handoff-2026-08-28-gate-d-review-complete.md` FIRST. Remaining: 48h
-> baseline (not before 2026-08-31 04:49 UTC), `shared-egress-audit`, then
-> restore reporting. Back-out: `swatter rollback-ladder --since 1787978948`.
+> **2026-08-31: gate D 48h watch is closed.** Review complete, srcset scorer
+> live (v2.18.0), leftover temps watermarked, `REPEAT_WINDOW_DAYS=30`,
+> `ABUSEIPDB_REPORT=true` (restored 14:34 UTC). Read
+> `docs/handoff-2026-08-28-gate-d-review-complete.md` FIRST. Back-out of the
+> widen: `swatter rollback-ladder --since 1787978948`.
 >
 > **Picking this up on the 26th? Read
 > `docs/handoff-2026-08-20-gate-d-widen.md` first.** It is the single
@@ -586,29 +585,43 @@ implies. No customer IPs, no vhost mappings.
 - [x] **Step 2 — only after the review AND step 1:** set `REPEAT_WINDOW_DAYS=30`.
       Done in the same inter-scan window, after the freeze was confirmed.
       `test-config`: `REPEAT_N=3 window=30d crit-single=4`.
-- [ ] Watch the first 48h to establish gate D's **own** rate baseline. Judge
-      against that, never against gate C's band. `PERM_RATE_ALERT_*` only
-      notifies — a silent tripwire is not a green light, and ladder perms keep
-      landing every `*/5` while you wait.
-- [ ] **Before restoring reporting — run `swatter shared-egress-audit` and read
-      what the widen actually permed.** This is the cheap safety net that makes
-      the bucket-2 risk acceptable, and it is the LAST point at which a wrong
-      perm is still free to fix. While `ABUSEIPDB_REPORT` is false, a
-      misclassified shared exit costs a reversible ban; once reporting is back
-      on, the same mistake is a permanent public accusation with no delete API.
-      Minutes of work, and it catches the whole class the review scheme's
-      bucket 2 is designed around. Owner call 2026-08-20: keep bucket 2 rather
-      than collapsing to a two-bucket sort — the freeze already removes the
-      irreversible half of the risk during exactly the window it exists in.
-- [ ] **After the 48h baseline reads clean AND the audit is clean — restore
-      `ABUSEIPDB_REPORT="true"`.**
-      Confirm with `test-config`. Nothing replays: the arm has no cursor, so the
-      perms placed during the freeze are simply never reported, which is the
-      accepted cost of the decision. If the baseline does *not* read clean, the
-      freeze stays on through the back-out.
-- [ ] Back-out, if needed, is `swatter rollback-ladder --since <ts>` — **never** a
-      config revert, which does not undo bans already placed. Verify every unblock
-      on both planes; the exit code is not enough.
+- [x] **Watch the first 48h — CLOSED 2026-08-31 13:52 UTC (57h elapsed).**
+      Gate D's own band, ledger units matching the tripwire (COUNT(DISTINCT ip),
+      `action='perm'`, `dry_run=0`; per-run filtered to primary legs):
+      rolling-24h p50 30 / p95 39 / **max 42** (tripwire 70/day);
+      per-run p50 1 / p95 2 / **max 3** (tripwire 5/run). 52 primary perms
+      in 57h. Calendar: 22 (08-29 partial) · 38 (08-30 backlog flush) · 12
+      (08-31 through 13:52). Rule mix: 31 `critical_badpath`, 16
+      `scanner_profile`, 3 `high_badpath_repeat`, 2 `error_burst` (both
+      DMZHOST + Spamhaus DROP). **0** `request_flood`, **0** srcset.
+      18 of 52 needed the 30d lookback (`prior` < 2 in 7d); the other 34
+      would have permed at window=7 on the same offense. Freeze held: 0
+      AbuseIPDB markers since soak, tripwire silent. Pre-widen 48h was 11
+      primary perms — the 08-30 spike is the 30d conversion, not a runaway.
+- [x] **`shared-egress-audit` — RUN 2026-08-31.** 1 match:
+      `185.137.164.8`, perm 2026-07-25, AS137409, whois **IPLuo BV (NL)**.
+      That is the 08-13 mixed-ASN negative control, not a widen-manufactured
+      perm. `--fix` was declined: unblocking it would lift a score-91 /
+      confidence-100 attacker on non-VPN space because the 08-28 ASN add
+      covers GSL's VPN ranges *and* IPLuo. Left permed. `offenders.perm=1`.
+- [x] **Restore `ABUSEIPDB_REPORT="true"` — DONE 2026-08-31 14:34 UTC.**
+      Backup `/etc/swatter/swatter.conf.bak-20260831-gate-d-restore`.
+      `test-config`: `publication: swarm=true abuseipdb=true`, `abuseipdb
+      reporting: ENABLED`, `REPEAT_N=3 window=30d`. Swarm was not touched.
+      Nothing replays — the 52 freeze-window perms are simply never reported.
+      One freeze-window perm was a real crawler and was cleared first:
+      `207.241.225.51` (Internet Archive, `wwwb-spn06.us.archive.org`,
+      AS7941, forward-confirmed). `scanner_profile` on 5xx cache assets;
+      would have permed at window=7 anyway (2 temps in 3d). `archive.org`
+      is not in `_swatter_is_good_crawler`'s suffix list. Unblocked both
+      planes (`offenders.perm=0`, no CF rule, no `csf.deny`, no
+      `cf-rules.tsv` ref) then allowlisted (single IP, not the /20) —
+      `allow.cidr` + `csf.allow`. A later scan will not re-escalate it.
+- [ ] Back-out of the *widen*, if ever needed, is still
+      `swatter rollback-ladder --since 1787978948` — **never** a config
+      revert, which does not undo bans already placed. Verify every unblock
+      on both planes; the exit code is not enough. Reporting restore itself
+      undoes with `ABUSEIPDB_REPORT="false"` (backup above).
 
 None of this ships code, so the `/grok` gate does not bind the widen itself. It
 binds immediately if any of it turns into a code change.

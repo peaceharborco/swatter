@@ -1,20 +1,23 @@
-# Handoff — gate D review COMPLETE; widen live; 48h watch open
+# Handoff — gate D review COMPLETE; widen live; 48h watch CLOSED
 
 Written 2026-08-28. Supersedes `docs/handoff-2026-08-20-gate-d-widen.md` for
 everything through step 3. Srcset residual closed in v2.18.0; leftover temps
-watermarked 2026-08-29; widen applied 2026-08-29 04:49 UTC. **Remaining: 48h
-baseline, `shared-egress-audit`, restore reporting.**
+watermarked 2026-08-29; widen applied 2026-08-29 04:49 UTC. **48h watch closed
+2026-08-31 14:34 UTC:** baseline clean, `shared-egress-audit` run (1 mixed-ASN
+leftover, left permed), `ABUSEIPDB_REPORT` restored. Numbers and dispositions
+are in `TODO.md` under the gate D restore checkboxes.
 
 ---
 
 ## Start here
 
 The gate D review is done. All 1,118 candidates are dispositioned. **The widen
-is live** as of 2026-08-29 04:49 UTC: `REPEAT_WINDOW_DAYS=30`,
-`ABUSEIPDB_REPORT=false`, `SWARM_PUBLISH` still `true`. Backup
-`/etc/swatter/swatter.conf.bak-20260829-gate-d-widen`. Back-out:
-`swatter rollback-ladder --since 1787978948`. Do not restore reporting before
-2026-08-31 04:49 UTC, and not before `shared-egress-audit` is clean.
+is live** as of 2026-08-29 04:49 UTC: `REPEAT_WINDOW_DAYS=30`. Reporting was
+frozen across the 48h watch and **restored 2026-08-31 14:34 UTC**
+(`ABUSEIPDB_REPORT=true`, `SWARM_PUBLISH` still `true`). Backups:
+`/etc/swatter/swatter.conf.bak-20260829-gate-d-widen` (freeze+knob),
+`/etc/swatter/swatter.conf.bak-20260831-gate-d-restore` (pre-restore).
+Back-out of the widen: `swatter rollback-ladder --since 1787978948`.
 
 Two changes WERE made to cds1 on 2026-08-28, both detailed below: `lib/score.awk`
 was deployed (the false-positive fix), and `AS137409` was added to
@@ -304,8 +307,11 @@ should stop being described as "empty = healthy" — it is not empty.
    (`swatter unblock`, not `rollback-ladder`).**
 5. Step 4 of the 08-20 handoff: freeze AbuseIPDB, `REPEAT_WINDOW_DAYS=30`,
    48h baseline, `shared-egress-audit`, restore reporting.
-   **Freeze + knob: DONE 2026-08-29 04:49 UTC.** Left: 48h baseline (not
-   before 2026-08-31 04:49 UTC), `shared-egress-audit`, restore reporting.
+   **DONE 2026-08-31 14:34 UTC.** Baseline clean (rolling-24h max 42 vs
+   70/day; per-run max 3 vs 5/run). Audit matched `185.137.164.8` (IPLuo,
+   mixed-ASN leftover from the 08-28 AS137409 add; `--fix` declined).
+   Internet Archive `207.241.225.51` unblocked + allowlisted before the
+   flip. `test-config`: `swarm=true abuseipdb=true`, window=30d.
 
 Re-run `escalate-preview` fresh at that point. This preview is now days old, and
 reviewing a saved list is what the gate forbids.
