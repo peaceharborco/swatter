@@ -94,12 +94,17 @@ the events, and someone will otherwise repeat it.
 
 None started. Roughly cheapest-and-safest first.
 
-**1 — Make the checker quieter (no Swatter change at all).**
-Stay under `rps >= 8` / `n >= 60` by pacing page loads. Costs a slower CI job
-and nothing else, gives up no protection, and needs no allowlist. Against it:
-it is calibration against thresholds that can move, and the run genuinely is a
-few hundred requests, so it may need real pacing rather than a token delay. Try
-this first — if it holds, the rest of this document is moot.
+**1 — Make the checker quieter (no Swatter change at all).** **DONE
+2026-08-31.** Visual contract 1.10.0. Live-origin navigations are spaced
+5 seconds apart (`PH_CHECK_PACE_MS` overrides, including `0` to disable).
+Local `--root` and loopback `--origin` stay unpaced. The phhosting contrast
+checker got the same spacing. Costs a slower origin-mode CI job, gives up
+no protection, needs no allowlist. It is still calibration against
+thresholds that can move.
+
+The rest of this document is not moot: the 403→`scanner_profile` loop is
+real and still open. Option 1 only stops the checker from being the
+traffic that trips `request_flood`.
 
 **2 — A narrow exemption requiring TWO independent signals.**
 A distinctive User-Agent on the checker **and** membership of GitHub's

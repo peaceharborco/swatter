@@ -337,25 +337,25 @@ AbuseIPDB by either route. Perm rate at the flip: 67 primary legs / 7d ≈ 9.6/d
             hold outside `/etc/cron.d`. `test-config` 2.18.0, `scan --dry-run`
             rc=0, cron restored. **All 32 installed files sha-match the tag.**
 
-- [ ] **Swatter is swatting our own CI** — see
-      `docs/handoff-2026-08-28-ci-self-swat.md`. Verified while reviewing it:
-      **the feedback loop in its open question 1 is real.** `lib/score.awk:479`
+- [x] **Swatter is swatting our own CI — CI half CLOSED 2026-08-31.** Option 1
+      from `docs/handoff-2026-08-28-ci-self-swat.md`: pace origin-mode checks.
+      Visual contract **1.10.0**. Live-origin navigations are spaced 5s
+      (`PH_CHECK_PACE_MS` overrides; `0` disables). Local `--root` and
+      loopback stay unpaced. Contrast checker in phhosting got the same
+      spacing. No Swatter change — the first hit is `request_flood` on 200s,
+      and the checker header cannot skip IP Access Rules.
+
+      **The 403 feedback loop is still open.** `lib/score.awk:487` still
       makes a 403 feed BOTH `cerr[]` and `cburst[]`, so swatter's own
-      managed_challenge responses become evidence against the client. Measured on
-      identical traffic: answered 200 -> no row at all; answered 403 -> **78,
-      `scanner_profile`**. Being challenged is by itself enough to promote an IP to
-      a HIGHER floor than the `request_flood` that got it challenged.
-
-      **This is not only a CI problem** — a temp block on the CF plane IS a
-      managed_challenge, so the residential visitors swatted by the srcset class
-      feed the same loop and escalate across block cycles. It amplifies exactly
-      the harm the srcset branch prevents.
-
-      Prior art for that handoff's open question 2 (partial exemption) now exists
-      in the srcset branch: `path_scores_on_its_own()` suppresses behavioural
-      scoring while leaving honeypot/critical_badpath live, and `srcset_flood` is a
-      rule that surfaces without acting. Its option 1 (pace the checker) is still
-      the right first move, but it fixes CI's symptom, not the loop.
+      managed_challenge responses become evidence against the client.
+      Measured on identical traffic: answered 200 -> no row at all;
+      answered 403 -> **78, `scanner_profile`**. Being challenged is by
+      itself enough to promote an IP to a HIGHER floor than the
+      `request_flood` that got it challenged. A temp block on the CF plane
+      IS a managed_challenge, so the same loop would re-escalate a
+      challenged visitor. Option 1 does not close this; it only stops CI
+      (and a workstation origin run) from being the traffic that fires
+      `request_flood` in the first place.
 
 > **2026-08-31: gate D 48h watch is closed.** Review complete, srcset scorer
 > live (v2.18.0), leftover temps watermarked, `REPEAT_WINDOW_DAYS=30`,
