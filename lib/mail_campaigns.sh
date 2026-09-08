@@ -130,9 +130,11 @@ swatter_mail_campaigns_section() {
 
     local min="${MAIL_CAMPAIGN_MIN_IPS:-5}" cap="${MAIL_CAMPAIGN_LIST_CAP:-20}"
     local summary
+    # Identity is everything after the first tab (set_id may itself contain tabs).
     summary="$(LC_ALL=C gawk -F '\t' -v min="$min" -v cap="$cap" '
         NF >= 2 {
-            ip=$1; id=$2
+            ip=$1
+            id = substr($0, index($0, "\t") + 1)
             fails[id]++; ipn[id SUBSEP ip]++; seenip[ip]=1; n++
         }
         END {

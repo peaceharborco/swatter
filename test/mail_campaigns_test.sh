@@ -88,8 +88,20 @@ printf '2026-06-25 10:00:00 dovecot_login authenticator failed for H=foo [198.51
 for n in 11 12 13 14; do _line "198.51.100.$n" "x	[203.0.113.9]:25" >> "$EXIM_MAINLOG"; done
 _run
 check t5-n         "$MAILCAMP_N" "1"
-check t5-not-decoy "$(printf '%s' "$SECTION_OUT" | grep -c '203.0.113.9')" "0"
+# Decoy may appear in the mailbox column (verbatim set_id); must not be a connecting IP.
 check t5-ips       "$MAILCAMP_IPS" "5"
+check t5-mailbox   "$(printf '%s' "$SECTION_OUT" | grep -c '203.0.113.9')" "1"
+
+# --- tab in set_id: shared prefix before tab must not merge -------------------
+: > "$EXIM_MAINLOG"
+for n in 10 11 12 13 14; do
+  _line "198.51.100.$n" "x	alpha" >> "$EXIM_MAINLOG"
+  _line "203.0.113.$n" "x	beta" >> "$EXIM_MAINLOG"
+done
+_run
+check tabkey-n     "$MAILCAMP_N" "2"
+check tabkey-a     "$(printf '%s' "$SECTION_OUT" | grep -c 'x	alpha')" "1"
+check tabkey-b     "$(printf '%s' "$SECTION_OUT" | grep -c 'x	beta')" "1"
 
 # --- drop incomplete lines ---------------------------------------------------
 : > "$EXIM_MAINLOG"
