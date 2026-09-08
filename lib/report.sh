@@ -58,6 +58,7 @@ swatter_report_build() {
     # window's fatals. Unset = unclassified, and the grade falls back to the
     # raw ERR_FATAL total — an unclassified fatal fails toward RED, never green.
     unset ERR_FATAL_GENUINE ERR_FATAL_SCANNER
+    unset MAILCAMP_OK MAILCAMP_N MAILCAMP_FAILS MAILCAMP_IPS
     OL_HITS=0 OL_IPS=0 OL_P80=0 OL_P443=0 OL_MODE="" OL_TOP_ROWS=""
     SWARM_FEED_N=0 SWARM_STALE=0 SWARM_PREBLOCKED=0 SWARM_CONTRIB=0 SWARM_LAST_PUB="none" SWARM_COUNTS_OK=1
 
@@ -82,6 +83,11 @@ swatter_report_build() {
     if _swarm_enabled; then
         swfile="$(mktemp "${TMPDIR:-/tmp}/swatter-swsec.XXXXXX")"
         swatter_swarm_section "$window" "$cutoff" "$log" > "$swfile"
+    fi
+    local mcfile=""
+    if declare -F _mailcamp_should_run >/dev/null && _mailcamp_should_run; then
+        mcfile="$(mktemp "${TMPDIR:-/tmp}/swatter-mcsec.XXXXXX")"
+        swatter_mail_campaigns_section "$window" > "$mcfile"
     fi
 
     _report_grade   # sets RPT_GRADE / RPT_GRADE_WORD / RPT_GRADE_HEADLINE / RPT_GRADE_SUB / RPT_RECO
@@ -127,6 +133,16 @@ swatter_report_build() {
         [[ -s "$swfile" ]] && cat "$swfile"
     fi
     rm -f "$swfile"
+
+    if [[ -n "${MAILCAMP_OK+x}" ]]; then
+        echo
+        echo "========================  Mail Campaigns  ======================="
+        echo
+        _report_summary_mailcamp
+        echo
+        [[ -n "$mcfile" && -s "$mcfile" ]] && cat "$mcfile"
+    fi
+    rm -f "$mcfile"
 
     echo
     echo "------------------------------------------------------------------"
@@ -394,6 +410,15 @@ _report_render_html() {
         printf '<div style="font-size:13px;color:%s;margin-top:5px;line-height:1.55;">%s</div>' \
             "$ink" "$(_report_summary_swarm | esc)"
         (( ${SWARM_STALE:-0} )) && printf '<div style="font-size:12px;color:%s;margin-top:6px;">Feed stale &mdash; shown for information only.</div>' "$ember"
+    fi
+
+    if [[ "${MAILCAMP_OK+x}" == "x" ]]; then
+        local mcc="$pine"
+        [[ "${MAILCAMP_OK}" != "1" ]] && mcc="$ember"
+        printf '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-top:1px solid %s;"><tr><td style="padding-top:14px;%s">Mail Campaigns</td><td style="padding-top:14px;%s;font-weight:700;font-size:20px;color:%s;text-align:right;">%s</td></tr></table>' \
+            "$bdr" "$h3" "$f_h" "$mcc" "${MAILCAMP_N:-0}"
+        printf '<div style="font-size:13px;color:%s;margin-top:5px;line-height:1.55;">%s</div>' \
+            "$ink" "$(_report_summary_mailcamp | esc)"
     fi
 
     # Help line.
@@ -684,6 +709,34 @@ _report_summary_errors() {
     fi
 }
 
+_report_summary_mailcamp() {
+    if [[ "${MAILCAMP_OK:-1}" != "1" ]]; then
+        echo "SMTP AUTH log unreadable — not an all-clear."
+        return 0
+    fi
+    if (( ${MAILCAMP_N:-0} == 0 )); then
+        echo "No SMTP AUTH campaigns this window."
+        return 0
+    fi
+    echo "${MAILCAMP_N} mailbox(es) under a distributed SMTP AUTH spray (${MAILCAMP_FAILS} fails, ${MAILCAMP_IPS} IPs). Not blocked — rotate those passwords."
+}
+
+# 0 = send. Campaigns or UNREADABLE send; a successful zero does not by itself.
+# Grade and SMS do not call this and do not read MAILCAMP_*.
+_report_should_send() {
+    (( ${RPT_ACTED:-0} > 0 )) && return 0
+    (( ${RPT_EXEMPT:-0} > 0 )) && return 0
+    (( ${RPT_FAILED:-0} > 0 )) && return 0
+    (( ${OL_HITS:-0} > 0 )) && return 0
+    (( ${ERR_GENUINE:-0} > 0 )) && return 0
+    (( ${ERR_FATAL:-0} > 0 )) && return 0
+    if [[ "${MAILCAMP_OK+x}" == "x" ]]; then
+        [[ "${MAILCAMP_OK}" != "1" ]] && return 0
+        (( ${MAILCAMP_N:-0} > 0 )) && return 0
+    fi
+    return 1
+}
+
 # Echoes "Report <YYYY-MM-DD> - <summary>" (UTC run date).
 _report_subject() {
     local d; d="$(date -u -d "@$(swatter_now)" +%F 2>/dev/null || date -u -r "$(swatter_now)" +%F)"
@@ -721,14 +774,9 @@ swatter_report() {
 
     # Stay silent only when ALL THREE planes are quiet (no actions, no exemptions,
     # no backend-failed blocks, no origin-lock hits, no genuine server errors, no
-    # fatal errors) — unless --test. err_fatal is checked explicitly so a fatal-only
-    # window (e.g. a fatal filtered out of the genuine count as noise) still delivers
-    # the RED report instead of being suppressed. ol_hits is checked so an
-    # origin-lock-only window still reports; rpt_failed so a window that only produced
-    # backend-failed blocks still surfaces the failures.
-    local err_genuine="${ERR_GENUINE:-0}" err_fatal="${ERR_FATAL:-0}"
-    local ol_hits="${OL_HITS:-0}" rpt_failed="${RPT_FAILED:-0}"
-    if (( ! test_mode )) && (( RPT_ACTED == 0 && RPT_EXEMPT == 0 && rpt_failed == 0 && ol_hits == 0 && err_genuine == 0 && err_fatal == 0 )); then
+    # fatal errors) and the mail-campaign plane is skipped or a successful zero —
+    # unless --test. Campaigns or UNREADABLE still send. Predicate: _report_should_send.
+    if (( ! test_mode )) && ! _report_should_send; then
         log_info "report: quiet window (${window}); not sending"
         return 0
     fi

@@ -677,3 +677,20 @@ per-line identity that inflates rather than collapses, which is the safe end.
 | `swatter allow <ip> [note]` | Never-block set; does NOT reset the ladder |
 | `swatter escalate-preview [--window N]` | Who perms on their next offense |
 | `install/install.sh remote <dest> --no-cron` | Deploy while holding cron state |
+
+---
+
+## Mail Campaigns (nightly digest)
+
+The "Mail Campaigns" section is **visibility, not a block**. It lists mailboxes
+that saw SMTP AUTH failures from many distinct IPs in the digest window
+(default ≥5). Swatter did not CSF-deny those IPs and did not report them to
+AbuseIPDB.
+
+- **Rotate the listed mailboxes.** That is the actual cure.
+- `UNREADABLE` means Exim's mainlog could not be read. That is not "no
+  spray." Fix permissions/path (`EXIM_MAINLOG`) before treating the night as
+  quiet.
+- `MAIL_CAMPAIGN_DIGEST=off` disables the plane. It does not stop the spray.
+- Do not enable cPHulk `username_based_protection` — anyone can lock a real
+  mailbox by spraying its name.

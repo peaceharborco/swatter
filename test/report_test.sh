@@ -38,6 +38,17 @@ _ol_digest_should_render()  { local h="${1:-0}"; case "${ORIGIN_LOCK_DIGEST:-aut
 # Stub it identically to the real gate so the builder's swarm calls resolve;
 # defaults OFF (SWARM_ENABLE unset) so pre-existing cases are unaffected.
 _swarm_enabled() { [[ "${SWARM_ENABLE:-false}" == "true" && -n "${SWARM_HUB_URL:-}" ]]; }
+# Mail-campaigns plane lives in mail_campaigns.sh; this harness does not source
+# it. Default FAKE_MAILCAMP empty so existing 1/3-plane cases stay banner-free.
+_mailcamp_should_run() { [[ "${FAKE_MAILCAMP:-}" == "run" ]]; }
+swatter_mail_campaigns_section() {
+    MAILCAMP_OK="${FAKE_MAILCAMP_OK:-1}"
+    MAILCAMP_N="${FAKE_MAILCAMP_N:-0}"
+    MAILCAMP_FAILS="${FAKE_MAILCAMP_FAILS:-0}"
+    MAILCAMP_IPS="${FAKE_MAILCAMP_IPS:-0}"
+    echo "(mail campaigns section)"
+}
+FAKE_MAILCAMP=""
 
 # 1 plane: abuse only (error digest off, no origin-lock hits).
 ERROR_DIGEST_ENABLE="false"; ORIGIN_LOCK_DIGEST="auto"; FAKE_OL=0
@@ -46,12 +57,21 @@ check title-report      "$(printf '%s' "$body" | grep -c 'Swatter Nightly Report
 check titlecase-bad     "$(printf '%s' "$body" | grep -c 'Bad Actors')" "1"
 check no-origin-1plane  "$(printf '%s' "$body" | grep -c 'Origin-Lock')" "0"
 check no-errors-1plane  "$(printf '%s' "$body" | grep -c 'Server Errors')" "0"
+check no-mailcamp-1plane "$(printf '%s' "$body" | grep -c 'Mail Campaigns')" "0"
 
 # 3 planes: error digest on + origin-lock hits present.
 ERROR_DIGEST_ENABLE="true"; ORIGIN_LOCK_DIGEST="auto"; FAKE_OL=253
 body="$(swatter_report_build 24h)"
 check has-origin-3plane "$(printf '%s' "$body" | grep -c 'Origin-Lock')" "1"
 check has-errors-3plane "$(printf '%s' "$body" | grep -c 'Server Errors')" "1"
+check no-mailcamp-3plane "$(printf '%s' "$body" | grep -c 'Mail Campaigns')" "0"
+
+# 4th plane: campaign section when the stub says run.
+FAKE_MAILCAMP=run FAKE_MAILCAMP_N=1 FAKE_MAILCAMP_OK=1
+ERROR_DIGEST_ENABLE="false"; ORIGIN_LOCK_DIGEST="auto"; FAKE_OL=0
+body="$(swatter_report_build 24h)"
+check has-mailcamp "$(printf '%s' "$body" | grep -c 'Mail Campaigns')" "1"
+FAKE_MAILCAMP=""
 
 # Text digest surfaces backend failures + dominant cause from the decision log.
 : > "$LOG_DIR/decisions.jsonl"; _now=$(date +%s)
@@ -73,6 +93,10 @@ html="$(_report_render_html "plain body here")"
 check html-title    "$(printf '%s' "$html" | grep -c 'Swatter Nightly Report')" "1"
 check html-bad      "$(printf '%s' "$html" | grep -c 'Bad Actors')" "1"
 check html-origin   "$(printf '%s' "$html" | grep -c 'Origin-Lock')" "1"
+MAILCAMP_OK=1 MAILCAMP_N=1 MAILCAMP_FAILS=5 MAILCAMP_IPS=5
+html_mc="$(_report_render_html "plain")"
+check html-mailcamp "$(printf '%s' "$html_mc" | grep -c 'Mail Campaigns')" "1"
+unset MAILCAMP_OK MAILCAMP_N MAILCAMP_FAILS MAILCAMP_IPS
 check html-no-pre   "$(printf '%s' "$html" | grep -c '<pre')" "0"
 # Canonical PH system-email template (peaceharbor repo: brand/email-template.md,
 # owner-approved 2026-07-02) — STUDIOS lockup, brand tokens, division footer,
@@ -148,6 +172,25 @@ ERR_FATAL=0 ERR_GENUINE=20 OL_HITS=0 RPT_ACTED=0 REPORT_WINDOW=24h REPORT_TRIAGE
 check reco-hint "$(printf '%s' "$RPT_RECO" | grep -c '/server-logs')" "1"
 ERR_FATAL=0 ERR_GENUINE=20 OL_HITS=0 RPT_ACTED=0 REPORT_WINDOW=24h REPORT_TRIAGE_HINT=""; _report_grade
 check reco-generic "$(printf '%s' "$RPT_RECO" | grep -c 'server-logs')" "0"
+
+# Quiet-window: campaigns or UNREADABLE must send; successful zero must not.
+RPT_ACTED=0 RPT_EXEMPT=0 RPT_FAILED=0 OL_HITS=0 ERR_GENUINE=0 ERR_FATAL=0
+unset MAILCAMP_OK MAILCAMP_N
+check skip-unset   "$(_report_should_send; echo $?)" "1"
+MAILCAMP_OK=1 MAILCAMP_N=0
+check skip-zero    "$(_report_should_send; echo $?)" "1"
+MAILCAMP_OK=1 MAILCAMP_N=1
+check send-camp    "$(_report_should_send; echo $?)" "0"
+MAILCAMP_OK=0 MAILCAMP_N=0
+check send-unr     "$(_report_should_send; echo $?)" "0"
+unset MAILCAMP_OK MAILCAMP_N
+
+# Grade ignores MAILCAMP_N.
+MAILCAMP_N=99 ERR_FATAL=0 ERR_GENUINE=0 OL_HITS=0 RPT_ACTED=0
+REPORT_GRADE_FORCE=""
+_report_grade
+check grade-ignores-mailcamp "$RPT_GRADE" "GREEN"
+unset MAILCAMP_N
 
 # --- Traffic-light boundaries, wording, and subject-icon agreement (v2.8.0) ---
 _setgrade() { unset ERR_FATAL_GENUINE ERR_FATAL_SCANNER
@@ -288,21 +331,20 @@ SWARM_FEED_N=99 SWARM_PREBLOCKED=99 SWARM_CONTRIB=99
 _report_grade; check swplane-nograde "$RPT_GRADE" "$g0"
 check swplane-noverdict "$(_report_verdict | cut -f1)" "$v0"
 # Silence invariant as a SOURCE-level guard (robust to line drift): the silence
-# gate's body must reference no SWARM_* global.
-check swplane-silence-clean "$(awk '/Stay silent only when ALL THREE planes/,/return 0/' "${ROOT}/lib/report.sh" | grep -c SWARM)" "0"
+# predicate must reference no SWARM_* global.
+check swplane-silence-clean "$(awk '/^_report_should_send\(\)/,/^}/' "${ROOT}/lib/report.sh" | grep -c SWARM)" "0"
 
 # Silence gate must gate on EVERY plane's counter — an origin-lock-only or
 # backend-failed-only window must not be silently suppressed. Guard the predicate
-# at source level (robust to line drift): the gate condition references all six
+# at source level (robust to line drift): _report_should_send references all six
 # counters.
-sil_gate="$(awk '/Stay silent only when ALL THREE planes/,/^        return 0/' "${ROOT}/lib/report.sh")"
-gate_cond="$(printf '%s' "$sil_gate" | grep 'test_mode' | grep 'RPT_ACTED')"
-check silence-gate-acted   "$(printf '%s' "$gate_cond" | grep -c 'RPT_ACTED == 0')"  "1"
-check silence-gate-exempt  "$(printf '%s' "$gate_cond" | grep -c 'RPT_EXEMPT == 0')" "1"
-check silence-gate-failed  "$(printf '%s' "$gate_cond" | grep -c 'rpt_failed == 0')" "1"
-check silence-gate-olhits  "$(printf '%s' "$gate_cond" | grep -c 'ol_hits == 0')"    "1"
-check silence-gate-genuine "$(printf '%s' "$gate_cond" | grep -c 'err_genuine == 0')" "1"
-check silence-gate-fatal   "$(printf '%s' "$gate_cond" | grep -c 'err_fatal == 0')"  "1"
+sil_gate="$(awk '/^_report_should_send\(\)/,/^}/' "${ROOT}/lib/report.sh")"
+check silence-gate-acted   "$(printf '%s' "$sil_gate" | grep -c 'RPT_ACTED')"  "1"
+check silence-gate-exempt  "$(printf '%s' "$sil_gate" | grep -c 'RPT_EXEMPT')" "1"
+check silence-gate-failed  "$(printf '%s' "$sil_gate" | grep -c 'RPT_FAILED')" "1"
+check silence-gate-olhits  "$(printf '%s' "$sil_gate" | grep -c 'OL_HITS')"    "1"
+check silence-gate-genuine "$(printf '%s' "$sil_gate" | grep -c 'ERR_GENUINE')" "1"
+check silence-gate-fatal   "$(printf '%s' "$sil_gate" | grep -c 'ERR_FATAL')"  "1"
 STATE_DIR="$SW_STATE_SAVE"; SWARM_ENABLE=false; rm -rf "$SW_ST"
 
 # --- recidivism count in the digest ----------------------------------------

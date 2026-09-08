@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Nightly digest: SMTP AUTH campaign visibility.** A fourth report plane
+  reads `exim_mainlog` (plus in-window rotations) for `dovecot_login
+  authenticator failed`, groups by mailbox, and lists campaigns (≥5 distinct
+  connecting IPs by default). Visibility only — no CSF, no AbuseIPDB, no
+  grade change. An unreadable log is UNREADABLE, never "0 campaigns."
+
 ## [2.18.1] - 2026-08-31
 
 ### Fixed
