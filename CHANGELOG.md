@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.19.0] - 2026-09-08
+
 ### Added
 - **Nightly digest: SMTP AUTH campaign visibility.** A fourth report plane
   reads `exim_mainlog` (plus in-window rotations) for `dovecot_login
@@ -1772,7 +1774,8 @@ plane-correct blocking (CSF for direct-to-origin, Cloudflare IP Access Rules for
 via-proxy), a hardcoded Cloudflare never-block set, and fail-closed behavior when
 the range list is stale.
 
-[Unreleased]: https://github.com/peaceharborco/swatter/compare/v2.18.1...HEAD
+[Unreleased]: https://github.com/peaceharborco/swatter/compare/v2.19.0...HEAD
+[2.19.0]: https://github.com/peaceharborco/swatter/compare/v2.18.1...v2.19.0
 [2.18.1]: https://github.com/peaceharborco/swatter/compare/v2.18.0...v2.18.1
 [2.18.0]: https://github.com/peaceharborco/swatter/compare/v2.17.0...v2.18.0
 [2.12.0]: https://github.com/peaceharborco/swatter/compare/v2.11.0...v2.12.0
