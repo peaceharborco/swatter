@@ -154,5 +154,79 @@ check tz-unset     "$(grep -c 'unset TZ' "${ROOT}/lib/mail_campaigns.sh")" "1"
 unset TZ
 export TZ=UTC
 
+# --- unreadable live file ----------------------------------------------------
+: > "$EXIM_MAINLOG"
+chmod 000 "$EXIM_MAINLOG"
+_run
+check unr-ok       "$MAILCAMP_OK" "0"
+check unr-word     "$(printf '%s' "$SECTION_OUT" | grep -c 'UNREADABLE')" "1"
+check unr-not-zero "$(printf '%s' "$SECTION_OUT" | grep -c 'No SMTP AUTH campaigns')" "0"
+chmod 600 "$EXIM_MAINLOG"
+
+# --- selected rotation unreadable: no partial list ---------------------------
+: > "$EXIM_MAINLOG"
+for n in 10 11 12 13 14; do _line "198.51.100.$n" "box1" >> "$EXIM_MAINLOG"; done
+touch -t 202606251000 "$EXIM_MAINLOG-20260625"
+chmod 000 "$EXIM_MAINLOG-20260625"
+_run
+check rot-unr-ok   "$MAILCAMP_OK" "0"
+check rot-unr-word "$(printf '%s' "$SECTION_OUT" | grep -c 'UNREADABLE')" "1"
+check rot-unr-no   "$(printf '%s' "$SECTION_OUT" | grep -c 'box1')" "0"
+chmod 600 "$EXIM_MAINLOG-20260625"
+rm -f "$EXIM_MAINLOG-20260625"
+
+# --- ancient unreadable rotation is NOT selected -----------------------------
+: > "$EXIM_MAINLOG"
+for n in 10 11 12 13 14; do _line "198.51.100.$n" "box1" >> "$EXIM_MAINLOG"; done
+touch -t 202001010000 "$EXIM_MAINLOG-20200101"
+chmod 000 "$EXIM_MAINLOG-20200101"
+_run
+check ancient-ok   "$MAILCAMP_OK" "1"
+check ancient-n    "$MAILCAMP_N" "1"
+chmod 600 "$EXIM_MAINLOG-20200101"
+rm -f "$EXIM_MAINLOG-20200101"
+
+# --- rotation sums live + dated file ----------------------------------------
+: > "$EXIM_MAINLOG"
+for n in 10 11 12; do _line "198.51.100.$n" "box1" >> "$EXIM_MAINLOG"; done
+: > "$EXIM_MAINLOG-20260625"
+for n in 13 14; do _line "198.51.100.$n" "box1" >> "$EXIM_MAINLOG-20260625"; done
+touch -t 202606251000 "$EXIM_MAINLOG-20260625"
+_run
+check rot-n        "$MAILCAMP_N" "1"
+check rot-fails    "$MAILCAMP_FAILS" "5"
+rm -f "$EXIM_MAINLOG-20260625"
+
+# --- gzip rotation -----------------------------------------------------------
+: > "$EXIM_MAINLOG"
+for n in 10 11 12; do _line "198.51.100.$n" "box1" >> "$EXIM_MAINLOG"; done
+: > "${WORK}/rot.txt"
+for n in 13 14; do _line "198.51.100.$n" "box1" >> "${WORK}/rot.txt"; done
+gzip -c "${WORK}/rot.txt" > "$EXIM_MAINLOG-20260625.gz"
+touch -t 202606251000 "$EXIM_MAINLOG-20260625.gz"
+_run
+check gz-n         "$MAILCAMP_N" "1"
+check gz-fails     "$MAILCAMP_FAILS" "5"
+rm -f "$EXIM_MAINLOG-20260625.gz"
+
+# --- auto + missing default path: should_run is false (skip, not UNREADABLE) -
+EXIM_MAINLOG=""
+MAIL_CAMPAIGN_DIGEST="auto"
+check auto-skip    "$(_mailcamp_should_run; echo $?)" "1"
+# --- on + missing path: section UNREADABLE ----------------------------------
+MAIL_CAMPAIGN_DIGEST="on"
+EXIM_MAINLOG="${WORK}/no-such-exim"
+_run
+check on-miss-ok   "$MAILCAMP_OK" "0"
+check on-miss-word "$(printf '%s' "$SECTION_OUT" | grep -c 'UNREADABLE')" "1"
+# --- auto + explicit missing path: UNREADABLE --------------------------------
+MAIL_CAMPAIGN_DIGEST="auto"
+EXIM_MAINLOG="${WORK}/no-such-exim"
+check auto-expl    "$(_mailcamp_should_run; echo $?)" "0"
+_run
+check auto-expl-ok "$MAILCAMP_OK" "0"
+MAIL_CAMPAIGN_DIGEST="on"
+EXIM_MAINLOG="${WORK}/exim_mainlog"
+
 echo "PASS=$PASS FAIL=$FAIL"
 (( FAIL == 0 ))
