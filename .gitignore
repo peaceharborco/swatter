@@ -20,6 +20,7 @@ test/fixtures/*.local
 grok-review/
 # subagent-driven-development progress ledger + scratch (NOT docs/superpowers/)
 /.superpowers/
+.worktrees/
 
 # draft marketing — keep out of the public repo
 docs/launch-post.md
