@@ -19,6 +19,7 @@ EXIM_MAINLOG="${WORK}/exim_mainlog"
 MAIL_CAMPAIGN_DIGEST="on"
 MAIL_CAMPAIGN_MIN_IPS=5
 MAIL_CAMPAIGN_LIST_CAP=20
+unset MAILCAMP_GAWK_TZ
 
 _line() { # _line <ip> <id>
   printf '2026-06-25 10:00:00 dovecot_login authenticator failed for H=foo.example [%s]:41666: 535 Incorrect authentication data (set_id=%s)\n' "$1" "$2"
@@ -141,18 +142,43 @@ check cap-n        "$MAILCAMP_N" "25"
 check cap-remain   "$(printf '%s' "$SECTION_OUT" | grep -c '+ 5 more')" "1"
 check cap-rows     "$(printf '%s' "$SECTION_OUT" | grep -c '^  box')" "20"
 
-# --- TZ wrapper: process-wide TZ=UTC must not drop an in-window local stamp --
-# The parser unsets TZ for mktime (errors.sh Apache collector). A 10:00 stamp
-# on 2026-06-25 is inside a 24h window from 12:00 UTC on any host TZ that is
-# not more than 10 hours ahead of UTC — and on UTC it is trivially inside.
-TZ=UTC
+# --- TZ: near-cutoff stamp; mktime must honor host-local zone (v2.15.0) -----
+# swatter_now = 1782396000 (2026-06-25 12:00:00 UTC); 24h cutoff =
+# 2026-06-24 12:00:00 UTC. Stamp 2026-06-24 10:00:00:
+#   TZ=UTC               → 10:00 UTC 24 Jun → BEFORE cutoff → dropped
+#   TZ=America/New_York  → 10:00 EDT = 14:00 UTC 24 Jun → AFTER cutoff → kept
+# Production _mailcamp_parse uses ( unset TZ; gawk … ). MAILCAMP_GAWK_TZ is
+# a test-only hook that exports that TZ into the gawk subshell instead of
+# unset. NY keeps the stamp; UTC drops it — the v2.15.0 class if unset TZ
+# is deleted while common.sh still exports TZ=UTC.
+_ep_utc="$(TZ=UTC gawk 'BEGIN{print mktime("2026 06 24 10 00 00")}')"
+_ep_ny="$(TZ=America/New_York gawk 'BEGIN{print mktime("2026 06 24 10 00 00")}')"
+if [[ -n "$_ep_utc" && -n "$_ep_ny" && "$_ep_utc" != "$_ep_ny" ]]; then
+  check tz-mktime-diff "differ" "differ"
+else
+  check tz-mktime-diff "utc=${_ep_utc:-empty} ny=${_ep_ny:-empty}" "differ"
+fi
+: > "$EXIM_MAINLOG"
+for n in 10 11 12 13 14; do
+  printf '2026-06-24 10:00:00 dovecot_login authenticator failed for H=foo.example [198.51.100.%s]:41666: 535 Incorrect authentication data (set_id=box1)\n' "$n" >> "$EXIM_MAINLOG"
+done
+MAILCAMP_GAWK_TZ=America/New_York
+_run
+check tz-ny-n      "$MAILCAMP_N" "1"
+MAILCAMP_GAWK_TZ=UTC
+_run
+check tz-utc-n     "$MAILCAMP_N" "0"
+unset MAILCAMP_GAWK_TZ
+
+# --- RETURN trap: section must not clobber the caller's RETURN trap ----------
 : > "$EXIM_MAINLOG"
 for n in 10 11 12 13 14; do _line "198.51.100.$n" "box1" >> "$EXIM_MAINLOG"; done
-_run
-check tz-n         "$MAILCAMP_N" "1"
-check tz-unset     "$(grep -c 'unset TZ' "${ROOT}/lib/mail_campaigns.sh")" "1"
-unset TZ
-export TZ=UTC
+_mailcamp_caller_return_probe() { :; }
+trap '_mailcamp_caller_return_probe' RETURN
+swatter_mail_campaigns_section 24h >/dev/null
+trap -p RETURN > "${WORK}/trap.out"
+check trap-preserved "$(grep -c '_mailcamp_caller_return_probe' "${WORK}/trap.out")" "1"
+trap - RETURN
 
 # --- unreadable live file ----------------------------------------------------
 : > "$EXIM_MAINLOG"

@@ -58,8 +58,15 @@ _mailcamp_parse() {
     # Connecting IP = [addr]:port: immediately before 535. set_id is after 535,
     # so a forged [ip]:port inside set_id cannot win. HELO parentheticals have
     # no :port: 535. LC_ALL=C; clear TZ so common.sh's TZ=UTC does not shift
-    # host-local Exim stamps (v2.15.0 class).
-    ( unset TZ; LC_ALL=C gawk -v cutoff="$cutoff" '
+    # host-local Exim stamps (v2.15.0 class). MAILCAMP_GAWK_TZ is test-only
+    # (production never sets it): pin gawk's TZ instead of unsetting.
+    (
+        if [[ -n "${MAILCAMP_GAWK_TZ:-}" ]]; then
+            export TZ="$MAILCAMP_GAWK_TZ"
+        else
+            unset TZ
+        fi
+        LC_ALL=C gawk -v cutoff="$cutoff" '
         {
             if (substr($0,5,1) != "-" || substr($0,8,1) != "-" || substr($0,11,1) != " ") next
             ts = substr($0, 1, 19)
@@ -100,24 +107,29 @@ swatter_mail_campaigns_section() {
     local files f
     files="$(_mailcamp_select_files "$path" "$cutoff")"
     local parsed; parsed="$(mktemp "${TMPDIR:-/tmp}/swatter-mc.XXXXXX")"
-    # shellcheck disable=SC2064
-    trap "rm -f '$parsed'" RETURN
+    # No RETURN trap: bash traps are process-global and would replace
+    # swatter_report's bodyfile cleanup. rm on every return path instead.
 
     local any=0
     while IFS= read -r f; do
         [[ -n "$f" ]] || continue
         if [[ "$f" == "$path" && ! -e "$f" ]]; then
             _mailcamp_emit_unreadable "missing"
+            rm -f "$parsed"
             return 0
         fi
         if [[ ! -r "$f" ]]; then
             _mailcamp_emit_unreadable "unreadable: ${f}"
+            rm -f "$parsed"
             return 0
         fi
         any=1
         if [[ "$f" == *.gz ]]; then
             gzip -dc -- "$f" 2>/dev/null | _mailcamp_parse "$cutoff" >> "$parsed" || {
-                _mailcamp_emit_unreadable "gzip failed: ${f}"; return 0; }
+                _mailcamp_emit_unreadable "gzip failed: ${f}"
+                rm -f "$parsed"
+                return 0
+            }
         else
             _mailcamp_parse "$cutoff" < "$f" >> "$parsed"
         fi
@@ -125,6 +137,7 @@ swatter_mail_campaigns_section() {
 
     if (( ! any )) && [[ ! -e "$path" ]]; then
         _mailcamp_emit_unreadable "missing"
+        rm -f "$parsed"
         return 0
     fi
 
@@ -151,6 +164,7 @@ swatter_mail_campaigns_section() {
             }
         }
     ' "$parsed")"
+    rm -f "$parsed"
 
     local totals campaigns
     totals="$(printf '%s\n' "$summary" | sed -n '1p')"
