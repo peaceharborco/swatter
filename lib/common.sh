@@ -299,6 +299,14 @@ ERROR_DIGEST_LOG=""               # pre-consolidated log; empty = aggregate live
 ORIGIN_LOCK_DIGEST="auto"
 ORIGIN_LOCK_LOG=""
 
+# SMTP AUTH campaign digest (nightly report). auto = run when the Exim mainlog
+# exists (or EXIM_MAINLOG is set); on = always; off = never. Empty EXIM_MAINLOG
+# means /var/log/exim_mainlog. A set path that is missing is UNREADABLE, not a skip.
+MAIL_CAMPAIGN_DIGEST="auto"
+EXIM_MAINLOG=""
+MAIL_CAMPAIGN_MIN_IPS=5
+MAIL_CAMPAIGN_LIST_CAP=20
+
 # Nightly report schedule. install.sh writes /etc/cron.d/swatter from these.
 # REPORT_CRON is "minute hour". REPORT_CRON_TZ is the delivery timezone (IANA);
 # empty = the server clock (UTC on a normal server). Set it to deliver at a true
@@ -492,6 +500,13 @@ swatter_load_config() {
     _swatter_validate_int MAX_BLOCKS_PER_RUN 25    1 10000
     _swatter_validate_int WINDOW_SECONDS     600   1 86400
     _swatter_validate_int MIN_REQS           15    1 100000
+    _swatter_validate_int MAIL_CAMPAIGN_MIN_IPS  5   2 100
+    _swatter_validate_int MAIL_CAMPAIGN_LIST_CAP 20  1 200
+    case "${MAIL_CAMPAIGN_DIGEST:-}" in
+        auto|on|off) ;;
+        *) log_warn "MAIL_CAMPAIGN_DIGEST='${MAIL_CAMPAIGN_DIGEST:-}' invalid (want auto|on|off); using auto"
+           MAIL_CAMPAIGN_DIGEST="auto" ;;
+    esac
 }
 
 # ---------------------------------------------------------------------------

@@ -55,6 +55,10 @@ check report-cron-default     "${REPORT_CRON}" "0 4"
 check report-cron-tz-default  "${REPORT_CRON_TZ}" ""
 check ol-digest-default       "${ORIGIN_LOCK_DIGEST}" "auto"
 check ol-log-default          "${ORIGIN_LOCK_LOG}" ""
+check mailcamp-digest-default "${MAIL_CAMPAIGN_DIGEST}" "auto"
+check mailcamp-exim-default   "${EXIM_MAINLOG}" ""
+check mailcamp-min-ips        "${MAIL_CAMPAIGN_MIN_IPS}" "5"
+check mailcamp-list-cap       "${MAIL_CAMPAIGN_LIST_CAP}" "20"
 
 # --- escalation knob defaults + validation ---------------------------------
 check repeat-n-default   "${REPEAT_N}" "3"
@@ -191,6 +195,22 @@ vcheck min-reqs-alpha     'MIN_REQS="abc"'      MIN_REQS "15"
 vcheck min-reqs-huge      'MIN_REQS=99999999'   MIN_REQS "15"
 vcheck min-reqs-padded    'MIN_REQS="020"'      MIN_REQS "20"
 vcheck min-reqs-valid     'MIN_REQS=10'         MIN_REQS "10"
+
+vcheck mailcamp-min-empty   'MAIL_CAMPAIGN_MIN_IPS=""'     MAIL_CAMPAIGN_MIN_IPS "5"
+vcheck mailcamp-min-alpha   'MAIL_CAMPAIGN_MIN_IPS="abc"'  MAIL_CAMPAIGN_MIN_IPS "5"
+vcheck mailcamp-min-one     'MAIL_CAMPAIGN_MIN_IPS=1'      MAIL_CAMPAIGN_MIN_IPS "5"
+vcheck mailcamp-min-huge    'MAIL_CAMPAIGN_MIN_IPS=999'    MAIL_CAMPAIGN_MIN_IPS "5"
+vcheck mailcamp-min-padded  'MAIL_CAMPAIGN_MIN_IPS="020"'  MAIL_CAMPAIGN_MIN_IPS "20"
+vcheck mailcamp-min-valid   'MAIL_CAMPAIGN_MIN_IPS=4'      MAIL_CAMPAIGN_MIN_IPS "4"
+
+vcheck mailcamp-cap-empty   'MAIL_CAMPAIGN_LIST_CAP=""'    MAIL_CAMPAIGN_LIST_CAP "20"
+vcheck mailcamp-cap-alpha   'MAIL_CAMPAIGN_LIST_CAP="abc"' MAIL_CAMPAIGN_LIST_CAP "20"
+vcheck mailcamp-cap-zero    'MAIL_CAMPAIGN_LIST_CAP=0'     MAIL_CAMPAIGN_LIST_CAP "20"
+vcheck mailcamp-cap-valid   'MAIL_CAMPAIGN_LIST_CAP=10'    MAIL_CAMPAIGN_LIST_CAP "10"
+
+vcheck mailcamp-digest-bogus 'MAIL_CAMPAIGN_DIGEST="yes"' MAIL_CAMPAIGN_DIGEST "auto"
+vcheck mailcamp-digest-on    'MAIL_CAMPAIGN_DIGEST="on"'  MAIL_CAMPAIGN_DIGEST "on"
+vcheck mailcamp-digest-off   'MAIL_CAMPAIGN_DIGEST="off"' MAIL_CAMPAIGN_DIGEST "off"
 
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
