@@ -46,8 +46,8 @@ _mailcamp_select_files() {
     for f in "$dir"/"$base"-* "$dir"/"$base".*; do
         [[ -e "$f" ]] || continue
         [[ "$f" == "$path" ]] && continue
-        mt="$(stat_mtime "$f")" || continue
-        [[ "$mt" =~ ^[0-9]+$ ]] || continue
+        mt="$(stat_mtime "$f")" || { printf '!\t%s\n' "$f"; continue; }
+        [[ "$mt" =~ ^[0-9]+$ ]] || { printf '!\t%s\n' "$f"; continue; }
         (( mt >= cutoff )) || continue
         printf '%s\n' "$f"
     done
@@ -61,7 +61,7 @@ _mailcamp_parse() {
     # host-local Exim stamps (v2.15.0 class). MAILCAMP_GAWK_TZ is test-only
     # (production never sets it): pin gawk's TZ instead of unsetting.
     (
-        if [[ -n "${MAILCAMP_GAWK_TZ:-}" ]]; then
+        if [[ -n "${MAILCAMP_GAWK_TZ:-}" && "${SWATTER_TEST:-}" == "1" ]]; then
             export TZ="$MAILCAMP_GAWK_TZ"
         else
             unset TZ
@@ -106,13 +106,19 @@ swatter_mail_campaigns_section() {
 
     local files f
     files="$(_mailcamp_select_files "$path" "$cutoff")"
-    local parsed; parsed="$(mktemp "${TMPDIR:-/tmp}/swatter-mc.XXXXXX")"
+    local parsed; parsed="$(mktemp "${TMPDIR:-/tmp}/swatter-mc.XXXXXX")" \
+        || { _mailcamp_emit_unreadable "mktemp failed"; return 0; }
     # No RETURN trap: bash traps are process-global and would replace
     # swatter_report's bodyfile cleanup. rm on every return path instead.
 
     local any=0
     while IFS= read -r f; do
         [[ -n "$f" ]] || continue
+        if [[ "$f" == $'!\t'* ]]; then
+            _mailcamp_emit_unreadable "unstatable: ${f#*$'\t'}"
+            rm -f "$parsed"
+            return 0
+        fi
         if [[ "$f" == "$path" && ! -e "$f" ]]; then
             _mailcamp_emit_unreadable "missing"
             rm -f "$parsed"
@@ -131,7 +137,11 @@ swatter_mail_campaigns_section() {
                 return 0
             }
         else
-            _mailcamp_parse "$cutoff" < "$f" >> "$parsed"
+            _mailcamp_parse "$cutoff" < "$f" >> "$parsed" || {
+                _mailcamp_emit_unreadable "parse failed: ${f}"
+                rm -f "$parsed"
+                return 0
+            }
         fi
     done <<< "$files"
 
@@ -144,23 +154,22 @@ swatter_mail_campaigns_section() {
     local min="${MAIL_CAMPAIGN_MIN_IPS:-5}" cap="${MAIL_CAMPAIGN_LIST_CAP:-20}"
     local summary
     # Identity is everything after the first tab (set_id may itself contain tabs).
-    summary="$(LC_ALL=C gawk -F '\t' -v min="$min" -v cap="$cap" '
+    summary="$(LC_ALL=C gawk -F '\t' -v min="$min" '
         NF >= 2 {
             ip=$1
             id = substr($0, index($0, "\t") + 1)
-            fails[id]++; ipn[id SUBSEP ip]++; seenip[ip]=1; n++
+            fails[id]++
+            key = id SUBSEP ip
+            if (!(key in ipn)) { d[id]++; ones[id]++ }
+            ipn[key]++
+            if (ipn[key] == 2) ones[id]--
+            seenip[ip]=1; n++
         }
         END {
             print n+0, length(seenip)+0
             for (id in fails) {
-                d = 0; ones = 0
-                for (k in ipn) {
-                    split(k, a, SUBSEP)
-                    if (a[1] != id) continue
-                    d++
-                    if (ipn[k] == 1) ones++
-                }
-                if (d >= min) printf "%d\t%d\t%d\t%s\n", d, fails[id], ones, id
+                if (d[id] < min) continue
+                printf "%d\t%d\t%d\t%s\n", d[id], fails[id], ones[id]+0, id
             }
         }
     ' "$parsed")"
@@ -173,17 +182,16 @@ swatter_mail_campaigns_section() {
     [[ "$MAILCAMP_FAILS" =~ ^[0-9]+$ ]] || MAILCAMP_FAILS=0
     [[ "$MAILCAMP_IPS" =~ ^[0-9]+$ ]] || MAILCAMP_IPS=0
 
-    campaigns="$(printf '%s\n' "$summary" | sed '1d' | sort -t$'\t' -k1,1nr -k2,2nr)"
+    campaigns="$(printf '%s\n' "$summary" | sed '1d' | LC_ALL=C sort -t$'\t' -k1,1nr -k2,2nr)"
     MAILCAMP_N=0
-    [[ -n "$campaigns" ]] && MAILCAMP_N="$(printf '%s\n' "$campaigns" | grep -c . || true)"
+    [[ -n "$campaigns" ]] && MAILCAMP_N="$(printf '%s\n' "$campaigns" | LC_ALL=C grep -c . || true)"
+    [[ "$MAILCAMP_N" =~ ^[0-9]+$ ]] || MAILCAMP_N=0
 
     if (( MAILCAMP_N == 0 )); then
         printf 'No SMTP AUTH campaigns this window.\n'
         return 0
     fi
 
-    printf 'Mail Campaigns\n'
-    echo "--------------"
     printf '  %s campaigns  ·  %s fails  ·  %s distinct IPs\n\n' "$MAILCAMP_N" "$MAILCAMP_FAILS" "$MAILCAMP_IPS"
     printf '  %-40s %5s %6s %8s\n' "mailbox" "ips" "fails" "1-per-IP"
     local shown=0 d fails ones id pct

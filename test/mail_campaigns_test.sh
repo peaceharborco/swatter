@@ -142,6 +142,21 @@ check cap-n        "$MAILCAMP_N" "25"
 check cap-remain   "$(printf '%s' "$SECTION_OUT" | grep -c '+ 5 more')" "1"
 check cap-rows     "$(printf '%s' "$SECTION_OUT" | grep -c '^  box')" "20"
 
+# --- UTF-8 locale + invalid byte in set_id must not empty the campaign list --
+# Dual ship review: GNU sort under a UTF-8 LC_CTYPE aborts on invalid multibyte
+# when keys tie, which printed "No SMTP AUTH campaigns" with MAILCAMP_OK=1.
+: > "$EXIM_MAINLOG"
+for n in 10 11 12 13 14; do
+  printf '2026-06-25 10:00:00 dovecot_login authenticator failed for H=foo [198.51.100.%s]:41666: 535 Incorrect authentication data (set_id=box\x80)\n' "$n" >> "$EXIM_MAINLOG"
+done
+_saved_lc="${LC_ALL-}"
+LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+_run
+check locale-sort-ok "$MAILCAMP_OK" "1"
+check locale-sort-n  "$MAILCAMP_N" "1"
+if [[ -n "$_saved_lc" ]]; then LC_ALL="$_saved_lc"; else unset LC_ALL; fi
+unset LANG
+
 # --- TZ: near-cutoff stamp; mktime must honor host-local zone (v2.15.0) -----
 # swatter_now = 1782396000 (2026-06-25 12:00:00 UTC); 24h cutoff =
 # 2026-06-24 12:00:00 UTC. Stamp 2026-06-24 10:00:00:
@@ -162,6 +177,7 @@ fi
 for n in 10 11 12 13 14; do
   printf '2026-06-24 10:00:00 dovecot_login authenticator failed for H=foo.example [198.51.100.%s]:41666: 535 Incorrect authentication data (set_id=box1)\n' "$n" >> "$EXIM_MAINLOG"
 done
+SWATTER_TEST=1
 MAILCAMP_GAWK_TZ=America/New_York
 _run
 check tz-ny-n      "$MAILCAMP_N" "1"
@@ -169,6 +185,7 @@ MAILCAMP_GAWK_TZ=UTC
 _run
 check tz-utc-n     "$MAILCAMP_N" "0"
 unset MAILCAMP_GAWK_TZ
+unset SWATTER_TEST
 
 # --- RETURN trap: section must not clobber the caller's RETURN trap ----------
 : > "$EXIM_MAINLOG"
