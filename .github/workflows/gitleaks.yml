@@ -5,13 +5,17 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read   # least privilege — gitleaks only reads the repo
+
 jobs:
   gitleaks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7, pinned 2026-09-13
         with:
           fetch-depth: 0   # full history — gitleaks scans every commit
+          persist-credentials: false   # don't leave GITHUB_TOKEN in .git/config
       - name: Run gitleaks
         run: |
           # Pinned version + sha256 for supply-chain integrity
