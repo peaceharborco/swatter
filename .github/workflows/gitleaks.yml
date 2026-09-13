@@ -12,7 +12,13 @@ jobs:
   gitleaks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7, pinned 2026-09-13
+      # Pinned to the commit v7 pointed at on 2026-09-13, resolved via
+      # `gh api repos/actions/checkout/git/refs/tags` — that commit is tagged
+      # both v7 and v7.0.1, so this is re-verifiable without trusting the
+      # lookup. An immutable pin also means it no longer receives v7
+      # patches: to update, resolve the new v7 SHA the same way and record
+      # the exact version again. Nothing automates that here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           fetch-depth: 0   # full history — gitleaks scans every commit
           persist-credentials: false   # don't leave GITHUB_TOKEN in .git/config
