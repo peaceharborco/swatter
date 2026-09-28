@@ -92,10 +92,12 @@ _sqlq() { _sql "$1"; }
 # escape-sequence-injection hardening measure) visually re-encode embedded
 # control bytes below 0x20 — e.g. a literal char(31) glued into a string via
 # `_sqlq` prints as the two literal characters "^_", not the actual 0x1F byte
-# — even when stdout is redirected/captured, not a tty. `.mode ascii` is
-# exempt (raw delimiter bytes are the entire point of the mode) and has been
-# in sqlite3 since long before that hardening existed, so it is safe on old
-# CLIs too — unlike `-escape off`, which is itself a recent flag. ONLY use
+# — even when stdout is redirected/captured, not a tty. Only `.mode ascii`'s
+# OWN separators are exempt: from sqlite3 3.54 a control byte inside a VALUE
+# is re-encoded in ascii mode too, so callers must select separate columns
+# rather than concatenate char(31) into one. The mode has been in sqlite3
+# since long before that hardening, so it is safe on old CLIs too — unlike
+# `-escape off`, which is itself a recent flag. ONLY use
 # this for machine-consumed output; never for anything an operator's
 # terminal might render (that's what the escaping protects against) UNLESS
 # the caller re-sanitizes the specific field it renders — see cmd_pending
@@ -698,9 +700,12 @@ swatter_store_pending_set() {
 # `read` treats tab as an "IFS whitespace" character no matter what IFS is set
 # to, so adjacent tabs (an empty field — e.g. a DIRECT-plane row with no
 # top_vhost) silently COLLAPSE and shift every later column left by one. US is
-# not in that whitespace class, so empty fields are preserved. Uses _sql_ascii
-# (not _sqlq/_sql) so the embedded char(31) bytes reach the caller raw — see
-# _sql_ascii for why plain list-mode output can't be trusted here. `.mode
+# not in that whitespace class, so empty fields are preserved. The US bytes are
+# `.mode ascii`'s OWN column separator, so the fields are selected as separate
+# columns, never glued with ||char(31)||: sqlite3 3.54 re-encodes a char(31)
+# built inside a value as the two characters "^_" even in ascii mode, which
+# left every queued row unsplittable and the drain silently skipping them all.
+# The mode's own separators stay raw bytes on every CLI. `.mode
 # ascii` also emits char(30) (RS) after EACH ROW instead of a newline; the
 # reader (_swatter_retry_pending) converts that back to '\n' before its
 # existing line-oriented `while read` loop, then splits fields on
@@ -709,7 +714,8 @@ swatter_store_pending_set() {
 #   US audit_action US reason US top_vhost US ev  RS
 swatter_store_pending_list() {
     [[ "${STORE}" == "sqlite" ]] || return 0
-    _sql_ascii "SELECT ip||char(31)||plane||char(31)||action||char(31)||ttl||char(31)||folded||char(31)||rep||char(31)||first_failed||char(31)||attempts||char(31)||COALESCE(audit_action,action)||char(31)||COALESCE(reason,'')||char(31)||COALESCE(top_vhost,'')||char(31)||COALESCE(ev,'{}')
+    _sql_ascii "SELECT ip, plane, action, ttl, folded, rep, first_failed, attempts,
+                  COALESCE(audit_action,action), COALESCE(reason,''), COALESCE(top_vhost,''), COALESCE(ev,'{}')
            FROM pending_blocks ORDER BY first_failed;"
 }
 

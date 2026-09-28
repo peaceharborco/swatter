@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already held an enforced perm before the window; a secondary leg that is
   the sole record of a new escalation (primary failed or fail-closed) still
   counts.
+- **Durable block retries silently never ran on sqlite3 3.54 and later.**
+  `swatter_store_pending_list` glued fields with `||char(31)||`, and sqlite3
+  3.54 re-encodes a control byte inside a value as the text `^_` even in
+  `.mode ascii`. No queued row could be split, so the drain skipped every one.
+  Fields are now separate columns, delimited by the mode's own separator, which
+  stays a raw byte on every CLI. Output is byte-identical on 3.34 (cds1).
 
 ## [2.19.0] - 2026-09-08
 
