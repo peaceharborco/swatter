@@ -300,6 +300,19 @@ swatter_store_temps_all_critical_single() {
 #                  It also collapses an IP re-permed later in the window — 662
 #                  all-time perm rows on cds1 cover 653 distinct IPs.
 #
+#   secondary legs A 'plane-upgrade ' or 'dual-plane ' row (reason prefix
+#                  set by lib/score.sh) usually adds a second plane for an IP
+#                  the ladder escalated weeks earlier. Counting those let
+#                  repeat offenders pushed onto the edge by origin-lock DROP
+#                  re-count as new perms: on cds1 69 distinct IPs read against
+#                  a 70/day threshold where 30 were new. So a prefixed row is
+#                  skipped ONLY when the IP already held an enforced perm
+#                  before the window. The prefix alone is not proof of an
+#                  older ban: _swatter_maybe_dual_plane fires even when the
+#                  primary leg failed (fail-closed, CF plane off, backend
+#                  error), and then its dual-plane row is the only record of
+#                  a brand-new escalation — that one must still count.
+#
 # DELIBERATELY NOT FILTERED ON ttl. A Cloudflare 'perm' is TTL-emulated (ttl
 # rewritten to the ladder max at lib/score.sh's CF branch, later swept), so
 # `ttl=0` looks like an appealing proxy for "truly permanent" — and it is, as a
@@ -331,7 +344,11 @@ swatter_store_perm_count_since() {
     # a phantom DB (mirrors the guard swatter_escalate_preview added).
     [[ -e "$(_swatter_db)" ]] || { echo 0; return 0; }
     local out
-    out="$(_sqlq "SELECT COUNT(DISTINCT ip) FROM actions WHERE action='perm' AND dry_run=0 AND ts>${since};")"
+    out="$(_sqlq "SELECT COUNT(DISTINCT a.ip) FROM actions a
+        WHERE a.action='perm' AND a.dry_run=0 AND a.ts>${since}
+          AND ( (a.reason NOT LIKE 'plane-upgrade %' AND a.reason NOT LIKE 'dual-plane %')
+                OR NOT EXISTS (SELECT 1 FROM actions b WHERE b.ip=a.ip
+                               AND b.action='perm' AND b.dry_run=0 AND b.ts<=${since}) );")"
     # The DB exists and we asked it a question, so anything that is not a number
     # means the READ failed — _sqlq returns empty stdout on a lock timeout or a
     # corrupt file. Say so; do not coerce it to a quiet 0.

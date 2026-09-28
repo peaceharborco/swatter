@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.19.1] - 2026-09-28
+
+### Fixed
+- **Perm-rate day arm counted secondary plane legs as new perms.** A
+  `plane-upgrade` or healed `dual-plane` row adds a second plane for an IP the
+  ladder already escalated, often before the window opened. The run arm already
+  skipped them; the day arm did not, so repeat offenders pushed onto the edge by
+  origin-lock DROP re-counted every time they returned. On cds1 the arm read 69
+  against 70/day where 30 were new, and re-paged every `ALERT_REPEAT_TTL`
+  while it hovered there. `swatter_store_perm_count_since` now skips a row
+  whose reason starts with `plane-upgrade ` or `dual-plane ` only when the IP
+  already held an enforced perm before the window; a secondary leg that is
+  the sole record of a new escalation (primary failed or fail-closed) still
+  counts.
+
 ## [2.19.0] - 2026-09-08
 
 ### Added

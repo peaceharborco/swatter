@@ -368,6 +368,41 @@ if (( HAVE_SQLITE )); then
     seed_action_ch 10.9.4.3 1 csf 0
     check permcount-distinct-ips-all-count "$(swatter_store_perm_count_since "$since")" "3"
 
+    # (d) Secondary legs are not new escalations. An IP permed on the direct
+    # plane BEFORE the window that later gets its edge leg (plane-upgrade) or a
+    # healed other-plane leg (dual-plane) inside the window must not count —
+    # the run arm already skips both. A fresh perm with its same-second
+    # dual-plane leg still counts once, via its unprefixed primary row.
+    seed_action_r() {   # seed_action_r <ip> <days_ago> <channel> <reason>
+        sqlite3 "$db" "INSERT INTO actions(ip,ts,action,channel,ttl,score,reason,dry_run)
+          VALUES('$1',$(( NOW - $2 * DAY )),'perm','$3',0,91,'$4',0);"
+    }
+    STATE_DIR="$(newdir)"; swatter_store_init; db="${STATE_DIR}/swatter.db"
+    seed_action_r 10.9.6.1 9 csf        'score=91 rule=scanner'
+    seed_action_r 10.9.6.1 1 cloudflare 'plane-upgrade score=81 rule=scanner'
+    seed_action_r 10.9.6.2 9 cloudflare 'score=91 rule=scanner'
+    seed_action_r 10.9.6.2 1 csf        'dual-plane score=91 rule=scanner'
+    check permcount-secondary-legs-excluded "$(swatter_store_perm_count_since "$since")" "0"
+    seed_action_r 10.9.6.3 1 cloudflare 'score=91 rule=critical_badpath'
+    seed_action_r 10.9.6.3 1 csf        'dual-plane score=91 rule=critical_badpath'
+    check permcount-fresh-dualplane-counts "$(swatter_store_perm_count_since "$since")" "1"
+
+    # (e) The quiet shape. A brand-new hard-intel perm whose primary leg failed
+    # (fail-closed / CF plane off / backend error) leaves ONLY its dual-plane
+    # row; a plane-upgrade with no older perm is likewise not provably old.
+    # Neither may be hidden — the prefix alone is not proof of an earlier ban.
+    STATE_DIR="$(newdir)"; swatter_store_init; db="${STATE_DIR}/swatter.db"
+    seed_action_r 10.9.7.1 1 cloudflare 'dual-plane score=91 rule=critical_badpath'
+    seed_action_r 10.9.7.2 1 cloudflare 'plane-upgrade score=81 rule=scanner'
+    check permcount-secondary-only-new-ip-counts "$(swatter_store_perm_count_since "$since")" "2"
+    # A dry-run perm before the window is not an enforced ban and must not
+    # license hiding the in-window leg.
+    STATE_DIR="$(newdir)"; swatter_store_init; db="${STATE_DIR}/swatter.db"
+    sqlite3 "$db" "INSERT INTO actions(ip,ts,action,channel,ttl,score,reason,dry_run)
+      VALUES('10.9.8.1',$(( NOW - 9 * DAY )),'perm','csf',0,91,'score=91',1);"
+    seed_action_r 10.9.8.1 1 cloudflare 'plane-upgrade score=81 rule=scanner'
+    check permcount-dryrun-prior-does-not-hide "$(swatter_store_perm_count_since "$since")" "1"
+
     STATE_DIR="$(newdir)"; swatter_store_init; db="${STATE_DIR}/swatter.db"
     seed_action 10.9.0.1 1 perm 0
     seed_action 10.9.0.2 2 perm 0
