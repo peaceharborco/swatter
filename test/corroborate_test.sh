@@ -337,13 +337,19 @@ if command -v sqlite3 >/dev/null 2>&1; then
     # Hostile, but 40 days before the window: the caller's 30-day lookback drops
     # it. Used end to end below, where that number actually lives.
     _act 198.51.100.42 $((W_AFTER-3456000)) temp "score=90 rule=critical_badpath"
+    # Same second, both orders. Row order decides, not the timestamp: a block
+    # then an unblock is taken back; an unblock then a block stands.
+    _act 198.51.100.53 $((W_AFTER-3000))   temp "score=78 rule=scanner_profile"
+    _act 198.51.100.53 $((W_AFTER-3000))   unblock "manual unblock"
+    _act 198.51.100.54 $((W_AFTER-3000))   unblock "manual unblock"
+    _act 198.51.100.54 $((W_AFTER-3000))   temp "score=78 rule=scanner_profile"
     # Hostile once, then a volume block after it: the hostile row still stands.
     _act 198.51.100.52 $((W_AFTER-5000))   temp "score=90 rule=critical_badpath"
     _act 198.51.100.52 $((W_AFTER-4000))   temp "score=75 rule=request_flood"
 
     HOSTILE="$(_errors_hostile_ips "$HDB" "$H_SINCE" | sort | tr '\n' ' ')"
     check hostile-list "$HOSTILE" \
-        "198.51.100.30 198.51.100.31 198.51.100.32 198.51.100.33 198.51.100.34 198.51.100.35 198.51.100.41 198.51.100.51 198.51.100.52 "
+        "198.51.100.30 198.51.100.31 198.51.100.32 198.51.100.33 198.51.100.34 198.51.100.35 198.51.100.41 198.51.100.51 198.51.100.52 198.51.100.54 "
     # A <since> that is not a number is refused rather than spliced into SQL.
     # The payload is a complete statement followed by a comment, so it WOULD run
     # if spliced; a fragment only produces a syntax error and proves nothing.

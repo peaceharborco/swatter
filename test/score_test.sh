@@ -1495,7 +1495,29 @@ assert_band "flood-count-60-dynamic-floors"    "$(flood_score 400 58 5)"    75 1
 assert_band "flood-rate-under-8-dynamic-silent" "$(flood_score 400 78 11)"  0 49
 assert_band "flood-rate-at-8-dynamic-floors"    "$(flood_score 400 78 10)"  75 100
 
+# A flood made of nothing but static files does not go dark: past 1500 requests
+# in the slice the all-requests rate floors again. The largest real page-load
+# burst measured was 291. (flood_tsv adds two requests of its own.)
+assert_band "flood-static-only-1499-silent"   "$(flood_score 1497 0 60)"    0 49
+assert_band "flood-static-only-1500-floors"   "$(flood_score 1498 0 60)"    75 75
+#   ...and only at flood rate: 1500 over 200s is 7.5/s.
+assert_band "flood-static-only-slow-silent"   "$(flood_score 1498 0 200)"   0 49
+
 # Nothing that is not a served static file may use the exemption.
+#   Status 0 is what ingest writes for a line it could not parse, and 1xx is
+#   not a served file either. ONE path again, so only the flood floor can score.
+assert_band "flood-asset-status0-still-scores" \
+    "$(flood_score 118 0 10 0 '/wp-content/themes/t/style.css%.0s')"         75 75
+assert_band "flood-asset-1xx-still-scores" \
+    "$(flood_score 118 0 10 100 '/wp-content/themes/t/style.css%.0s')"       75 75
+assert_band "flood-asset-199-still-scores" \
+    "$(flood_score 118 0 10 199 '/wp-content/themes/t/style.css%.0s')"       75 75
+assert_band "flood-asset-400-still-scores" \
+    "$(flood_score 118 0 10 400 '/wp-content/themes/t/style.css%.0s')"       75 75
+assert_band "flood-asset-200-exempt" \
+    "$(flood_score 118 0 10 200 '/wp-content/themes/t/style.css%.0s')"       0 49
+assert_band "flood-asset-399-exempt" \
+    "$(flood_score 118 0 10 399 '/wp-content/themes/t/style.css%.0s')"       0 49
 #   An asset answered with an error is not a page loading (origin melt).
 #   ONE path, so scanner_profile (needs 25 distinct) cannot be what scores it,
 #   and the 404 run stays under the error_burst knee (100) for the same reason:
@@ -1540,6 +1562,13 @@ assert_band "flood-badpath-asset-still-scores" \
 #   A honeypot path wearing an asset extension is still an instant 100.
 assert_band "flood-honeypot-asset-still-100" \
     "$(flood_score 118 0 10 200 '/__trap_a7f3c1d9/x%s.js')"                  100 100
+
+# seeded[ip] is read ONCE in END, into a scalar. gawk 5.2.1 (Ubuntu 24.04)
+# double-frees when a never-assigned array element is compared twice, and no
+# behavioural test here can see that on another gawk -- so this pins the shape.
+sr="$(grep -v '^[[:space:]]*#' "${ROOT}/lib/score.awk" | grep -c 'seeded\[ip\][[:space:]]*[^=[:space:]]\|seeded\[ip\][[:space:]]*==' )"
+if [[ "$sr" == "1" ]]; then PASS=$((PASS+1)); printf 'PASS  %-30s reads=%s\n' "seeded-read-once" "$sr"
+else FAIL=$((FAIL+1)); printf 'FAIL  %-30s reads=%s (want 1)\n' "seeded-read-once" "$sr"; fi
 
 # The evidence says how many requests the floor actually measured, so
 # `swatter why` can explain a row whose reqs and rps look like a flood.

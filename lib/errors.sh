@@ -345,7 +345,8 @@ _errors_epoch_of() {
 #     upper bound: a scanner is normally blocked minutes AFTER the request that
 #     crashed.
 #   - no later `unblock` for the address. An operator lifting a block is a
-#     human judgement that it was wrong.
+#     human judgement that it was wrong. "Later" is row order (id), not the
+#     timestamp: the ledger is append-only and two rows can share a second.
 # dry_run rows count on purpose: in report mode every row is a dry run, and a
 # would-be block identifies a scanner just as well as a placed one.
 _errors_hostile_ips() {
@@ -359,7 +360,7 @@ _errors_hostile_ips() {
              OR instr(a.reason,'rule=high_badpath_repeat') > 0
              OR instr(a.reason,'rule=scanner_profile') > 0)
            AND NOT EXISTS (SELECT 1 FROM actions u
-                            WHERE u.ip = a.ip AND u.action = 'unblock' AND u.ts >= a.ts);"
+                            WHERE u.ip = a.ip AND u.action = 'unblock' AND u.id > a.id);"
 }
 
 # Ask the affected accounts' own access logs who received the failures, and turn

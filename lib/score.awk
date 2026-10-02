@@ -665,7 +665,11 @@ BEGIN {
     # Never a bad-path hit, and never an error status: an asset answered
     # 4xx/5xx is not a page loading. (A honeypot hit needs no guard here -- it
     # floors at 100 whatever this count says.)
-    if (status < 400 && !hitbad) {
+    # EXACTLY 2xx/3xx, not "status < 400". The srcset exemption above uses the
+    # wider set on purpose (0 and 1xx cannot dilute there); here the wider set
+    # would exempt a line ingest could not parse (status 0), which is not a
+    # file anyone was served.
+    if (status >= 200 && status < 400 && !hitbad) {
         fpath = flood_asset_path(path)
         if (fpath != "" && is_static_asset(fpath)) casset[ip]++
     }
@@ -769,7 +773,11 @@ END {
         # A seeded row has no SCORED requests behind it, so it must not inherit a
         # rate from the exempted ones -- that would let the watch-only tripwire
         # reach the request_flood floor and temp after all.
-        if (seeded[ip]) rps = 0
+        # Read seeded[] ONCE into a scalar, like the counters above and for the
+        # same reason: the flood floor below needs it too, and a second
+        # comparison of a never-assigned element is the gawk 5.2.1 double-free.
+        sd = seeded[ip] + 0
+        if (sd) rps = 0
 
         s_rate = clamp100(100 * (rps / RATE_SAT))
 
@@ -801,7 +809,7 @@ END {
         # did -- it cannot create a block the old rule would not have placed.
         # A seeded row has no scored requests behind it (see rps above).
         nf = n - (casset[ip] + 0)
-        frps = seeded[ip] ? 0 : nf / span
+        frps = sd ? 0 : nf / span
 
         # Behavioral baseline: weighted average of all signals. Conservative by
         # design — it catches IPs that are suspicious across several weak signals
@@ -838,7 +846,18 @@ END {
         # (126 requests, 124 distinct, all 2xx/3xx). A flood that hurts the
         # origin is a flood of things PHP has to answer; those all still count,
         # as does any asset answered with an error.
-        if (frps >= RATE_SAT && nf >= 60 && floor < 75)      { floor = 75; frule = "request_flood" }
+        #
+        # ...with one backstop, so a flood made of nothing BUT static files does
+        # not go dark: the old all-requests rate still floors once the slice
+        # holds 1500 requests. Measured on the reference host over a month of
+        # page-load bursts that the old rule blocked: the largest was 291
+        # requests in one five-minute slice (median 81, 99th percentile 193),
+        # so this sits five times above anything a browser produced. Both arms
+        # are inside the old condition, so the floor still cannot fire anywhere
+        # the old rule did not.
+        if (((frps >= RATE_SAT && nf >= 60) || (rps >= RATE_SAT && n >= 1500)) && floor < 75) {
+            floor = 75; frule = "request_flood"
+        }
 
         if (floor > composite) composite = floor
 

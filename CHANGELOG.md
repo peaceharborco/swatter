@@ -13,9 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   over the *observed* span — so one WordPress admin screen, a document plus
   100-200 stylesheets, scripts and images inside a few seconds, measured as a
   15 rps flood and was challenged at 75. The floor now counts only requests
-  that are not a served static file (`2xx`/`3xx`, bad-paths excluded), over the
-  same span. That makes it a strict subset of the old rule: it cannot place a
-  block the old one would not have. Everything else about a request is scored
+  that are not a served static file (exactly `2xx`/`3xx`, bad-paths excluded),
+  over the same span. A flood made of nothing but static files is still
+  caught: past 1500 requests in one scan slice the old all-requests rate
+  applies again (the largest real page-load burst measured was 291). Both arms
+  sit inside the old condition, so the floor cannot place a block the old rule
+  would not have. Everything else about a request is scored
   as before, and an asset answered with an error still counts. Filenames with
   an encoded space, punctuation or UTF-8 byte are recognised as static files;
   an escape that hides a letter, digit, dot, slash or percent sign is not.
@@ -28,9 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every `critical_badpath`, `scanner_profile`, `high_badpath_repeat` and
   blended row is identical; the only difference is 11 `request_flood` rows
   gone, none added.
-  One trade-off, by design: a crawler fetching pages *and* their assets is now
+  Two trade-offs, by design. A crawler fetching pages *and* their assets is now
   measured on the pages alone, so one that sat just over `RATE_SAT` only
-  because of its asset requests is no longer blocked. `RATE_SAT` is the knob.
+  because of its asset requests is no longer blocked; `RATE_SAT` is the knob.
+  And a static-only flood under 1500 requests per slice no longer blocks or
+  produces a row.
 - **The digest could call a real person "a known bot".** The outage
   corroboration's bot list was every address in the ledger. A site
   administrator who had been wrongly blocked for `request_flood` later hit a
@@ -38,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   known bots — no outside client saw one". The list is now addresses blocked
   for hostile behaviour only (`honeypot`, `critical_badpath`,
   `high_badpath_repeat`, `scanner_profile`), within 30 days before the
-  failure window, with no later `unblock`. Volume rules, blended scores and
+  failure window, with no `unblock` after them. Volume rules, blended scores and
   anything unrecognised read as an outside client — the louder direction.
 
 ## [2.19.1] - 2026-09-28
