@@ -858,7 +858,7 @@ deny it. Same pattern in `rollback-ladder`. Confirm with `swatter list perm`,
 ## ✅ CLOSED 2026-10-02 — `request_flood` tuned (opened 2026-08-08)
 
 **Closed by counting only non-static requests toward the floor** — see
-CHANGELOG `[Unreleased]`. The cohort had grown from 72 distinct IPs/30d to
+CHANGELOG `[2.19.2]`. The cohort had grown from 72 distinct IPs/30d to
 281; replayed from the archived logs, 258 of 278 blocks were page loads. What
 is left open: media files (`.mp3`, `.mp4`, `.pdf`) are not treated as static,
 so a podcast app refreshing many enclosures at once still floors (1 event in
