@@ -42,9 +42,11 @@
 # Space-separated IPs that mean "the server talking to itself". Loopback is always
 # treated as self in addition to these.
 : "${SERVER_IPS:=}"
-# Space-separated IPs swatter has blocked, for the scanner arm. The caller fills
-# this from the ledger; empty just means the scanner arm never fires, which is
-# the safe direction (an unrecognized scanner reads as a visitor -> louder).
+# Space-separated IPs swatter blocked for HOSTILE behaviour, for the scanner arm.
+# The caller fills this from the ledger (lib/errors.sh _errors_hostile_ips) and
+# decides what counts — "ever blocked" is not it, because volume rules block real
+# visitors. Empty just means the scanner arm never fires, which is the safe
+# direction (an unrecognized scanner reads as a visitor -> louder).
 : "${CORR_BANNED_IPS:=}"
 # ...or a FILE of them, one per line, which is how production supplies it: the
 # ledger holds thousands of addresses and a command line is the wrong place for

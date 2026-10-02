@@ -293,6 +293,113 @@ swatter_errors_section 24h > "${WORK}/sec.out"; SECTION="$(cat "${WORK}/sec.out"
 check e2e-mixed-verdict "$ERR_CORR_VERDICT" "noua"
 check e2e-mixed-split   "$(printf '%s' "$SECTION" | grep -c '1 with no user agent')" "1"
 check e2e-mixed-noclaim "$(printf '%s' "$SECTION" | grep -c 'treat this as unresolved, not as nobody')" "1"
+# --- "known bot" means blocked for HOSTILE behaviour, not "ever blocked" -------
+# Reference host, 2026-10-02: a site administrator, logged in, hit a plugin crash
+# and the digest said "served to known bots — no outside client saw one". Their
+# address was in the ledger for three request_flood blocks, all false positives
+# on wp-admin page loads. The list used to be `select ip from offenders`.
+if command -v sqlite3 >/dev/null 2>&1; then
+    HDB="${WORK}/state/swatter.db"; mkdir -p "${WORK}/state"
+    sqlite3 "$HDB" "CREATE TABLE actions(id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT, ts INTEGER,
+        action TEXT, channel TEXT, ttl INTEGER, score INTEGER, reason TEXT, dry_run INTEGER);
+        CREATE TABLE offenders(ip TEXT PRIMARY KEY);"
+    _act() {  # <ip> <ts> <action> <reason> [dry_run]
+        sqlite3 "$HDB" "INSERT INTO actions(ip,ts,action,channel,ttl,score,reason,dry_run)
+            VALUES('$1',$2,'$3','cloudflare',3600,75,'$4',${5:-0});
+            INSERT OR IGNORE INTO offenders(ip) VALUES('$1');"; }
+    H_SINCE=$(( W_AFTER - 2592000 ))
+    # The measured case: request_flood only, three times, the last one a "perm".
+    _act 198.51.100.20 $((W_AFTER-800000)) temp "score=75 rule=request_flood"
+    _act 198.51.100.20 $((W_AFTER-600000)) temp "score=75 rule=request_flood"
+    _act 198.51.100.20 $((W_AFTER-500000)) perm "score=75 rule=request_flood recidivism=3/30d"
+    # Other non-hostile histories: the other volume rule, a secondary leg of a
+    # volume rule, and a blended score with no decisive rule at all.
+    _act 198.51.100.21 $((W_AFTER-1000))   temp "score=75 rule=error_burst"
+    _act 198.51.100.22 $((W_AFTER-1000))   perm "plane-upgrade score=75 rule=request_flood"
+    _act 198.51.100.23 $((W_AFTER-1000))   temp "score=72"
+    # Hostile, one per rule, in the reason shapes the scan actually writes.
+    _act 198.51.100.30 $((W_AFTER-1000))   temp "score=91 intel=abuseipdb:confidence100(100) rule=critical_badpath"
+    _act 198.51.100.31 $((W_AFTER-1000))   temp "score=82 rule=high_badpath_repeat"
+    _act 198.51.100.32 $((W_AFTER-1000))   temp "low_and_slow_persist buckets=6 score=55 rule=scanner_profile"
+    _act 198.51.100.33 $((W_AFTER-1000))   perm "honeypot score=100 rule=honeypot"
+    # Blocked AFTER the window: the normal order for a scanner that crashed a page.
+    _act 198.51.100.34 $((W_BEFORE+300))   temp "score=90 rule=critical_badpath"
+    # Report mode writes every row as a dry run; it still identifies the scanner.
+    _act 198.51.100.35 $((W_AFTER-1000))   temp "score=90 rule=critical_badpath" 1
+    # Too old: one second outside the 30 days, and one second inside.
+    _act 198.51.100.40 $((H_SINCE-1))      temp "score=90 rule=critical_badpath"
+    _act 198.51.100.41 $((H_SINCE))        temp "score=90 rule=critical_badpath"
+    # The operator took the block back: not a bot. Re-blocked afterwards: is one.
+    _act 198.51.100.50 $((W_AFTER-5000))   temp "score=78 rule=scanner_profile"
+    _act 198.51.100.50 $((W_AFTER-4000))   unblock "manual unblock"
+    _act 198.51.100.51 $((W_AFTER-5000))   unblock "manual unblock"
+    _act 198.51.100.51 $((W_AFTER-4000))   temp "score=78 rule=scanner_profile"
+    # Hostile, but 40 days before the window: the caller's 30-day lookback drops
+    # it. Used end to end below, where that number actually lives.
+    _act 198.51.100.42 $((W_AFTER-3456000)) temp "score=90 rule=critical_badpath"
+    # Hostile once, then a volume block after it: the hostile row still stands.
+    _act 198.51.100.52 $((W_AFTER-5000))   temp "score=90 rule=critical_badpath"
+    _act 198.51.100.52 $((W_AFTER-4000))   temp "score=75 rule=request_flood"
+
+    HOSTILE="$(_errors_hostile_ips "$HDB" "$H_SINCE" | sort | tr '\n' ' ')"
+    check hostile-list "$HOSTILE" \
+        "198.51.100.30 198.51.100.31 198.51.100.32 198.51.100.33 198.51.100.34 198.51.100.35 198.51.100.41 198.51.100.51 198.51.100.52 "
+    # A <since> that is not a number is refused rather than spliced into SQL.
+    # The payload is a complete statement followed by a comment, so it WOULD run
+    # if spliced; a fragment only produces a syntax error and proves nothing.
+    cp "$HDB" "${HDB}.inj"
+    _errors_hostile_ips "${HDB}.inj" "0; DROP TABLE actions; --" >/dev/null 2>&1; rc=$?
+    check hostile-bad-since-rc "$rc" "1"
+    check hostile-bad-since-noexec "$(sqlite3 "${HDB}.inj" 'select count(*) > 0 from actions;' 2>/dev/null)" "1"
+    # A database that cannot be read is an error, never an empty answer.
+    _errors_hostile_ips "${WORK}/state/absent.db" "$H_SINCE" >/dev/null 2>&1; rc=$?
+    check hostile-nodb-rc "$([[ "$rc" -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+
+    # End to end, through the real digest path. Same four-account crash; the only
+    # served failure went to a logged-in browser whose address has the
+    # request_flood history above. It must read as an outside client.
+    _SAVED_STATE_DIR="${STATE_DIR:-}"; STATE_DIR="${WORK}/state"
+    { echo "[2026-06-25 09:00:00] [FATAL] [php/acctA] ${FAN} in /home/acctA/public_html/x.php:8"
+      echo "[2026-06-25 09:10:00] [FATAL] [php/acctB] ${FAN} in /home/acctB/public_html/x.php:8"
+      echo "[2026-06-25 09:20:00] [FATAL] [php/acctC] ${FAN} in /home/acctC/public_html/x.php:8"
+      echo "[2026-06-25 09:30:00] [FATAL] [php/acctD] ${FAN} in /home/acctD/public_html/x.php:8"
+    } > "$ERROR_DIGEST_LOG"
+    _reset
+    _log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.20 "$(_lts $((W_AFTER+5)))" \
+         "POST /wp-admin/admin-ajax.php?action=sign HTTP/2.0" 500
+    swatter_errors_section 24h > "${WORK}/sec.out"; SECTION="$(cat "${WORK}/sec.out")"
+    check e2e-flooder-verdict "$ERR_CORR_VERDICT" "visitor"
+    check e2e-flooder-note    "$(printf '%s' "$SECTION" | grep -c '1 to outside clients, 0 to the server itself (wp-cron or a loopback call), 0 to known bots')" "1"
+    # The same request from an address blocked for a secret-file probe is a bot.
+    _reset
+    _log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.30 "$(_lts $((W_AFTER+5)))" \
+         "POST /wp-admin/admin-ajax.php?action=sign HTTP/2.0" 500
+    swatter_errors_section 24h > "${WORK}/sec.out"; SECTION="$(cat "${WORK}/sec.out")"
+    check e2e-hostile-verdict "$ERR_CORR_VERDICT" "scanner"
+    check e2e-hostile-note    "$(printf '%s' "$SECTION" | grep -c '0 to outside clients, 0 to the server itself (wp-cron or a loopback call), 1 to known bots')" "1"
+    # ...and from one whose hostile block is 40 days old, an outside client again.
+    _reset
+    _log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.42 "$(_lts $((W_AFTER+5)))" \
+         "POST /wp-admin/admin-ajax.php?action=sign HTTP/2.0" 500
+    swatter_errors_section 24h > "${WORK}/sec.out"
+    check e2e-stale-hostile-verdict "$ERR_CORR_VERDICT" "visitor"
+    # A ledger query that dies part-way must not leave a partial list behind: the
+    # addresses it did print would be called bots on the strength of a failed
+    # read. Here the stand-in names the hostile address and then fails.
+    sqlite3() { echo 198.51.100.30; return 1; }
+    _reset
+    _log "${CORR_DOMLOG_DIR}/alpha.example-ssl_log" 198.51.100.30 "$(_lts $((W_AFTER+5)))" \
+         "POST /wp-admin/admin-ajax.php?action=sign HTTP/2.0" 500
+    swatter_errors_section 24h > "${WORK}/sec.out"
+    check e2e-failed-query-verdict "$ERR_CORR_VERDICT" "visitor"
+    unset -f sqlite3
+    # The temp file holding the list never outlives the lookup.
+    check e2e-no-tempfile-left "$(ls "${TMPDIR:-/tmp}"/swatter-corrban.* 2>/dev/null | wc -l | tr -d ' ')" "0"
+    STATE_DIR="$_SAVED_STATE_DIR"
+else
+    echo "SKIP hostile-ledger cases: sqlite3 not installed"
+fi
+
 # A signature sprawling past the span cap declines to correlate at all.
 { echo "[2026-06-25 00:05:00] [FATAL] [php/acctA] ${FAN} in /home/acctA/public_html/x.php:8"
   echo "[2026-06-25 03:05:00] [FATAL] [php/acctB] ${FAN} in /home/acctB/public_html/x.php:8"

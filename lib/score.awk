@@ -440,6 +440,30 @@ function is_static_asset(p,   n, segs, last, stem, parts, i, m, rebuilt, peeled,
     return stem_is_safe(rebuilt)
 }
 
+# flood_asset_path(p) : p with its harmless percent-escapes removed, ready for
+# is_static_asset(); "" if p carries an escape no honest client sends.
+#
+# is_static_asset() refuses ANY percent-encoding in a filename, which is right
+# where it was written -- a 403 it accepts is dropped from scoring altogether --
+# but wrong for the request_flood count, where the measured false positives
+# include a photo gallery whose thumbnails are named "..._n%20(1).jpg": eleven
+# residential visitors in one month, each blocked for opening one page.
+#
+# An escape is harmless when the byte it stands for cannot spell an extension or
+# a path separator: a space, punctuation, a UTF-8 byte. It is a cloak when it
+# stands for something a client never needs to encode -- a letter or digit
+# (ph%70 is "php"), a dot, a slash, a percent sign (double encoding) or NUL.
+# Harmless escapes are DELETED rather than replaced, so every guard downstream
+# sees the tightest spelling: "x.php%20/a.css" becomes "x.php/a.css" and is
+# refused as PATH_INFO, "x.php%20.png" becomes "x.php.png" and is refused as a
+# double extension. The path is already lowercased, hex digits included.
+function flood_asset_path(p) {
+    if (index(p, "%") == 0) return p
+    if (p ~ /%(00|25|2e|2f|3[0-9]|4[1-9a-f]|5[0-9a]|6[1-9a-f]|7[0-9a])/) return ""
+    gsub(/%[0-9a-f][0-9a-f]/, "", p)
+    return p
+}
+
 function jesc(s,   t) {
     t = s
     gsub(/\\/, "\\\\", t)
@@ -611,8 +635,10 @@ BEGIN {
     }
 
     # Bad-path scan: record the highest-severity category hit.
+    hitbad = 0
     for (i = 0; i < nbad; i++) {
         if (path ~ bad_rx[i]) {
+            hitbad = 1
             w = bad_w[i]
             if (w > badmax[ip]) { badmax[ip] = w; badcat[ip] = bad_cat[i] }
             badhits[ip]++
@@ -629,6 +655,19 @@ BEGIN {
     # Honeypot trap: any hit flags the IP for an instant-perm decision.
     for (h = 0; h < nhp; h++) {
         if (path ~ hp_rx[h]) { honeypot[ip] = 1; break }
+    }
+
+    # A static subresource that was SERVED (2xx/3xx, which includes a 304
+    # revalidation) is what one page load is made of: a WordPress admin screen
+    # is one document and 100-200 of these inside a few seconds. It stays in
+    # reqs[] and every other signal exactly as before -- this count exists only
+    # so the request_flood floor can leave it out. See the floor in END.
+    # Never a bad-path hit, and never an error status: an asset answered
+    # 4xx/5xx is not a page loading. (A honeypot hit needs no guard here -- it
+    # floors at 100 whatever this count says.)
+    if (status < 400 && !hitbad) {
+        fpath = flood_asset_path(path)
+        if (fpath != "" && is_static_asset(fpath)) casset[ip]++
     }
 
     # User-agent signal.
@@ -756,6 +795,14 @@ END {
 
         s_nov = clamp100(100 * (nnov / n))
 
+        # What the request_flood floor measures: requests a page load does NOT
+        # explain. Same span as rps, so nf/span can never exceed rps and the
+        # floor fires on a strict subset of what "rps >= RATE_SAT && n >= 60"
+        # did -- it cannot create a block the old rule would not have placed.
+        # A seeded row has no scored requests behind it (see rps above).
+        nf = n - (casset[ip] + 0)
+        frps = seeded[ip] ? 0 : nf / span
+
         # Behavioral baseline: weighted average of all signals. Conservative by
         # design — it catches IPs that are suspicious across several weak signals
         # and gives a stable 0-100 ordering. But a weighted average dilutes a
@@ -783,8 +830,15 @@ END {
         if (ndist >= 25 && n >= MIN_REQS && (nerr / n) >= 0.6 && floor < 78) { floor = 78; frule = "scanner_profile" }
         # Error burst: a large absolute volume of 403/404/444.
         if (nburst >= 100 && floor < 75)                     { floor = 75; frule = "error_burst" }
-        # Sustained request flood.
-        if (rps >= RATE_SAT && n >= 60 && floor < 75)        { floor = 75; frule = "request_flood" }
+        # Sustained request flood -- of documents, PHP and API calls, not of
+        # the static files a page pulls in. Counting every request made this the
+        # source of every known false positive of the rule: one heavy page is
+        # >= 60 assets in a burst, and rps is n over the OBSERVED span, so a
+        # single admin screen measured 15 rps for 8 seconds and was challenged
+        # (126 requests, 124 distinct, all 2xx/3xx). A flood that hurts the
+        # origin is a flood of things PHP has to answer; those all still count,
+        # as does any asset answered with an error.
+        if (frps >= RATE_SAT && nf >= 60 && floor < 75)      { floor = 75; frule = "request_flood" }
 
         if (floor > composite) composite = floor
 
@@ -821,6 +875,7 @@ END {
         ev = ev ",\"fanout\":" int(s_fanout+0.5) ",\"badpath\":" int(s_bad+0.5) ",\"ua\":" int(s_ua+0.5)
         ev = ev ",\"post\":" int(s_post+0.5) ",\"novhost\":" int(s_nov+0.5) "}"
         ev = ev ",\"reqs\":" n ",\"rps\":" sprintf("%.2f", rps)
+        ev = ev ",\"flood_reqs\":" nf
         ev = ev ",\"distinct_paths\":" ndist
         ev = ev ",\"status\":{\"2xx\":" (c2xx[ip]+0) ",\"3xx\":" (c3xx[ip]+0) \
                 ",\"401\":" (c401[ip]+0) ",\"403\":" (c403[ip]+0) ",\"404\":" (c404[ip]+0) \

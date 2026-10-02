@@ -855,7 +855,16 @@ drops out of the publish delta and *looks* remediated while CSF or CF may still
 deny it. Same pattern in `rollback-ladder`. Confirm with `swatter list perm`,
 `swatter list cf`, `csf -g <ip>`.
 
-## `request_flood` — tune on its own merits (open 2026-08-08, NOT a gate D blocker)
+## ✅ CLOSED 2026-10-02 — `request_flood` tuned (opened 2026-08-08)
+
+**Closed by counting only non-static requests toward the floor** — see
+CHANGELOG `[Unreleased]`. The cohort had grown from 72 distinct IPs/30d to
+281; replayed from the archived logs, 258 of 278 blocks were page loads. What
+is left open: media files (`.mp3`, `.mp4`, `.pdf`) are not treated as static,
+so a podcast app refreshing many enclosures at once still floors (1 event in
+the month). Left alone on purpose — a flood of large downloads is real.
+The history below is kept for the numbers.
+
 
 Source of **all five** known false positives: three residential visitors
 (2026-07-27) plus Automattic and Ahrefs (2026-08-08). Lifetime perm record is

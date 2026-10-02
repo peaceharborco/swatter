@@ -322,13 +322,54 @@ _errors_epoch_of() {
         || true
 }
 
+# _errors_hostile_ips <db> <since_epoch> — the addresses the corroboration lookup
+# may call "known bots", one per line. rc != 0 = could not ask.
+#
+# NOT "every address swatter ever blocked", which is what this used to be
+# (`select ip from offenders`). Measured on the reference host 2026-10-02: a site
+# administrator hit a plugin crash while logged in to wp-admin, and the digest
+# reported the failure as "served to known bots — no outside client saw one".
+# Their address was in the ledger for three request_flood blocks, every one a
+# false positive on an admin page load. A wrong block had become a reason to
+# discount a real person, in the one lookup whose rule is to fail LOUDER.
+#
+# So an address counts only when swatter blocked it for something a browser does
+# not do, recently, and the operator has not taken the block back:
+#   - the decisive rule is a hostile-intent one: a honeypot hit, a secret/RCE
+#     path, repeated failures on a sensitive endpoint, or a scanner profile.
+#     Volume rules (request_flood, error_burst) and blended scores with no
+#     decisive rule are NOT evidence of a bot — real visitors trip them — and an
+#     unrecognised rule falls through to visitor, the louder reading.
+#   - the block is no more than 30 days older than the window (the caller's
+#     <since>); past that a residential address has plausibly changed hands. No
+#     upper bound: a scanner is normally blocked minutes AFTER the request that
+#     crashed.
+#   - no later `unblock` for the address. An operator lifting a block is a
+#     human judgement that it was wrong.
+# dry_run rows count on purpose: in report mode every row is a dry run, and a
+# would-be block identifies a scanner just as well as a placed one.
+_errors_hostile_ips() {
+    local db="$1" since="$2"
+    [[ "$since" =~ ^-?[0-9]+$ ]] || return 1
+    sqlite3 -cmd '.timeout 3000' "$db" "
+        SELECT DISTINCT a.ip FROM actions a
+         WHERE a.action IN ('temp','perm') AND a.ts >= ${since}
+           AND (instr(a.reason,'rule=honeypot') > 0
+             OR instr(a.reason,'rule=critical_badpath') > 0
+             OR instr(a.reason,'rule=high_badpath_repeat') > 0
+             OR instr(a.reason,'rule=scanner_profile') > 0)
+           AND NOT EXISTS (SELECT 1 FROM actions u
+                            WHERE u.ip = a.ip AND u.action = 'unblock' AND u.ts >= a.ts);"
+}
+
 # Ask the affected accounts' own access logs who received the failures, and turn
 # the answer into ERR_CORR_VERDICT + a one-line operator note. Sets:
 #   visitor — an outside client with a real user agent got a failure. The only
 #             verdict that escalates the status.
 #   self    — every failure went to the server talking to itself (wp-cron, a
 #             loopback REST call). Broken, but nobody was waiting.
-#   scanner — every failure went to a bot.
+#   scanner — every failure went to an address swatter blocked for hostile
+#             behaviour (see _errors_hostile_ips).
 #   none    — the logs covered the window and held no failure at all.
 #   wide    — the signature recurred across a span too long to correlate against.
 #             Declining is the honest answer: measured on the reference host,
@@ -365,8 +406,10 @@ _errors_corroborate() {
        && [[ -r "${STATE_DIR:-/var/lib/swatter}/swatter.db" ]]; then
         _banf="$(mktemp "${TMPDIR:-/tmp}/swatter-corrban.XXXXXX" 2>/dev/null)" || _banf=""
         if [[ -n "$_banf" ]]; then
-            sqlite3 "${STATE_DIR:-/var/lib/swatter}/swatter.db" \
-                'select ip from offenders;' > "$_banf" 2>/dev/null || : > "$_banf"
+            # A failed query leaves the list EMPTY, which reads every client as a
+            # visitor: the louder direction.
+            _errors_hostile_ips "${STATE_DIR:-/var/lib/swatter}/swatter.db" \
+                "$(( ERR_CORR_AFTER - 2592000 ))" > "$_banf" 2>/dev/null || : > "$_banf"
             CORR_BANNED_FILE="$_banf"
         fi
     fi

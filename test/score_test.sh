@@ -1411,6 +1411,143 @@ cfe_check 'not json at all'                             "unknown error" non-json
 printf '  cf-err-summary: %d passed, %d failed\n' "$CF_PASS" "$CF_FAIL"
 (( CF_FAIL == 0 )) || FAIL=$((FAIL+1))
 
+# --- request_flood measures what a page load does NOT explain -----------------
+# Every known false positive of this rule was one shape: a browser loading a
+# heavy page. rps is n over the OBSERVED span, so one WordPress admin screen --
+# a document plus 100-200 static files inside a few seconds -- measured as a
+# 15 rps "flood" and was challenged at 75. Reference host, September 2026: a
+# site administrator was blocked three times in a month this way (126 requests /
+# 124 distinct paths / all 2xx-3xx in 8s; then 213 / 198 in 19s).
+# The floor now counts only requests that are not a served static subresource.
+# These cases pin BOTH directions: the page load must not score, and nothing
+# that is not a page load may ride the exemption.
+#
+# flood_tsv <assets> <dynamic> <secs> [asset_status] [asset_path_fmt] [dyn_path_fmt]
+#   <assets> static requests and <dynamic> non-static ones from one IP, spread
+#   evenly over <secs>. The %s in a path format is the request index.
+flood_tsv() {
+    local na="$1" nd="$2" secs="$3" ast="${4:-200}"
+    local afmt="${5:-/wp-content/plugins/p%s/assets/style.min.css}"
+    local dfmt="${6:-/wp-json/wc-analytics/reports/r%s}" i
+    : > "$tmp/flood.tsv"
+    for (( i=0; i<na; i++ )); do
+        # shellcheck disable=SC2059
+        printf "203.0.113.90\t%s\tGET\t${afmt}\t%s\t-\tmozilla/5.0 (macintosh)\texample.com\n" \
+            $(( NOW_EPOCH - 200 + (i * secs / (na > 1 ? na : 1)) )) "$i" "$ast" >> "$tmp/flood.tsv"
+    done
+    for (( i=0; i<nd; i++ )); do
+        # shellcheck disable=SC2059
+        printf "203.0.113.90\t%s\tGET\t${dfmt}\t200\t-\tmozilla/5.0 (macintosh)\texample.com\n" \
+            $(( NOW_EPOCH - 200 + (i * secs / (nd > 1 ? nd : 1)) )) "$i" >> "$tmp/flood.tsv"
+    done
+    # Pin the span: one request at each end, so <secs> is the span whatever the
+    # two spreads above rounded to. Both are dynamic and counted in <dynamic>+2.
+    printf '203.0.113.90\t%s\tGET\t/wp-admin/index.php\t200\t-\tmozilla/5.0 (macintosh)\texample.com\n' \
+        $(( NOW_EPOCH - 200 )) >> "$tmp/flood.tsv"
+    printf '203.0.113.90\t%s\tGET\t/wp-admin/edit.php\t200\t-\tmozilla/5.0 (macintosh)\texample.com\n' \
+        $(( NOW_EPOCH - 200 + secs )) >> "$tmp/flood.tsv"
+}
+flood_row() {
+    gawk -v NOW="$NOW_EPOCH" -v WINDOW=600 -v MIN_REQS=15 -v RATE_SAT=8 -v SCORE_WATCH=50 \
+         -v W_RATE=18 -v W_ERR_RATIO=16 -v W_ERR_BURST=12 -v W_FANOUT=12 -v W_BADPATH=22 \
+         -v W_UA=6 -v W_POST_FLOOD=8 -v W_NOVHOST=6 \
+         -v BADPATHS="${ROOT}/config/badpaths.conf" -v HONEYPOTS="$HP" \
+         -f "${ROOT}/lib/score.awk" "$tmp/flood.tsv" | head -1
+}
+flood_score() { flood_tsv "$@"; local r; r="$(flood_row | cut -f2)"; printf '%s' "${r:-NONE}"; }
+flood_rule()  { flood_tsv "$@"; flood_row | grep -o '"decisive_rule":"[^"]*"' | cut -d'"' -f4; }
+
+# The three measured shapes. Each scored 75 before.
+assert_band "flood-admin-pageload-126-in-8s"  "$(flood_score 124 0 8)"      0 49
+assert_band "flood-two-admin-pages-213-in-19s" "$(flood_score 198 13 19)"   0 49
+assert_band "flood-304-revalidation-80-in-1s" "$(flood_score 78 0 1 304)"   0 49
+# Images, fonts and scripts are the same thing as stylesheets here.
+assert_band "flood-image-gallery-pageload" \
+    "$(flood_score 150 0 6 200 '/wp-content/uploads/2026/09/photo-%s-768x576.jpg')" 0 49
+
+# Real filenames carry escapes: a space, parentheses, a UTF-8 byte. Measured:
+# a photo gallery with thumbnails named "..._n%20(1).jpg" got eleven residential
+# visitors blocked in a month, one page load each (83 requests, 78 of them these).
+# (%% is a literal percent sign; flood_tsv hands the path to printf as a format.)
+assert_band "flood-gallery-encoded-space-names" \
+    "$(flood_score 78 0 4 304 '/gallery_page/thumbs/100_200_%s_n%%20(1).jpg')" 0 49
+assert_band "flood-utf8-filename" \
+    "$(flood_score 118 0 10 200 '/wp-content/uploads/2026/09/caf%%c3%%a9-%s.jpg')" 0 49
+assert_band "flood-encoded-space-directory" \
+    "$(flood_score 118 0 10 200 '/my%%20photos/img-%s.jpg')"                0 49
+
+# A flood of things PHP has to answer still floors at 75, with or without
+# assets around it: the assets neither count nor dilute.
+assert_band "flood-dynamic-still-scores"       "$(flood_score 0 118 10)"    75 100
+assert_band "flood-dynamic-among-assets"       "$(flood_score 300 118 10)"  75 100
+r="$(flood_rule 300 118 10)"
+if [[ "$r" == "request_flood" ]]; then PASS=$((PASS+1)); printf 'PASS  %-30s rule=%s\n' "flood-dynamic-rule-name" "$r"
+else FAIL=$((FAIL+1)); printf 'FAIL  %-30s rule=%s (want request_flood)\n' "flood-dynamic-rule-name" "$r"; fi
+
+# Both bars pinned on the DYNAMIC count, each with the other comfortably over
+# and with enough assets present that the all-requests reading would fire.
+#   count: 59 dynamic (57+2) must stay silent, 60 (58+2) must floor.
+assert_band "flood-count-59-dynamic-silent"    "$(flood_score 400 57 5)"    0 49
+assert_band "flood-count-60-dynamic-floors"    "$(flood_score 400 58 5)"    75 100
+#   rate: 80 dynamic over 11s is 7.3/s (silent), over 10s is 8.0/s (floors).
+#   The all-requests rate is ~44/s in both, so a rule that kept the old rate
+#   and only swapped the count would fire on the first of these.
+assert_band "flood-rate-under-8-dynamic-silent" "$(flood_score 400 78 11)"  0 49
+assert_band "flood-rate-at-8-dynamic-floors"    "$(flood_score 400 78 10)"  75 100
+
+# Nothing that is not a served static file may use the exemption.
+#   An asset answered with an error is not a page loading (origin melt).
+#   ONE path, so scanner_profile (needs 25 distinct) cannot be what scores it,
+#   and the 404 run stays under the error_burst knee (100) for the same reason:
+#   in both, only the flood floor reaches 75. %.0s swallows the index.
+assert_band "flood-asset-5xx-still-scores" \
+    "$(flood_score 118 0 10 500 '/wp-content/themes/t/style.css%.0s')"       75 75
+assert_band "flood-asset-404-still-scores" \
+    "$(flood_score 90 0 10 404 '/wp-content/themes/t/style.css%.0s')"        75 75
+#   A cloaked executable is not a stylesheet: double extension, PATH_INFO.
+assert_band "flood-php-cloak-still-scores" \
+    "$(flood_score 118 0 10 200 '/wp-content/cache/x%s.php.png')"            75 100
+assert_band "flood-pathinfo-still-scores" \
+    "$(flood_score 118 0 10 200 '/index.php/a%s.css')"                       75 100
+#   An escape that hides a letter, a dot, a slash or a percent sign is a cloak,
+#   and removing a harmless escape must not manufacture an innocent name:
+#     ph%70      -> "php" spelled with an encoded letter
+#     .php%20.png -> a double extension behind an encoded space
+#     .php%20/   -> PATH_INFO behind an encoded space
+#     %2ephp     -> an encoded dot;  %252e -> the same, double-encoded
+assert_band "flood-encoded-letter-cloak" \
+    "$(flood_score 118 0 10 200 '/up/shell%s.ph%%70.png')"                   75 75
+assert_band "flood-encoded-space-double-ext" \
+    "$(flood_score 118 0 10 200 '/up/x%s.php%%20.png')"                      75 75
+assert_band "flood-encoded-space-pathinfo" \
+    "$(flood_score 118 0 10 200 '/x%s.php%%20/a.css')"                       75 75
+assert_band "flood-encoded-dot-cloak" \
+    "$(flood_score 118 0 10 200 '/up/a%s%%2ephp.css')"                       75 75
+assert_band "flood-double-encoded-dot-cloak" \
+    "$(flood_score 118 0 10 200 '/up/a%s%%252ephp.css')"                     75 75
+assert_band "flood-encoded-slash-cloak" \
+    "$(flood_score 118 0 10 200 '/x%s.php%%2fa.css')"                        75 75
+assert_band "flood-encoded-nul-refused" \
+    "$(flood_score 118 0 10 200 '/up/a%s%%00.css')"                          75 75
+#   A stray percent sign that is not an escape at all stays counted.
+assert_band "flood-malformed-escape-counts" \
+    "$(flood_score 118 0 10 200 '/up/100%%-off-%s.png')"                     75 75
+#   A path that scores on its own is never exempted, however it is dressed.
+#   /telescope is a MEDIUM bad-path: too weak to floor by itself (the composite
+#   lands near 39), so only the flood floor can carry this to 75.
+assert_band "flood-badpath-asset-still-scores" \
+    "$(flood_score 118 0 10 200 '/telescope/vendor-%s.js')"                  75 100
+#   A honeypot path wearing an asset extension is still an instant 100.
+assert_band "flood-honeypot-asset-still-100" \
+    "$(flood_score 118 0 10 200 '/__trap_a7f3c1d9/x%s.js')"                  100 100
+
+# The evidence says how many requests the floor actually measured, so
+# `swatter why` can explain a row whose reqs and rps look like a flood.
+flood_tsv 300 118 10
+fr="$(flood_row | grep -o '"flood_reqs":[0-9]*' | cut -d: -f2)"
+if [[ "$fr" == "120" ]]; then PASS=$((PASS+1)); printf 'PASS  %-30s flood_reqs=%s\n' "flood-evidence-count" "$fr"
+else FAIL=$((FAIL+1)); printf 'FAIL  %-30s flood_reqs=%s (want 120)\n' "flood-evidence-count" "$fr"; fi
+
 echo
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
