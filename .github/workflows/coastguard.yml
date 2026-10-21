@@ -1,0 +1,15 @@
+name: coastguard
+
+# toolbox/coastguard: every Worker config caps CPU and subrequests per
+# invocation, so a loop or a flood cannot run up the Workers Paid bill.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  limits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: tests/coastguard/check.sh hub/wrangler.toml

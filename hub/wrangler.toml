@@ -57,3 +57,10 @@ crons = ["17 4 * * *"]
 # Optional var to hard-retire the shared write token once every host has migrated to
 # a per-host token: SWARM_LEGACY_WRITE_UNTIL = "<unix ts>" (after it, legacy writes
 # are refused). Leave unset while migrating; set it as the final cutover.
+
+# CoastGuard (peaceharbor/toolbox/coastguard/SPEC.md): caps one invocation
+# so a loop or a flood cannot run up the Workers Paid bill. Cloudflare's
+# defaults are 30 s CPU / 10,000 subrequests. Worst CPU seen 2026-10-14..21: 11 ms.
+[limits]
+cpu_ms = 2000
+subrequests = 1000
