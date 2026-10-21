@@ -1,4 +1,7 @@
 name = "swatter-swarm-hub"
+# Peace Harbor Web. Without this a multi-account login makes wrangler ask, and
+# a non-interactive deploy fails. An account id is an identifier, not a secret.
+account_id = "7df94febc2ac2d37eb85586011aa7901"
 main = "src/index.js"
 compatibility_date = "2024-11-01"
 
