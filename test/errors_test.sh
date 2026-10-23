@@ -72,6 +72,19 @@ check nonfatal-direct-count "$ERR_NONFATAL" "$(( ERR_GENUINE - ERR_FATAL_GENUINE
 check nonfatal-ge-zero "$(( ERR_NONFATAL >= 0 ))" "1"
 check nonfatal-section-line "$(printf '%s' "$SECTION_OUT" | grep -c "Non-fatal: ${ERR_NONFATAL} ")" "1"
 
+# --- security review: the PHP error_log zone token is LOG CONTENT. Only a real
+# zoneinfo entry is honoured; a path, "..", or an unknown name falls back to UTC.
+_zi="${WORK}/zoneinfo"; mkdir -p "$_zi/America"; : > "$_zi/America/Los_Angeles"; : > "$_zi/UTC"
+SWATTER_ZONEINFO_DIR="$_zi"
+_pz() { printf '%s\n' "$1" > "${WORK}/php.log"; _errors_php_zone "${WORK}/php.log"; }
+check phpzone-real      "$(_pz '[22-Oct-2026 13:08:16 America/Los_Angeles] PHP Fatal error: x')" "America/Los_Angeles"
+check phpzone-utc       "$(_pz '[22-Oct-2026 13:08:16 UTC] PHP Fatal error: x')"                 "UTC"
+check phpzone-abs-path  "$(_pz '[22-Oct-2026 13:08:16 /etc/passwd] PHP Fatal error: x')"         "UTC"
+check phpzone-dotdot    "$(_pz '[22-Oct-2026 13:08:16 America/../../../etc/passwd] PHP Fatal error: x')" "UTC"
+check phpzone-unknown   "$(_pz '[22-Oct-2026 13:08:16 Mars/Olympus] PHP Fatal error: x')"        "UTC"
+check phpzone-forged-last-line "$(printf '%s\n%s\n' '[22-Oct-2026 13:08:16 America/Los_Angeles] PHP Fatal error: x' '[22-Oct-2026 13:08:17 Evil/Zone] injected' > "${WORK}/php.log"; _errors_php_zone "${WORK}/php.log")" "UTC"
+unset SWATTER_ZONEINFO_DIR
+
 # --- threshold is tunable -----------------------------------------------------
 {
   echo "[${TS}] [FATAL] [php/acct] ${SCAN1}"

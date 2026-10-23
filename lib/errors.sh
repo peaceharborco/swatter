@@ -87,6 +87,24 @@ _errors_collect_apache() {
 }
 
 # Per-site PHP error_log: [01-Jun-2026 20:01:10 UTC] PHP Fatal error: ...
+# _errors_php_zone <error_log> -> the IANA zone name to read the file's stamps
+# in, or UTC. The token comes from LOG CONTENT (a PHP error message can carry
+# user-controlled text, and a multi-line one can forge a stamp line), so it is
+# accepted only when it names a real entry in the system zoneinfo database: no
+# leading "/", no "..", and /usr/share/zoneinfo/<zone> exists. Anything else
+# would reach glibc as an arbitrary TZ path. The LAST stamped line in the whole
+# file is used, not a fixed tail (a long trace at the end hides every stamp).
+_errors_php_zone() {
+    local f="$1" zone
+    zone="$(grep -oE '^\[[0-9]{2}-[A-Za-z]{3}-[0-9]{4} [0-9:]{8} [A-Za-z_/+-]+\]' "$f" 2>/dev/null | tail -n 1 | sed -E 's/^.* ([A-Za-z_/+-]+)\]$/\1/')"
+    if [[ "$zone" =~ ^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$ && "$zone" != *..* \
+          && -f "${SWATTER_ZONEINFO_DIR:-/usr/share/zoneinfo}/${zone}" ]]; then
+        printf '%s' "$zone"
+    else
+        printf 'UTC'
+    fi
+}
+
 _errors_collect_php() {
     local cutoff="$1" f acct
     [[ -n "${ERROR_PHP_HOME_GLOB}" ]] || return 0
@@ -98,11 +116,8 @@ _errors_collect_php() {
         # America/Los_Angeles]". Reading every stamp as UTC shifted the window by
         # the offset and lost the fatals from the oldest hours of the night. Take
         # the zone from the file's latest stamped line (per-site constant) and
-        # run gawk's mktime under it; an absent token or "UTC" stays UTC.
-        # The LAST stamped line in the whole file, not a fixed tail: a long stack
-        # trace at the end would otherwise hide every stamp and default to UTC.
-        zone="$(grep -oE '^\[[0-9]{2}-[A-Za-z]{3}-[0-9]{4} [0-9:]{8} [A-Za-z_/+-]+\]' "$f" 2>/dev/null | tail -n 1 | sed -E 's/^.* ([A-Za-z_/+-]+)\]$/\1/')"
-        [[ "$zone" =~ ^[A-Za-z_/+-]+$ ]] || zone="UTC"
+        # run gawk's mktime under it; an absent/unknown token stays UTC.
+        zone="$(_errors_php_zone "$f")"
         TZ="$zone" gawk -v cutoff="$cutoff" -v srcid="php/${acct}" "${_ERR_AWKLIB}"'
             {
                 if(substr($0,1,1)!="[") next

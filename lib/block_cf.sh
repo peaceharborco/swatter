@@ -560,13 +560,19 @@ _cf_delete_ref() {
     # dashboard, zone moved) answers 10001 "not found". That IS the end state the
     # delete wanted, so the ref is dropped; keeping it made unblock /
     # rollback-ladder exit 1 ("may still be live") forever and the sweep re-issue
-    # the same DELETE every scan. Transport, auth and 5xx failures still keep it.
+    # the same DELETE every scan. But the refs do not record WHICH account's
+    # token owns the rule, and a token from another account may also answer
+    # 10001 for a rule that is live under the owner — so "gone" is accepted only
+    # when EVERY token says 10001. Any success deletes; any transport, auth or
+    # 5xx answer keeps the ref.
+    local resp all_notfound=1 n=0
     for acct in "${!_CF_TOKEN[@]}"; do
-        tok="${_CF_TOKEN[$acct]}"
-        if _cf_api "$tok" DELETE "$path" | jq -e '.success==true or (([.errors[]?.code] | index(10001)) != null)' >/dev/null 2>&1; then
-            return 0
-        fi
+        tok="${_CF_TOKEN[$acct]}"; n=$(( n + 1 ))
+        resp="$(_cf_api "$tok" DELETE "$path")"
+        if printf '%s' "$resp" | jq -e '.success==true' >/dev/null 2>&1; then return 0; fi
+        printf '%s' "$resp" | jq -e '(([.errors[]?.code] | index(10001)) != null)' >/dev/null 2>&1 || all_notfound=0
     done
+    (( n > 0 && all_notfound )) && return 0
     return 1
 }
 

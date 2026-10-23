@@ -371,6 +371,16 @@ check zone-lookup-uses-mapped-domain "$(cat "${STATE_DIR}/zone_asked" 2>/dev/nul
 #     drop the ref (rc 0). Any other failure still keeps it.
 _cf_api() { printf '%s' '{"success":false,"errors":[{"code":10001,"message":"firewallaccessrules.api.not_found"}]}'; }
 check delete-notfound-is-done "$(_cf_delete_ref zone zoneZ ruleZ; echo "rc=$?")" "rc=0"
+# Security review: "not found" must come from EVERY token — a second account's
+# token answering 10001 for a rule that is live under the first must not drop it.
+_CF_TOKEN[acctY]="tokY"
+_cf_api() { case "$1" in tokY) printf '%s' '{"success":false,"errors":[{"code":10001,"message":"not found"}]}';; *) printf '%s' '{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}';; esac; }
+check delete-notfound-other-acct-kept "$(_cf_delete_ref zone zoneZ ruleZ; echo "rc=$?")" "rc=1"
+_cf_api() { printf '%s' '{"success":false,"errors":[{"code":10001,"message":"not found"}]}'; }
+check delete-notfound-all-accts-done "$(_cf_delete_ref zone zoneZ ruleZ; echo "rc=$?")" "rc=0"
+_cf_api() { case "$1" in tokY) printf '%s' '{"success":true,"result":{"id":"ruleZ"}}';; *) printf '%s' '{"success":false,"errors":[{"code":10001,"message":"not found"}]}';; esac; }
+check delete-one-success-done "$(_cf_delete_ref zone zoneZ ruleZ; echo "rc=$?")" "rc=0"
+unset "_CF_TOKEN[acctY]"
 _cf_api() { printf '%s' '{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}'; }
 check delete-auth-fail-kept "$(_cf_delete_ref zone zoneZ ruleZ; echo "rc=$?")" "rc=1"
 _cf_api() { printf ''; }
