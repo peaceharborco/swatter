@@ -47,6 +47,31 @@ _run
 check repeat-genuine  "$ERR_FATAL_GENUINE" "3"
 check repeat-scanner  "$ERR_FATAL_SCANNER" "0"
 
+# --- 2026-10-23 audit: a CONFIGURED feed that is missing/unreadable must never
+# read as "none" (it used to fall through to live aggregation and grade GREEN).
+_saved_feed="$ERROR_DIGEST_LOG"
+ERROR_DIGEST_LOG="${WORK}/does-not-exist.log"
+_run
+check feed-missing-flag     "${ERR_FEED_UNREADABLE:-0}" "1"
+check feed-missing-section  "$(printf '%s' "$SECTION_OUT" | grep -c 'UNREADABLE')" "1"
+check feed-missing-not-none "$(printf '%s' "$SECTION_OUT" | grep -c 'none in the last')" "0"
+check feed-missing-fatal0   "$ERR_FATAL" "0"
+ERROR_DIGEST_LOG="$_saved_feed"
+_run
+check feed-back-flag-clear  "${ERR_FEED_UNREADABLE:-0}" "0"
+
+# --- review finding: non-fatal is counted directly from the genuine set, so a
+# FATAL line that matched ERROR_NOISE cannot push the figure below zero/true.
+{
+  echo "[${TS}] [ERROR] [apache] AH01071: Got error 'Primary script unknown' client denied by server configuration: /home/x/public_html/.env"
+  echo "[${TS}] [ERROR] [apache] AH01071: Got error 'Primary script unknown' client denied by server configuration: /home/x/public_html/.git"
+  echo "[${TS}] [FATAL] [php/acct] ${REAL1}"
+} > "$ERROR_DIGEST_LOG"
+_run
+check nonfatal-direct-count "$ERR_NONFATAL" "$(( ERR_GENUINE - ERR_FATAL_GENUINE - ERR_FATAL_SCANNER ))"
+check nonfatal-ge-zero "$(( ERR_NONFATAL >= 0 ))" "1"
+check nonfatal-section-line "$(printf '%s' "$SECTION_OUT" | grep -c "Non-fatal: ${ERR_NONFATAL} ")" "1"
+
 # --- threshold is tunable -----------------------------------------------------
 {
   echo "[${TS}] [FATAL] [php/acct] ${SCAN1}"

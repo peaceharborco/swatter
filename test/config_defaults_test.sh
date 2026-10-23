@@ -106,6 +106,50 @@ vcheck repeat-n-crit-zero   'REPEAT_N_CRITICAL_SINGLE=0'     REPEAT_N_CRITICAL_S
 vcheck repeat-n-crit-huge   'REPEAT_N_CRITICAL_SINGLE=999'   REPEAT_N_CRITICAL_SINGLE "4"
 vcheck repeat-n-crit-valid  'REPEAT_N_CRITICAL_SINGLE=5'     REPEAT_N_CRITICAL_SINGLE "5"
 vcheck repeat-n-crit-padded 'REPEAT_N_CRITICAL_SINGLE="020"' REPEAT_N_CRITICAL_SINGLE "20"
+# 2026-10-23 audit: the knobs that reached arithmetic / awk / csf unvalidated.
+# A typo in any of these used to abort the scan or the nightly report under
+# set -u (or silently disable a guard); each now warns and falls back.
+vcheck seed-alpha        'SEED_BYTES="abc"'            SEED_BYTES            "5242880"
+vcheck maxbytes-suffix   'MAX_BYTES_PER_FILE="200M"'   MAX_BYTES_PER_FILE    "209715200"
+vcheck ratesat-zero      'RATE_SAT=0'                  RATE_SAT              "8"
+vcheck ratesat-alpha     'RATE_SAT="abc"'              RATE_SAT              "8"
+vcheck ratesat-valid     'RATE_SAT=12'                 RATE_SAT              "12"
+vcheck scorewatch-alpha  'SCORE_WATCH="abc"'           SCORE_WATCH           "50"
+vcheck wbadpath-alpha    'W_BADPATH="abc"'             W_BADPATH             "22"
+vcheck wasn-alpha        'W_ASN="x"'                   W_ASN                 "12"
+vcheck critfloor-suffix  'CRITICAL_TTL_FLOOR="1d"'     CRITICAL_TTL_FLOOR    "86400"
+vcheck csfcap-word       'MAX_CSF_DENIES_PER_RUN="ten"' MAX_CSF_DENIES_PER_RUN "10"
+vcheck csfcap-empty      'MAX_CSF_DENIES_PER_RUN=""'   MAX_CSF_DENIES_PER_RUN "10"
+vcheck allowage-suffix   'ALLOWLIST_MAX_AGE_DAYS="7d"' ALLOWLIST_MAX_AGE_DAYS "7"
+vcheck allowage-padded   'ALLOWLIST_MAX_AGE_DAYS="08"' ALLOWLIST_MAX_AGE_DAYS "8"
+vcheck intelttl-alpha    'INTEL_CACHE_TTL="abc"'       INTEL_CACHE_TTL       "86400"
+vcheck gradeC-suffix     'REPORT_GRADE_C_ERRORS="100errors"' REPORT_GRADE_C_ERRORS "100"
+vcheck gradeD-alpha      'REPORT_GRADE_D_ERRORS="abc"' REPORT_GRADE_D_ERRORS "300"
+vcheck gradeD-below-C    'REPORT_GRADE_D_ERRORS=50'    REPORT_GRADE_D_ERRORS "100"
+vcheck smsdedup-suffix   'ALERT_SMS_DEDUP_HOURS="6h"'  ALERT_SMS_DEDUP_HOURS "6"
+vcheck olmin-alpha       'ORIGIN_LOCK_MIN_RANGES="abc"' ORIGIN_LOCK_MIN_RANGES "3"
+vcheck persistn-alpha    'PERSIST_N="abc"'             PERSIST_N             "6"
+# use-site-defaulted knobs: unset stays the use-site default, a bad value falls back
+vcheck repeatttl-unset   ''                            ALERT_REPEAT_TTL      "21600"
+vcheck repeatttl-suffix  'ALERT_REPEAT_TTL="6h"'       ALERT_REPEAT_TTL      "21600"
+vcheck abusettl-alpha    'ABUSEIPDB_REPORT_TTL="abc"'  ABUSEIPDB_REPORT_TTL  "900"
+vcheck cfacct-suffix     'CF_ACCOUNT_CACHE_TTL="7d"'   CF_ACCOUNT_CACHE_TTL  "604800"
+vcheck swarmbase-alpha   'SWARM_BASE_SCORE="abc"'      SWARM_BASE_SCORE      "70"
+vcheck swarmage-alpha    'SWARM_MAX_AGE_DAYS="abc"'    SWARM_MAX_AGE_DAYS    "3"
+vcheck swarmage-valid    'SWARM_MAX_AGE_DAYS=5'        SWARM_MAX_AGE_DAYS    "5"
+# TTL_LADDER: one bad rung discards the whole ladder for the shipped one
+vcheck ladder-word       'TTL_LADDER="3600 six-hours 86400"' TTL_LADDER      "3600 21600 86400 259200"
+vcheck ladder-empty      'TTL_LADDER=""'               TTL_LADDER            "3600 21600 86400 259200"
+vcheck ladder-valid      'TTL_LADDER="600 1200"'       TTL_LADDER            "600 1200"
+vcheck cfscope-typo      'CF_SCOPE="accounts"'         CF_SCOPE              "zone"
+vcheck cfscope-account   'CF_SCOPE="account"'          CF_SCOPE              "account"
+# A conf that sets NOTHING, and the shipped example conf, must load with ZERO
+# warnings: every knob validated above has to find its default already in place
+# at load time (a knob whose default lives in a module sourced AFTER
+# swatter_load_config — ORIGIN_LOCK_MIN_RANGES was one — warned on every run).
+: > "$_vconf"
+check empty-conf-no-warnings "$( ( SWATTER_CONF="$_vconf"; swatter_load_config 2>&1 >/dev/null ) | grep -c 'WARN' || true)" "0"
+check shipped-conf-no-warnings "$( ( SWATTER_CONF="${ROOT}/config/swatter.example.conf"; swatter_load_config 2>&1 >/dev/null ) | grep -c 'WARN' || true)" "0"
 
 # ...and bounds alone don't protect it: the knob only ever RAISES the bar, so a
 # value BELOW REPEAT_N inverts the gate it exists to be. REPEAT_N_CRITICAL_

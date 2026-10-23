@@ -243,7 +243,15 @@ swatter_build_direct_set() {
                 for (i = 1; i <= 12; i++) mon[mn[i]] = i
                 year = strftime("%Y", now) + 0
             }
-            /2082|2083|2086|2087|2095|2096|2077|2078/ {
+            {
+                # A cPanel/WHM/webmail PORT on the line is the direct evidence
+                # (the raw server was reached on 2082/2083/...). Match the port
+                # as a whole number, with the lfd "[pid]" stripped first — the
+                # old bare /2082|.../ matched "lfd[20823]" and any count on the
+                # line, so a proxied mod_security hit became "direct" and the
+                # real client got an ineffective CSF deny instead of a CF block.
+                line = $0; sub(/lfd\[[0-9]+\]/, "lfd", line)
+                if (line !~ /(^|[^0-9])(2082|2083|2086|2087|2095|2096|2077|2078)([^0-9]|$)/) next
                 # syslog stamp: "Mon dd HH:MM:SS" in local time, no year.
                 if (!($1 in mon) || split($3, t, ":") != 3) next
                 ts = mktime(year " " mon[$1] " " $2 " " t[1] " " t[2] " " t[3])

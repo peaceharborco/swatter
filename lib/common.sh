@@ -374,6 +374,16 @@ _swatter_validate_int() {
         eval "${name}=${def}"
     fi
 }
+# Same, for a knob that has NO built-in default above and is read at its use
+# site as `${NAME:-default}`: unset/empty is the normal state, so it is pinned to
+# that same default silently (no warning), and only a SET value is validated.
+# The default passed here must equal the one at the use site.
+_swatter_validate_int_opt() {
+    local name="$1" def="$2" cur
+    cur="$(eval printf '%s' "\"\${${name}:-}\"")"
+    if [[ -z "$cur" ]]; then eval "${name}=${def}"; return 0; fi
+    _swatter_validate_int "$@"
+}
 
 # ---------------------------------------------------------------------------
 # Load operator config (if present). Sourced, so it is plain shell.
@@ -502,6 +512,83 @@ swatter_load_config() {
     _swatter_validate_int MIN_REQS           15    1 100000
     _swatter_validate_int MAIL_CAMPAIGN_MIN_IPS  5   2 100
     _swatter_validate_int MAIL_CAMPAIGN_LIST_CAP 20  1 200
+    # 2026-10-23 audit: every remaining numeric knob that reaches `(( ))`, an
+    # awk -v, a csf/ipset argument or a cache-age compare. Proven consequences
+    # of a one-keystroke typo in the conf before this block existed:
+    #   SEED_BYTES/MAX_BYTES_PER_FILE/ALLOWLIST_MAX_AGE_DAYS="abc" -> every */5
+    #     scan aborted under set -u before ingest (nothing scored, no retries,
+    #     no swarm publish); "7d" -> the cap or staleness guard silently OFF.
+    #   RATE_SAT="abc"/0 -> gawk division by zero, scorer emits NOTHING, scan
+    #     logs "0 acted" and exits 0.  SCORE_WATCH="abc" -> string compare,
+    #     nothing detected.  W_*="abc" -> weight silently 0.
+    #   MAX_CSF_DENIES_PER_RUN="ten" -> enforce scan aborts at the first deny;
+    #     "" -> every deny returns RC_CAP, no direct block ever lands.
+    #   REPORT_GRADE_{C,D}_ERRORS / ALERT_SMS_DEDUP_HOURS / SWARM_MAX_AGE_DAYS
+    #     ="abc" -> the nightly report aborts before (or between) the email and
+    #     the RED SMS — the v2.15.0 class.
+    #   TTL_LADDER="3600 six-hours" -> the word is handed to `csf -td` verbatim.
+    # Defaults here MUST equal the built-ins above / the `${X:-n}` at each use
+    # site, so an invalid operator value falls back to what Swatter ships with.
+    _swatter_validate_int SEED_BYTES             5242880   0 1073741824
+    _swatter_validate_int MAX_BYTES_PER_FILE     209715200 1048576 10737418240
+    _swatter_validate_int RATE_SAT               8     1 1000
+    _swatter_validate_int SCORE_WATCH            50    0 100
+    local _w
+    for _w in W_RATE:18 W_ERR_RATIO:16 W_ERR_BURST:12 W_FANOUT:12 W_BADPATH:22 \
+              W_UA:6 W_POST_FLOOD:8 W_NOVHOST:6 W_REPUTATION:14 W_ASN:12; do
+        _swatter_validate_int "${_w%%:*}" "${_w##*:}" 0 100
+    done
+    _swatter_validate_int CRITICAL_TTL_FLOOR     86400 0 2592000
+    _swatter_validate_int MAX_CSF_DENIES_PER_RUN 10    1 10000
+    _swatter_validate_int ALLOWLIST_MAX_AGE_DAYS 7     1 365
+    _swatter_validate_int INTEL_HARDBLOCK_MIN    100   1 100
+    _swatter_validate_int INTEL_CACHE_TTL        86400 60 2592000
+    _swatter_validate_int ABUSEIPDB_DAILY_QUOTA  1000  0 1000000
+    _swatter_validate_int GREYNOISE_DAILY_QUOTA  100   0 1000000
+    _swatter_validate_int REPORT_GRADE_C_ERRORS  100   1 1000000
+    _swatter_validate_int REPORT_GRADE_D_ERRORS  300   1 1000000
+    if (( REPORT_GRADE_D_ERRORS < REPORT_GRADE_C_ERRORS )); then
+        log_warn "REPORT_GRADE_D_ERRORS=${REPORT_GRADE_D_ERRORS} below REPORT_GRADE_C_ERRORS=${REPORT_GRADE_C_ERRORS}; clamping to ${REPORT_GRADE_C_ERRORS}"
+        REPORT_GRADE_D_ERRORS="$REPORT_GRADE_C_ERRORS"
+    fi
+    _swatter_validate_int ALERT_SMS_DEDUP_HOURS  6     1 168
+    _swatter_validate_int_opt ORIGIN_LOCK_MIN_RANGES 3 1 100000   # default lives in lib/origin_lock.sh (sourced AFTER load_config)
+    _swatter_validate_int PERSIST_N              6     1 1000
+    _swatter_validate_int PERSIST_WINDOW_DAYS    3     1 90
+    _swatter_validate_int PERSIST_BUCKET_SECONDS 3600  60 86400
+    # Use-site-defaulted knobs (no built-in above): empty stays the default silently.
+    _swatter_validate_int_opt ALERT_REPEAT_TTL        21600  60 604800
+    _swatter_validate_int_opt ABUSEIPDB_REPORT_TTL    900    60 86400
+    _swatter_validate_int_opt INTEL_FAIL_TTL          300    0  2592000
+    _swatter_validate_int_opt CF_ACCOUNT_CACHE_TTL    604800 60 31536000
+    _swatter_validate_int_opt CF_ZONE_CACHE_TTL       604800 60 31536000
+    _swatter_validate_int_opt SWARM_BASE_SCORE        70     0  100
+    _swatter_validate_int_opt SWARM_MIN_CORROBORATION 2      1  1000
+    _swatter_validate_int_opt SWARM_MAX_AGE_DAYS      3      1  365
+    # TTL_LADDER is a space-separated list of seconds; every token must be an
+    # integer or the whole ladder falls back to the shipped one (a single bad rung
+    # would otherwise reach the backend as a TTL string).
+    local _rung _ladder_ok=1
+    for _rung in ${TTL_LADDER:-}; do
+        [[ "$_rung" =~ ^[0-9]+$ ]] && (( 10#$_rung >= 60 && 10#$_rung <= 31536000 )) || { _ladder_ok=0; break; }
+    done
+    [[ -n "${TTL_LADDER:-}" ]] || _ladder_ok=0
+    if (( ! _ladder_ok )); then
+        log_warn "TTL_LADDER='${TTL_LADDER:-}' invalid (want space-separated integers 60-31536000); using '3600 21600 86400 259200'"
+        TTL_LADDER="3600 21600 86400 259200"
+    fi
+    # REPORT_CRON is "minute hour", interpolated into /etc/cron.d by install.sh:
+    # "0 4 *" or "4" produced a line cron rejects, and the nightly report (and
+    # its RED SMS) was simply never scheduled, with nothing saying so.
+    if ! [[ "${REPORT_CRON:-0 4}" =~ ^[0-9*/,-]+[[:space:]]+[0-9*/,-]+$ ]]; then
+        log_warn "REPORT_CRON='${REPORT_CRON:-}' invalid (want \"minute hour\", e.g. \"0 4\"); using \"0 4\""
+        REPORT_CRON="0 4"
+    fi
+    # CF_SCOPE: anything but exactly "account" used to fall through to zone silently.
+    case "${CF_SCOPE:-zone}" in
+        zone|account) ;;
+        *) log_warn "CF_SCOPE='${CF_SCOPE}' invalid (want zone|account); using zone"; CF_SCOPE="zone" ;;
+    esac
     case "${MAIL_CAMPAIGN_DIGEST:-}" in
         auto|on|off) ;;
         *) log_warn "MAIL_CAMPAIGN_DIGEST='${MAIL_CAMPAIGN_DIGEST:-}' invalid (want auto|on|off); using auto"
@@ -614,6 +701,19 @@ _swatter_is_unsafe_block_target() {
         0.0.0.0|::|0:0:0:0:0:0:0:0) return 0 ;;          # unspecified address
     esac
     return 1
+}
+
+# _swatter_prefix_too_wide <ip-or-cidr> <min-v4-plen> <min-v6-plen> : 0 if the
+# token is a prefix SHORTER than the floor for its family (a host address is
+# never too wide). Used where a block target arrives from outside this box —
+# the swarm feed — so a hostile or buggy hub cannot hand the firewall a /3.
+_swatter_prefix_too_wide() {
+    local t="${1:-}" min4="${2:-24}" min6="${3:-64}" plen
+    [[ "$t" == */* ]] || return 1
+    plen="${t#*/}"
+    [[ "$plen" =~ ^[0-9]+$ ]] || return 0           # unparseable prefix: treat as too wide
+    plen=$(( 10#$plen ))
+    if [[ "${t%%/*}" == *:* ]]; then (( plen < min6 )); else (( plen < min4 )); fi
 }
 
 # Fatal wrapper for CLI entry points (why/unblock/allow), where the value came
@@ -761,8 +861,14 @@ swatter_acquire_lock() {
     [[ "${SWATTER_NO_LOCK:-}" == "1" ]] && return 0
     local lock="${STATE_DIR}/.lock"
     if [[ "${SWATTER_LOCK_HELD:-}" != "1" ]]; then
-        exec env SWATTER_LOCK_HELD=1 flock -n "${lock}" "${SWATTER_ENTRYPOINT}" "${SWATTER_ARGV[@]}"
-        exit 0   # only reached if the lock was already held
+        # Not `exec`: the parent stays to REPORT a held lock. `flock -n` is silent
+        # when it cannot take the lock, so a scan that lost to the daily
+        # refresh-feeds (both fire at 03:20) used to exit 1 with no output at all.
+        # -E 75 (EX_TEMPFAIL) distinguishes "busy" from the child's own exit code.
+        local rc
+        env SWATTER_LOCK_HELD=1 flock -n -E 75 "${lock}" "${SWATTER_ENTRYPOINT}" "${SWATTER_ARGV[@]}"; rc=$?
+        (( rc == 75 )) && log_warn "skipped: another swatter run holds ${lock}"
+        exit "$rc"
     fi
 }
 

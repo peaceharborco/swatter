@@ -642,12 +642,25 @@ BEGIN {
             w = bad_w[i]
             if (w > badmax[ip]) { badmax[ip] = w; badcat[ip] = bad_cat[i] }
             badhits[ip]++
-            # Failure evidence on HIGH+ paths only: an error status or a POST
-            # (an actual credential/exploit attempt). HIGH paths like
-            # wp-login.php are also visited by legitimate site owners, whose
-            # sessions produce successful GETs here — never error bursts or
-            # POST floods.
-            if (w >= 70 && (status >= 400 || method == "POST")) hibad_fail[ip]++
+            # Failure evidence on HIGH+ paths only: an error status, or a POST
+            # to wp-login.php (WordPress answers a FAILED login with 200, so the
+            # status alone cannot see a password spray there). A successful
+            # POST anywhere else is NOT failure evidence: Jetpack, the WordPress
+            # mobile apps and pingbacks send dozens of 200 POSTs to xmlrpc.php
+            # per sync, and counting those floored a real integration at 80 ->
+            # temp -> perm -> AbuseIPDB report (2026-10-23 audit). HIGH paths
+            # like wp-login.php are also visited by legitimate site owners,
+            # whose sessions produce successful GETs here.
+            # The two credential endpoints answer a FAILED attempt with 200, so
+            # a POST there still counts — except from the WordPress integrations
+            # that legitimately POST xmlrpc.php in bursts (Jetpack sync, the
+            # mobile apps, WP-to-WP pingbacks). Spoofing one of those UAs buys an
+            # attacker only this floor; rate, error and fan-out scoring still see it.
+            # The exemption is xmlrpc.php ONLY: nothing legitimate posts wp-login.php
+            # forty times, so a spoofed integration UA there still floors.
+            if (w >= 70 && (status >= 400 || (method == "POST" && path ~ /wp-login\.php$/) \
+                            || (method == "POST" && path ~ /xmlrpc\.php$/ \
+                                && ua !~ /jetpack|wordpress\/|wp-(android|iphone|ipad)/))) hibad_fail[ip]++
             break        # one category per request (table is severity-ordered)
         }
     }

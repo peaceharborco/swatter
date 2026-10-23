@@ -325,6 +325,14 @@ swatter_is_never_block() {
         127.*|10.*|192.168.*|169.254.*|::1|fe80:*|fc*:*|fd*:*) echo "local/private"; return 0 ;;
         172.1[6-9].*|172.2[0-9].*|172.3[0-1].*)                echo "rfc1918";       return 0 ;;
     esac
+    # The string patterns above only recognise a token INSIDE private space. A
+    # prefix that CONTAINS it (192.0.0.0/8 over the LAN's 192.168/16, 8.0.0.0/5
+    # over 10/8) sailed through, and a feed-supplied prefix could then csf-deny
+    # the server's own network. Prefix tokens get the overlap test.
+    if [[ "$ip" == */* ]] && _ip_in_cidr_list "$ip" \
+            "0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/4 240.0.0.0/4 ::1/128 fc00::/7 fe80::/10 ff00::/8"; then
+        echo "local/private(overlap)"; return 0
+    fi
 
     # Cloudflare ranges — the catastrophic case. Check the live file first, then
     # the compiled-in fallback so a never-refreshed install is still protected.
@@ -349,8 +357,16 @@ swatter_is_never_block() {
     local caf; caf="$(_swatter_csf_allow_file)"
     if _cidr_overlaps_file "$ip" "$caf"; then echo "csf.allow"; return 0; fi
 
-    # Server's own IPs.
+    # Server's own IPs — by overlap, so a prefix that CONTAINS this server (a
+    # feed-supplied 45.33.0.0/16 over a box at 45.33.1.1) is refused too, not
+    # only the exact address.
     if _swatter_self_ips | grep -qxF "$ip"; then echo "server-self"; return 0; fi
+    if [[ "$ip" == */* ]]; then
+        local sf; sf="$(mktemp "${TMPDIR:-/tmp}/swatter-self.XXXXXX")"
+        _swatter_self_ips > "$sf"
+        if _cidr_overlaps_file "$ip" "$sf"; then rm -f "$sf"; echo "server-self(overlap)"; return 0; fi
+        rm -f "$sf"
+    fi
 
     # Forward-confirmed good crawler.
     if _swatter_is_good_crawler "$ip"; then echo "verified-crawler"; return 0; fi

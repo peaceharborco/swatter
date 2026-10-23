@@ -10,54 +10,67 @@
 # Minimal JSON string escape (backslash, quote, control chars -> space).
 _notify_jesc() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/ }"; s="${s//$'\t'/ }"; printf '%s' "$s"; }
 
-# Returns 0 (suppress) if this key fired within ALERT_REPEAT_TTL; else marks + returns 1.
+# Returns 0 (suppress) if this key fired within ALERT_REPEAT_TTL; else 1. The
+# marker is NOT written here: it is stamped by _notify_mark only after a channel
+# actually delivered, so a failed send (curl exit 22, MTA down) is retried on the
+# next scan instead of being silenced for 6h — the same rule lib/alerts.sh keeps
+# for the RED SMS.
 _notify_ratelimited() {
-    local key="$1" m now mtime age
+    local key="$1" m now mtime age ttl="${ALERT_REPEAT_TTL:-21600}"
     [[ -n "$key" ]] || return 1
+    [[ "$ttl" =~ ^[0-9]+$ ]] || ttl=21600
     m="${STATE_DIR}/alerted/${key}"
-    mkdir -p "${STATE_DIR}/alerted" 2>/dev/null
     if [[ -f "$m" ]]; then
         now="$(swatter_now)"; mtime="$(stat_mtime "$m" 2>/dev/null || echo 0)"; age=$(( now - mtime ))
-        (( age < ${ALERT_REPEAT_TTL:-21600} )) && return 0
+        (( age < ttl )) && return 0
     fi
-    : > "$m" 2>/dev/null
     return 1
 }
+_notify_mark() {
+    [[ -n "${1:-}" ]] || return 0
+    mkdir -p "${STATE_DIR}/alerted" 2>/dev/null
+    : > "${STATE_DIR}/alerted/${1}" 2>/dev/null
+}
 
+# Each channel: 0 = not configured OR delivered; 1 = configured but did NOT
+# deliver (missing tool/token/curl, or the send failed). swatter_notify stamps
+# the rate-limit marker only for a configured channel that returned 0.
 _notify_mail() {
     [[ -n "${NOTIFY_EMAIL:-}" ]] || return 0
-    have mail || return 0
-    printf '%s\n' "$2" | mail -s "$1" "${NOTIFY_EMAIL}" 2>/dev/null || log_warn "notify: local mail failed"
+    have mail || { log_warn "notify: NOTIFY_EMAIL set but no 'mail' binary"; return 1; }
+    printf '%s\n' "$2" | mail -s "$1" "${NOTIFY_EMAIL}" 2>/dev/null || { log_warn "notify: local mail failed"; return 1; }
 }
 
 _notify_email() {
     [[ -n "${ALERT_EMAIL:-}" ]] || return 0
-    swatter_send_email "${ALERT_EMAIL}" "$1" "$2" 2>/dev/null || log_warn "notify: alert email failed"
+    swatter_send_email "${ALERT_EMAIL}" "$1" "$2" 2>/dev/null || { log_warn "notify: alert email failed"; return 1; }
 }
 
 _notify_sms() {
-    [[ -n "${ALERT_SMS_TO:-}" && -n "${TWILIO_SID:-}" && -n "${TWILIO_FROM:-}" && -n "${TWILIO_TOKEN_FILE:-}" ]] || return 0
-    [[ "${SWATTER_HAVE_CURL:-0}" -eq 1 && -r "${TWILIO_TOKEN_FILE}" ]] || return 0
-    local token; token="$(cat "${TWILIO_TOKEN_FILE}" 2>/dev/null)"; [[ -n "$token" ]] || return 0
+    [[ -n "${ALERT_SMS_TO:-}" ]] || return 0
+    [[ -n "${TWILIO_SID:-}" && -n "${TWILIO_FROM:-}" && -n "${TWILIO_TOKEN_FILE:-}" ]] || { log_warn "notify: ALERT_SMS_TO set but Twilio is not configured"; return 1; }
+    [[ "${SWATTER_HAVE_CURL:-0}" -eq 1 && -r "${TWILIO_TOKEN_FILE}" ]] || { log_warn "notify: sms needs curl and a readable TWILIO_TOKEN_FILE"; return 1; }
+    local token; token="$(tr -d "[:space:]" < "${TWILIO_TOKEN_FILE}" 2>/dev/null)"; [[ -n "$token" ]] || { log_warn "notify: TWILIO_TOKEN_FILE is empty"; return 1; }
     # SID:token via -K config file, never argv (visible in `ps` on a shared box).
     local cfg
-    cfg="$(swatter_curl_cfg "user = \"${TWILIO_SID}:${token}\"")" || { log_warn "notify: cannot create curl config"; return 0; }
+    cfg="$(swatter_curl_cfg "user = \"${TWILIO_SID}:${token}\"")" || { log_warn "notify: cannot create curl config"; return 1; }
     # TWILIO_FROM may be a phone number (+1…) or a Messaging Service SID (MG…) —
     # the latter uses a different Twilio param (mirrors lib/alerts.sh).
     local fromkey="From"; [[ "${TWILIO_FROM}" == MG* ]] && fromkey="MessagingServiceSid"
-    local err
+    local err rc=0
     err="$(curl --max-time 8 -fsS -X POST \
         -K "$cfg" \
         --data-urlencode "${fromkey}=${TWILIO_FROM}" --data-urlencode "To=${ALERT_SMS_TO}" \
         --data-urlencode "Body=swatter: $1" \
         "https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json" 2>&1 >/dev/null)" \
-        || log_warn "notify: twilio sms failed${err:+: $(printf '%s' "${err//${token}/***}" | tr '\n' ' ' | cut -c1-160)}"
+        || { rc=1; log_warn "notify: twilio sms failed${err:+: $(printf '%s' "${err//${token}/***}" | tr '\n' ' ' | cut -c1-160)}"; }
     rm -f "$cfg"
+    return "$rc"   # a failed send returns 1 so swatter_notify does not stamp the rate-limit marker
 }
 
 _notify_webhook() {
     [[ -n "${ALERT_WEBHOOK_URL:-}" ]] || return 0
-    [[ "${SWATTER_HAVE_CURL:-0}" -eq 1 ]] || return 0
+    [[ "${SWATTER_HAVE_CURL:-0}" -eq 1 ]] || { log_warn "notify: ALERT_WEBHOOK_URL set but curl is unavailable"; return 1; }
     local fmt="${ALERT_WEBHOOK_FORMAT:-auto}" payload
     if [[ "$fmt" == "auto" ]]; then
         case "${ALERT_WEBHOOK_URL}" in
@@ -84,18 +97,25 @@ _notify_webhook() {
     fi
     local err
     err="$(curl --max-time 8 -fsS -H "Content-Type: application/json" -d "$payload" "${ALERT_WEBHOOK_URL}" 2>&1 >/dev/null)" \
-        || log_warn "notify: webhook post failed${err:+: $(printf '%s' "$err" | tr '\n' ' ' | cut -c1-160)}"
+        || { log_warn "notify: webhook post failed${err:+: $(printf '%s' "$err" | tr '\n' ' ' | cut -c1-160)}"; return 1; }
 }
 
 swatter_notify() {
     local subject="$1" body="$2" key="${3:-}"
-    # Rate-limit marker is written SYNCHRONOUSLY here; the channel sends (each a
-    # bounded-timeout curl/MTA) are dispatched in the BACKGROUND so a slow SMS/
-    # webhook/mail endpoint never delays the scan — mirrors the AbuseIPDB report.
+    # The channel sends (each a bounded-timeout curl/MTA) are dispatched in the
+    # BACKGROUND so a slow SMS/webhook/mail endpoint never delays the scan —
+    # mirrors the AbuseIPDB report. The rate-limit marker is stamped from that
+    # background job, after a configured channel has delivered.
     _notify_ratelimited "$key" && { log_debug "alert '${key}' rate-limited"; return 0; }
-    ( _notify_mail    "$subject" "$body"
-      _notify_email   "$subject" "$body"
-      _notify_sms     "$subject" "$body"
-      _notify_webhook "$subject" "$body" ) &
+    # Each channel returns 0 only when it SENT (a channel that is not configured
+    # returns 0 too — see each _notify_*; an unconfigured channel never delivers,
+    # so count delivery by a channel that is configured AND succeeded).
+    ( ok=0
+      _notify_mail    "$subject" "$body" && [[ -n "${NOTIFY_EMAIL:-}" ]] && ok=1
+      _notify_email   "$subject" "$body" && [[ -n "${ALERT_EMAIL:-}" ]] && ok=1
+      _notify_sms     "$subject" "$body" && [[ -n "${ALERT_SMS_TO:-}" ]] && ok=1
+      _notify_webhook "$subject" "$body" && [[ -n "${ALERT_WEBHOOK_URL:-}" ]] && ok=1
+      (( ok )) && _notify_mark "$key"
+      true ) &
     return 0
 }

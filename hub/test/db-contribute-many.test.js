@@ -15,7 +15,7 @@ describe("contributeMany (chunked batches)", () => {
   it("writes a batch larger than one chunk (120 entries) completely", async () => {
     await registerHost(env, { host: "boxA", now });
     const entries = Array.from({ length: 120 }, (_, i) => ({
-      ip: "10.1." + ((i >> 8) & 255) + "." + (i & 255), category: "scan",
+      ip: "198.18." + ((i >> 8) & 255) + "." + (i & 255), category: "scan",
     }));
     await contributeMany(env, { entries, host: "boxA", now });
     const o = await env.DB.prepare("SELECT COUNT(*) c FROM offenders").first();

@@ -43,6 +43,28 @@ swatter_notify "circuit breaker tripped" "again" "circuit_breaker"; settle
 after="$(wc -l < "$MAILED")"
 check ratelimit "$before" "$after"
 
+# 2026-10-23 audit: the marker used to be written BEFORE any channel sent, so a
+# failed send (curl exit 22, MTA down) silenced that alert for ALERT_REPEAT_TTL.
+# With every channel failing, no marker; the next call sends again.
+rm -f "${STATE_DIR}/alerted/dead_channel"
+swatter_send_email() { return 1; }
+curl() { return 22; }
+swatter_notify "dead channel" "first" "dead_channel"; settle
+[[ -e "${STATE_DIR}/alerted/dead_channel" ]] && { echo "FAIL failed-send-wrote-marker"; FAIL=$((FAIL+1)); } || PASS=$((PASS+1))
+# ...and once a channel delivers, the marker appears.
+swatter_send_email() { printf '%s|%s|%s\n' "$1" "$2" "$3" >> "$MAILED"; return 0; }
+curl() { local url="${*: -1}"; case "$url" in *twilio*) printf '%s\n' "$*" >> "$SMS";; *) printf '%s\n' "$*" >> "$WEB";; esac; return 0; }
+swatter_notify "dead channel" "second" "dead_channel"; settle
+[[ -e "${STATE_DIR}/alerted/dead_channel" ]] && PASS=$((PASS+1)) || { echo "FAIL successful-send-marker-missing"; FAIL=$((FAIL+1)); }
+# Review finding: a channel that is CONFIGURED but cannot send (no token file,
+# no curl, no mail binary) used to return 0 and count as delivered.
+rm -f "${STATE_DIR}/alerted/cfg_only"
+_saved_tok="$TWILIO_TOKEN_FILE"; TWILIO_TOKEN_FILE="$STATE_DIR/missing.key"
+_saved_alert="$ALERT_EMAIL"; ALERT_EMAIL=""; _saved_web="$ALERT_WEBHOOK_URL"; ALERT_WEBHOOK_URL=""
+swatter_notify "cfg only" "x" "cfg_only"; settle
+[[ -e "${STATE_DIR}/alerted/cfg_only" ]] && { echo "FAIL unsendable-configured-channel-marked"; FAIL=$((FAIL+1)); } || PASS=$((PASS+1))
+TWILIO_TOKEN_FILE="$_saved_tok"; ALERT_EMAIL="$_saved_alert"; ALERT_WEBHOOK_URL="$_saved_web"
+
 # A failing channel does not abort the others: make webhook curl fail, email still fires.
 : > "$MAILED"
 curl() { local url="${*: -1}"; case "$url" in *twilio*) return 0;; *) return 7;; esac; }

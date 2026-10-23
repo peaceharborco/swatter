@@ -142,7 +142,7 @@ gh() { printf 'truncated:9 checks, only 1 read'; }
 assert_eq "truncated => transport (never classified)" "$(_ci_commit_state abc | cut -d: -f1)" "transport"
 # The sha must actually reach gh; verifying a different commit is the bug a gate
 # must not have.
-gh() { printf '%s' "$*" | grep -q "deadbeefcafe" && printf 'failed=;pending=;present=gitleaks,hub,test' || printf 'WRONG-SHA'; }
+gh() { printf '%s' "$*" | grep -q "deadbeefcafe" && printf 'failed=;pending=;present=gitleaks,hub,limits,test' || printf 'WRONG-SHA'; }
 assert_eq "the requested sha is passed to gh" "$(_ci_commit_state deadbeefcafe)" "green"
 unset -f gh; unset st
 
@@ -254,12 +254,12 @@ assert_eq "absent workflow dir => failure, not an empty pass" \
 
 # ---- the bash half of the classifier, over stubbed gh output ----
 st_of() { gh() { printf '%s' "$1"; }; export -f gh 2>/dev/null; _ci_commit_state x; }
-gh() { printf 'failed=;pending=;present=gitleaks,hub,test'; }
+gh() { printf 'failed=;pending=;present=gitleaks,hub,limits,test'; }
 assert_eq "all expected present => green"        "$(_ci_commit_state x)" "green"
 gh() { printf 'failed=;pending=;present=gitleaks'; }
-assert_eq "one fast green job => missing, NOT green" "$(_ci_commit_state x)" "missing:hub,test"
+assert_eq "one fast green job => missing, NOT green" "$(_ci_commit_state x)" "missing:hub,limits,test"
 gh() { printf 'failed=;pending=;present=test,hub'; }
-assert_eq "gitleaks never ran => missing"        "$(_ci_commit_state x)" "missing:gitleaks"
+assert_eq "gitleaks never ran => missing"        "$(_ci_commit_state x)" "missing:gitleaks,limits"
 gh() { printf 'failed=test;pending=hub;present=test,hub'; }
 assert_eq "failed OUTRANKS pending"              "$(_ci_commit_state x)" "failed:test"
 gh() { printf 'failed=;pending=test;present=test'; }

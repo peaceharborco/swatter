@@ -166,17 +166,41 @@ _ol_errf_init() {
 }
 
 # Build/refresh an ipset from a newline CIDR list. hash:net (CIDR-capable),
-# -exist so re-create never errors; entries added with -exist for idempotency.
+# -exist so re-create never errors.
+#
+# The live set is REPLACED, not appended to: entries go into a scratch set
+# (<set>_new) which is then `ipset swap`ped into place and destroyed. Adding
+# with -exist straight into the live set meant a range Cloudflare RETIRED stayed
+# ACCEPTed by the lock until `origin-lock disable` — and a reassigned ex-CF block
+# could then reach the origin past the DROP. The swap is atomic (the iptables
+# rules reference the set by NAME, which does not change), so there is no window
+# in which Cloudflare traffic is refused.
 _ol_build_set() {
-    local set="$1" family="$2" ranges="$3" cidr
+    local set="$1" family="$2" ranges="$3" cidr tmp="${1}_new" errs=0
     _ol_errf_init
     ipset create "$set" hash:net family "$family" -exist 2>"${_OL_ERRF}" \
-        || _ol_op_failed "ipset create ${set}: $(_ol_err1 "$(cat "${_OL_ERRF}" 2>/dev/null)")"
+        || { _ol_op_failed "ipset create ${set}: $(_ol_err1 "$(cat "${_OL_ERRF}" 2>/dev/null)")"; errs=$(( errs + 1 )); }
+    ipset create "$tmp" hash:net family "$family" -exist 2>"${_OL_ERRF}" \
+        || { _ol_op_failed "ipset create ${tmp}: $(_ol_err1 "$(cat "${_OL_ERRF}" 2>/dev/null)")"; errs=$(( errs + 1 )); }
+    ipset flush "$tmp" 2>"${_OL_ERRF}" \
+        || { _ol_op_failed "ipset flush ${tmp}: $(_ol_err1 "$(cat "${_OL_ERRF}" 2>/dev/null)")"; errs=$(( errs + 1 )); }   # a scratch set left by a crashed run
     while IFS= read -r cidr; do
         [[ -n "$cidr" ]] || continue
-        ipset add "$set" "$cidr" -exist 2>"${_OL_ERRF}" \
-            || _ol_op_failed "ipset add ${set} ${cidr}: $(_ol_err1 "$(cat "${_OL_ERRF}" 2>/dev/null)")"
+        ipset add "$tmp" "$cidr" -exist 2>"${_OL_ERRF}" \
+            || { _ol_op_failed "ipset add ${tmp} ${cidr}: $(_ol_err1 "$(cat "${_OL_ERRF}" 2>/dev/null)")"; errs=$(( errs + 1 )); }
     done <<< "$ranges"
+    # Swap ONLY a fully-built scratch set. After any failure above the scratch
+    # set is a SUBSET of the Cloudflare ranges; swapping it in would make the
+    # DROP rules refuse real Cloudflare traffic for the ranges it lacks. Leave
+    # the live set exactly as it was (the caller's fail-open path handles the
+    # recorded errors) and discard the scratch.
+    if (( errs == 0 )); then
+        ipset swap "$tmp" "$set" 2>"${_OL_ERRF}" \
+            || _ol_op_failed "ipset swap ${tmp} ${set}: $(_ol_err1 "$(cat "${_OL_ERRF}" 2>/dev/null)")"
+    else
+        log_error "origin-lock: ${errs} ipset error(s) while building ${tmp}; live set ${set} left untouched (not swapped)"
+    fi
+    ipset destroy "$tmp" 2>"${_OL_ERRF}" || true   # scratch only; a leftover is flushed next run
 }
 
 # Append a rule (csfpre context: the chain is flushed by `csf -r` before each run,
@@ -687,62 +711,81 @@ swatter_originlock_section() {
     local window="$1"
     OL_HITS=0 OL_IPS=0 OL_P80=0 OL_P443=0 OL_MODE="" OL_TOP_ROWS=""
 
-    # Build the set of syslog day-labels (Mon DD) that fall inside the window.
-    # days = floor(window_secs/86400)+1 covers the boundary day and prevents
-    # unbounded-retention over-counting (the grep below spans the full live log).
-    local window_secs days
+    # The window is WINDOW SECONDS back from now — not "today plus yesterday". A
+    # calendar-day filter (the previous design) kept every line stamped yesterday,
+    # so the 04:00-local nightly counted ~35h and reported 6,168 drops where the
+    # real 24h figure was 3,169 (2026-10-23). Each line's syslog stamp is parsed
+    # to an epoch in awk (pure arithmetic — BSD awk has no mktime) and compared
+    # with the cutoff.
+    local window_secs now_ts cutoff tzoff cur_year
     window_secs="$(_report_window_secs "$window")"
-    days=$(( window_secs / 86400 + 1 ))
-    local now_ts; now_ts="$(swatter_now)"
-    # Build pipe-separated label strings (avoids newline-in-awk-var BSD awk limits)
-    # for BOTH syslog stamp formats we may meet in the log:
-    #   * traditional  "Jul  9 10:00:00 ..."   -> "Mon DD" (yearless)
-    #   * ISO-8601     "2026-07-09T10:00:00 ..." -> "YYYY-MM-DD" (year-aware)
-    # Modern rsyslog defaults to ISO; matching ONLY the traditional label made the
-    # window filter drop every ISO line -> a false "no drops". The ISO labels also
-    # carry the year, so an ISO stamp can be windowed exactly (no prior-year
-    # collision, unlike yearless "Mon DD").
-    local label_str="" iso_str="" i ts lbl iso
-    for (( i = 0; i < days; i++ )); do
-        ts=$(( now_ts - i * 86400 ))
-        lbl="$(date -d "@$ts" +'%b %e' 2>/dev/null || date -r "$ts" +'%b %e')"
-        iso="$(date -d "@$ts" +'%Y-%m-%d' 2>/dev/null || date -r "$ts" +'%Y-%m-%d')"
-        # Normalize the double-space produced for single-digit days ("Jun  5" ->
-        # "Jun 5") to match awk's $1" "$2 reconstruction which collapses fields.
-        lbl="${lbl//  / }"
-        label_str+="${lbl}|"
-        iso_str+="${iso}|"
-    done
-    label_str="${label_str%|}"; # strip trailing pipe
-    iso_str="${iso_str%|}"
+    now_ts="$(swatter_now)"
+    cutoff=$(( now_ts - window_secs ))
+    # Host zone offset (seconds east of UTC) and current year, both at "now".
+    # Traditional "Mon DD HH:MM:SS" stamps carry neither a year nor a zone: they
+    # are local wall-clock, so they are read in the host's current offset (one
+    # hour of drift across a DST change inside the window is accepted) with the
+    # year inferred — a stamp that would land in the future is last year's.
+    local tzs; tzs="$(date -d "@${now_ts}" +'%z' 2>/dev/null || date -r "${now_ts}" +'%z')"
+    cur_year="$(date -d "@${now_ts}" +'%Y' 2>/dev/null || date -r "${now_ts}" +'%Y')"
+    tzoff=0
+    if [[ "$tzs" =~ ^([+-])([0-9][0-9])([0-9][0-9])$ ]]; then
+        tzoff=$(( 10#${BASH_REMATCH[2]} * 3600 + 10#${BASH_REMATCH[3]} * 60 ))
+        [[ "${BASH_REMATCH[1]}" == "-" ]] && tzoff=$(( -tzoff ))
+    fi
 
     local logs; logs="$(_ol_digest_logs)"
     # shellcheck disable=SC2086
     # $logs intentionally word-splits for multi-path glob support
     local raw_hits; raw_hits="$(grep -hE "ORIGIN-LOCK:" $logs 2>/dev/null || true)"
 
-    # Keep only lines whose leading syslog stamp falls inside the day set. The
+    # Keep only lines whose leading syslog stamp is at or after the cutoff. The
     # leading token tells us the format:
-    #   * "YYYY-MM-DD..." (ISO-8601) -> window by full date (year-aware, exact).
-    #   * "Mon" (3-letter month)     -> window by "Mon DD" (yearless; a prior-year
-    #     line sharing the Mon-DD is indistinguishable — an inherent limit of the
-    #     yearless format, tolerable for a digest).
-    #   * anything else              -> COUNT it. A format we don't recognize must
-    #     never silently zero the report ("no drops" when there were drops).
+    #   * "YYYY-MM-DDTHH:MM:SS[.frac][Z|±HH:MM]" (ISO-8601, modern rsyslog) ->
+    #     exact: the zone suffix is honoured; a bare stamp is read as host-local.
+    #   * "Mon DD HH:MM:SS" (traditional)        -> host-local, year inferred.
+    #   * anything else                           -> COUNT it. A format we don't
+    #     recognize must never silently zero the report ("no drops" when there
+    #     were drops) — the digest fails toward the louder reading.
     local hits
-    hits="$(printf '%s\n' "$raw_hits" | awk -v labels="$label_str" -v isolabels="$iso_str" '
-        BEGIN {
-            n = split(labels, a, "|")
-            for (i = 1; i <= n; i++) { if (a[i] != "") valid[a[i]] = 1 }
-            m = split(isolabels, b, "|")
-            for (i = 1; i <= m; i++) { if (b[i] != "") isovalid[b[i]] = 1 }
+    hits="$(printf '%s\n' "$raw_hits" | awk -v cutoff="$cutoff" -v now="$now_ts" -v tzoff="$tzoff" -v curyear="$cur_year" '
+        # Days since 1970-01-01 for a proleptic-Gregorian civil date (y >= 1970).
+        function dfc(y, m, d,    era, yoe, doy, doe) {
+            if (m <= 2) y -= 1
+            era = int(y / 400)
+            yoe = y - era * 400
+            doy = int((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + d - 1
+            doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
+            return era * 146097 + doe - 719468
         }
+        function epoch(y, m, d, H, M, S, off) {
+            return dfc(y, m, d) * 86400 + H * 3600 + M * 60 + S - off
+        }
+        BEGIN { months = "JanFebMarAprMayJunJulAugSepOctNovDec" }
         NF == 0 { next }
         {
-            if ($1 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/) {
-                if (substr($1, 1, 10) in isovalid) print
-            } else if ($1 ~ /^[A-Z][a-z][a-z]$/) {
-                if (($1 " " $2) in valid) print
+            if ($1 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]/) {
+                y = substr($1, 1, 4) + 0;  m = substr($1, 6, 2) + 0;  d = substr($1, 9, 2) + 0
+                H = substr($1, 12, 2) + 0; M = substr($1, 15, 2) + 0; S = substr($1, 18, 2) + 0
+                rest = substr($1, 20)                 # fractional seconds and/or zone
+                off = tzoff
+                if (rest ~ /Z$/) {
+                    off = 0
+                } else if (match(rest, /[+-][0-9][0-9]:?[0-9][0-9]$/)) {
+                    z = substr(rest, RSTART, RLENGTH)
+                    sign = (substr(z, 1, 1) == "-") ? -1 : 1
+                    gsub(/[+:-]/, "", z)
+                    off = sign * (substr(z, 1, 2) * 3600 + substr(z, 3, 2) * 60)
+                }
+                if (epoch(y, m, d, H, M, S, off) >= cutoff) print
+            } else if ($1 ~ /^[A-Z][a-z][a-z]$/ && $2 ~ /^[0-9][0-9]?$/ && $3 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/) {
+                i = index(months, $1)
+                if (i == 0 || (i - 1) % 3 != 0) { print; next }   # not a month name: count it
+                m = (i - 1) / 3 + 1
+                d = $2 + 0; H = substr($3, 1, 2) + 0; M = substr($3, 4, 2) + 0; S = substr($3, 7, 2) + 0
+                t = epoch(curyear, m, d, H, M, S, tzoff)
+                if (t > now + 86400) t = epoch(curyear - 1, m, d, H, M, S, tzoff)
+                if (t >= cutoff) print
             } else { print }
         }
     ')"

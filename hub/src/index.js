@@ -1,6 +1,7 @@
 import { checkAuth } from "./auth.js";
 import { isValidIpOrCidr, isUnsafeTarget } from "./validate.js";
-import { contributeMany, registerHost, hostForToken, hostTokenState, isEnrolled, feedRows, prune, purgeHost } from "./db.js";
+import { cfg } from "./config.js";
+import { contributeMany, registerHost, hostForToken, hostTokenState, isEnrolled, hostLiveCount, feedRows, prune, purgeHost } from "./db.js";
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 const bearer = (request) => {
@@ -59,26 +60,36 @@ async function readBody(request) {
 }
 
 async function handleContribute(request, env) {
-  // Per-connecting-IP AND global limits (spec §4.2) — global bounds a distributed
-  // leaked-token holder the per-IP one can't. Rate-limit before the auth DB lookup.
+  const { ttl, maxEntries, hostMax } = cfg(env);   // throws on a bad var -> 500, never an open gate
+  // Per-connecting-IP limit first (cheap, no DB), then authenticate, and only
+  // THEN charge the GLOBAL limit (spec §4.2: it bounds a distributed holder of a
+  // LEAKED token — i.e. requests that authenticate). Charging it before auth let
+  // anyone who knew the URL drain the fleet-wide budget with unauthenticated
+  // POSTs and 429 every real box's publish.
   const ip = request.headers.get("cf-connecting-ip") || "unknown";
   if (env.CONTRIBUTE_LIMITER && !(await env.CONTRIBUTE_LIMITER.limit({ key: ip })).success)
-    return json({ error: "rate limited" }, 429);
-  if (env.GLOBAL_LIMITER && !(await env.GLOBAL_LIMITER.limit({ key: "global" })).success)
     return json({ error: "rate limited" }, 429);
   const { tooLarge, body } = await readBody(request);
   if (tooLarge) return json({ error: "body too large" }, 413);
   const auth = await authWriteIdentity(request, env, body);
   if (auth.status) return json(auth.error, auth.status);
+  if (env.GLOBAL_LIMITER && !(await env.GLOBAL_LIMITER.limit({ key: "global" })).success)
+    return json({ error: "rate limited" }, 429);
   const host = auth.host;   // identity from the token (or legacy body host_id)
   const entries = Array.isArray(body?.entries) ? body.entries : null;
   if (!entries) return json({ error: "valid entries[] required" }, 400);
-  if (entries.length > Number(env.MAX_ENTRIES)) return json({ error: "too many entries" }, 413);
+  if (entries.length > maxEntries) return json({ error: "too many entries" }, 413);
   // WRITE-GATE on enrollment: an unenrolled host_id must NOT create sightings /
   // offenders (round-2 review: a leaked write token spamming random host_ids
   // would otherwise bloat sightings + emit count-0 IPs to every consumer).
   if (!(await isEnrolled(env, host))) return json({ accepted: 0, rejected: entries.length, enrolled: false }, 200);
   const now = nowSec();
+  // Per-host quota on LIVE rows. Without it one token could write
+  // MAX_ENTRIES x 120/min distinct rows and push every other host's entries out
+  // of a FEED_MAX-truncated feed. 429 (not a 200 with accepted:0) so the client
+  // keeps its publish cursor and retries once rows have aged out.
+  const live = await hostLiveCount(env, { host, now, ttl });
+  if (live >= hostMax) return json({ error: "host quota exceeded", live, max: hostMax }, 429);
   const valid = [];
   let rejected = 0;
   for (const e of entries) {
@@ -89,6 +100,10 @@ async function handleContribute(request, env) {
     const category = typeof e.category === "string" && e.category.length <= 64 ? e.category : null;
     valid.push({ ip: eip, category });
   }
+  // The whole batch has to fit: `live >= hostMax` alone let a host at 9,500
+  // land one more 1,000-entry body. Re-sightings of IPs the host already holds
+  // do not add rows, so this over-counts them — the conservative direction.
+  if (live + valid.length > hostMax) return json({ error: "host quota exceeded", live, max: hostMax, batch: valid.length }, 429);
   await contributeMany(env, { entries: valid, host, now });
   return json({ accepted: valid.length, rejected, enrolled: true }, 200);
 }
@@ -123,7 +138,10 @@ async function handlePurge(request, env) {
   const auth = await authWriteIdentity(request, env, body);
   if (auth.status) return json(auth.error, auth.status);
   // Per-host path purges the TOKEN's host (body host_id ignored) — can't purge
-  // another host; legacy path purges the un-migrated body host_id.
+  // another host; legacy path purges the un-migrated body host_id. Same
+  // enrollment gate as /contribute: a never-enrolled legacy host_id must not
+  // reach the orphan-offender DELETE.
+  if (!(await isEnrolled(env, auth.host))) return json({ purged_sightings: 0, purged_offenders: 0 }, 200);
   const d = await purgeHost(env, { host: auth.host });
   return json({ purged_sightings: d.sightings, purged_offenders: d.offenders }, 200);
 }
@@ -138,16 +156,34 @@ async function handleFeed(request, env) {
   return new Response(body, { status: 200, headers: { "content-type": "text/plain; charset=utf-8", ...headers } });
 }
 
+// `return await` (not a bare `return`) on every handler: a handler that throws
+// before its first await rejects synchronously, and returning that promise
+// unawaited leaves it handler-less for one microtask — workerd reports that as
+// an unhandled rejection even though fetch() below catches it.
+async function route(request, env) {
+  const url = new URL(request.url);
+  const m = request.method;
+  if (m === "GET" && url.pathname === "/health") return json({ ok: true });
+  if (m === "POST" && url.pathname === "/contribute") return await handleContribute(request, env);
+  if (m === "POST" && url.pathname === "/register") return await handleRegister(request, env);
+  if (m === "POST" && url.pathname === "/purge") return await handlePurge(request, env);
+  if (m === "GET" && url.pathname === "/feed") return await handleFeed(request, env);
+  return new Response("not found", { status: 404 });
+}
+
 export default {
   async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    const m = request.method;
-    if (m === "GET" && url.pathname === "/health") return json({ ok: true });
-    if (m === "POST" && url.pathname === "/contribute") return handleContribute(request, env);
-    if (m === "POST" && url.pathname === "/register") return handleRegister(request, env);
-    if (m === "POST" && url.pathname === "/purge") return handlePurge(request, env);
-    if (m === "GET" && url.pathname === "/feed") return handleFeed(request, env);
-    return new Response("not found", { status: 404 });
+    // Anything that throws (a bad [vars] value from cfg(), a D1 failure) is a
+    // 500 with a JSON body — never a 200, never an empty feed. The bash client
+    // treats any non-200 as "hub broken": it keeps its last-good feed and its
+    // publish cursor. The message is logged, not returned, so a config value
+    // can't leak to an unauthenticated caller.
+    try {
+      return await route(request, env);
+    } catch (err) {
+      console.error(`swarm hub error on ${request.method} ${new URL(request.url).pathname}: ${err?.message || err}`);
+      return json({ error: "hub error" }, 500);
+    }
   },
   async scheduled(event, env, ctx) {
     ctx.waitUntil(prune(env, { now: nowSec() }).then(

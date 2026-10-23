@@ -137,9 +137,23 @@ _cf_load_accounts() {
 # Resolve a vhost to its CF account. Tries the exact host, then the registrable
 # parent (strip leading labels) so www./sub. hosts map to the zone's account.
 _cf_account_for_vhost() {
-    local vh="$1" probe="$1"
+    local acct; acct="$(_cf_map_entry_for_vhost "$1")" || return 1
+    printf '%s' "${acct%%$'\t'*}"
+}
+# The MAPPED domain a vhost resolves to (the registrable zone name in
+# CF_DOMAINS_MAP). A cPanel subdomain with its own domlog (blog.example.com) maps
+# to example.com's account by walking up — and the ZONE lookup must use that same
+# name: `GET /zones?name=blog.example.com` returns nothing, so every offender
+# whose top vhost was a subdomain failed zone-scoped blocking forever.
+_cf_zone_domain_for_vhost() {
+    local e; e="$(_cf_map_entry_for_vhost "$1")" || return 1
+    printf '%s' "${e#*$'\t'}"
+}
+# -> "account<TAB>mapped-domain" for the nearest parent of <vhost> in the map.
+_cf_map_entry_for_vhost() {
+    local probe="$1"
     while [[ -n "$probe" ]]; do
-        if [[ -n "${_CF_ACCT_OF_DOMAIN[$probe]:-}" ]]; then printf '%s' "${_CF_ACCT_OF_DOMAIN[$probe]}"; return 0; fi
+        if [[ -n "${_CF_ACCT_OF_DOMAIN[$probe]:-}" ]]; then printf '%s\t%s' "${_CF_ACCT_OF_DOMAIN[$probe]}" "$probe"; return 0; fi
         [[ "$probe" != *.*.* ]] && break
         probe="${probe#*.}"
     done
@@ -366,7 +380,9 @@ _cf_block_zone() {
     fi
     [[ "${SWATTER_HAVE_JQ}" -eq 1 && "${SWATTER_HAVE_CURL}" -eq 1 ]] || { SWATTER_LAST_BACKEND_ERR="jq/curl unavailable"; log_error "CF plane needs jq+curl"; return 1; }
 
-    local zid; zid="$(_cf_zone_id "$vhost" "$token")" || { SWATTER_LAST_BACKEND_ERR="zone unresolved for ${vhost}"; log_warn "CF block ${ip}: could not resolve zone for ${vhost}"; return 1; }
+    # Resolve the zone by the MAPPED domain, not the raw vhost (see _cf_zone_domain_for_vhost).
+    local zdom; zdom="$(_cf_zone_domain_for_vhost "$vhost")" || zdom="$vhost"
+    local zid; zid="$(_cf_zone_id "$zdom" "$token")" || { SWATTER_LAST_BACKEND_ERR="zone unresolved for ${zdom}"; log_warn "CF block ${ip}: could not resolve zone for ${zdom} (vhost ${vhost})"; return 1; }
     local expiry note resp rid
     expiry=$(( $(swatter_now) + ttl ))
     note="${CF_RULE_PREFIX:-swatter}|exp=${expiry}|${reason}"
@@ -540,9 +556,14 @@ _cf_parse_ref() {
 _cf_delete_ref() {
     local scope="$1" sid="$2" rid="$3" path acct tok
     path="$(_cf_rule_path "$scope" "$sid" "$rid")"
+    # A rule that no longer exists at Cloudflare (deleted by hand in the
+    # dashboard, zone moved) answers 10001 "not found". That IS the end state the
+    # delete wanted, so the ref is dropped; keeping it made unblock /
+    # rollback-ladder exit 1 ("may still be live") forever and the sweep re-issue
+    # the same DELETE every scan. Transport, auth and 5xx failures still keep it.
     for acct in "${!_CF_TOKEN[@]}"; do
         tok="${_CF_TOKEN[$acct]}"
-        if _cf_api "$tok" DELETE "$path" | jq -e '.success==true' >/dev/null 2>&1; then
+        if _cf_api "$tok" DELETE "$path" | jq -e '.success==true or (([.errors[]?.code] | index(10001)) != null)' >/dev/null 2>&1; then
             return 0
         fi
     done

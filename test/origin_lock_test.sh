@@ -61,8 +61,18 @@ ip6tables(){ echo "ip6tables $*" >> "$CALLS"; [[ "$1" == "-C" ]] && return "${IP
 cmd_origin_lock apply --hook=csf 2>"$TMP/applyerr"
 has  csf-set4   "ipset create cf_origin4 hash:net family inet"
 has  csf-set6   "ipset create cf_origin6 hash:net family inet6"
-has  csf-add4   "ipset add cf_origin4 203.0.113.0/24"
-has  csf-add6   "ipset add cf_origin6 2001:db8:1::/48"
+# Entries are built in a scratch set and SWAPPED in (2026-10-23 audit: adding
+# straight into the live set never removed a range Cloudflare retired).
+has  csf-add4   "ipset add cf_origin4_new 203.0.113.0/24"
+has  csf-add6   "ipset add cf_origin6_new 2001:db8:1::/48"
+hasnt csf-no-direct-add4 "ipset add cf_origin4 "
+has  csf-swap4  "ipset swap cf_origin4_new cf_origin4"
+has  csf-swap6  "ipset swap cf_origin6_new cf_origin6"
+has  csf-scratch-flushed "ipset flush cf_origin4_new"
+has  csf-scratch-gone "ipset destroy cf_origin4_new"
+# ...and the swap happens AFTER every add (the live set is never half-built).
+check csf-swap-after-adds "$(awk '/ipset add cf_origin4_new/{a=NR} /ipset swap cf_origin4_new/{s=NR} END{print (a && s && s>a) ? "yes" : "no"}' "$CALLS")" "yes"
+_OL_APPLY_ERRS=0; _OL_APPLY_ERR=""
 has  csf-acc4   "iptables -A INPUT -p tcp -m multiport --dports 80,443 -m set --match-set cf_origin4 src -j ACCEPT"
 has  csf-acc6   "ip6tables -A INPUT -p tcp -m multiport --dports 80,443 -m set --match-set cf_origin6 src -j ACCEPT"
 # The /.well-known/ ACME carve-out is RETIRED: an xt_string payload match can
@@ -369,9 +379,9 @@ ORIGIN_LOCK_LOG="$DIG/messages"
 # Use SWATTER_NOW_EPOCH (set at top of this file) as the reference "now" so the
 # day labels generated here match those computed inside swatter_originlock_section.
 _now_ts="${SWATTER_NOW_EPOCH}"
-_now_lbl="$(date -d "@${_now_ts}" +'%b %e %T' 2>/dev/null || date -r "${_now_ts}" +'%b %e %T')"
+_now_lbl="$(date -d "@${_now_ts}" +'%b %e %T' 2>/dev/null || date -u -r "${_now_ts}" +'%b %e %T')"
 _old_ts=$(( _now_ts - 864000 ))   # 10 days ago — well outside the 24h window
-_old_lbl="$(date -d "@${_old_ts}" +'%b %e %T' 2>/dev/null || date -r "${_old_ts}" +'%b %e %T')"
+_old_lbl="$(date -d "@${_old_ts}" +'%b %e %T' 2>/dev/null || date -u -r "${_old_ts}" +'%b %e %T')"
 # 3 sources in-window: 45.. (attacker, :80 x2), 193.. (attacker, :443 x1), 198.51.100.7 (unknown, :80 x1)
 # Plus one out-of-window line from a NEW IP (10.10.10.10) that must be excluded.
 {
@@ -415,8 +425,8 @@ check ol-gate-off-hits   "$(_ol_digest_should_render 4 && echo show || echo hide
 # the ISO leading token (year-aware, so exact windowing) OR it silently drops
 # EVERY line -> false "no drops". An unrecognized leading token must be COUNTED,
 # never dropped. A 10-day-old ISO line stays excluded (year-aware).
-_iso_now="$(date -d "@${_now_ts}" +'%Y-%m-%dT%H:%M:%S' 2>/dev/null || date -r "${_now_ts}" +'%Y-%m-%dT%H:%M:%S')"
-_iso_old="$(date -d "@${_old_ts}" +'%Y-%m-%dT%H:%M:%S' 2>/dev/null || date -r "${_old_ts}" +'%Y-%m-%dT%H:%M:%S')"
+_iso_now="$(date -u -d "@${_now_ts}" +'%Y-%m-%dT%H:%M:%S' 2>/dev/null || date -u -r "${_now_ts}" +'%Y-%m-%dT%H:%M:%S')"
+_iso_old="$(date -u -d "@${_old_ts}" +'%Y-%m-%dT%H:%M:%S' 2>/dev/null || date -u -r "${_old_ts}" +'%Y-%m-%dT%H:%M:%S')"
 {
     printf '%s+00:00 cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=45.135.232.17 DPT=443 SPT=6000\n' "$_iso_now"
     printf '%s+00:00 cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=193.32.162.40 DPT=443 SPT=6002\n' "$_iso_now"
@@ -426,6 +436,31 @@ ORIGIN_LOCK_LOG="$DIG/messages"
 _oltmp="$(mktemp "${TMPDIR:-/tmp}/swatter-oliso.XXXXXX")"; swatter_originlock_section 24h > "$_oltmp"; rm -f "$_oltmp"
 check ol-iso-hits         "$OL_HITS" "2"
 check ol-iso-exclude-old  "$(printf '%s\n' "$OL_TOP_ROWS" | grep -c '10\.10\.10\.10' || true)" "0"
+# A 24h window is 24 HOURS, not "today + yesterday". A line from yesterday that is
+# older than 24h sits inside the calendar-day set but outside the window and must
+# be EXCLUDED; a 23h-old line must stay. Age = 86400 + half of today's elapsed
+# seconds lands in yesterday at any hour of the day, so this bites on every run.
+# (Found 2026-10-23: the digest said 6,168 drops where the real 24h count was 3,169.)
+_tod="$(date -d "@${_now_ts}" +'%H %M %S' 2>/dev/null || date -u -r "${_now_ts}" +'%H %M %S')"
+set -- $_tod; _tod_secs=$(( 10#$1 * 3600 + 10#$2 * 60 + 10#$3 ))
+_yday_ts=$(( _now_ts - 86400 - _tod_secs / 2 - 1 ))   # yesterday, > 24h ago
+_in_ts=$(( _now_ts - 82800 ))                           # 23h ago, in-window
+_yday_lbl="$(date -d "@${_yday_ts}" +'%b %e %T' 2>/dev/null || date -u -r "${_yday_ts}" +'%b %e %T')"
+_in_lbl="$(date -d "@${_in_ts}" +'%b %e %T' 2>/dev/null || date -u -r "${_in_ts}" +'%b %e %T')"
+_yday_iso="$(date -u -d "@${_yday_ts}" +'%Y-%m-%dT%H:%M:%S' 2>/dev/null || date -u -r "${_yday_ts}" +'%Y-%m-%dT%H:%M:%S')"
+_in_iso="$(date -u -d "@${_in_ts}" +'%Y-%m-%dT%H:%M:%S' 2>/dev/null || date -u -r "${_in_ts}" +'%Y-%m-%dT%H:%M:%S')"
+# Same in-window instant written in a -07:00 zone: the offset must be honoured.
+_in_iso_m7="$(date -u -d "@$(( _in_ts - 25200 ))" +'%Y-%m-%dT%H:%M:%S' 2>/dev/null || date -u -r "$(( _in_ts - 25200 ))" +'%Y-%m-%dT%H:%M:%S')"
+{
+    printf '%s cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=10.10.10.10 DPT=443 SPT=7000\n' "$_yday_lbl"
+    printf '%s cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=45.135.232.17 DPT=443 SPT=7002\n' "$_in_lbl"
+    printf '%s+00:00 cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=10.10.10.10 DPT=443 SPT=7004\n' "$_yday_iso"
+    printf '%s+00:00 cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=193.32.162.40 DPT=443 SPT=7006\n' "$_in_iso"
+    printf '%s-07:00 cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=193.32.162.40 DPT=443 SPT=7008\n' "$_in_iso_m7"
+} > "$DIG/messages"
+swatter_originlock_section 24h >/dev/null 2>&1
+check ol-24h-is-hours-not-days "$OL_HITS" "3"
+check ol-24h-excludes-yesterday-over-24h "$(printf '%s\n' "$OL_TOP_ROWS" | grep -c '10\.10\.10\.10' || true)" "0"
 # Unrecognized leading token must be counted, not dropped.
 printf 'weirdformat cds1 kernel: ORIGIN-LOCK: IN=eth0 SRC=5.5.5.5 DPT=443 SPT=6006\n' > "$DIG/messages"
 swatter_originlock_section 24h >/dev/null 2>&1
@@ -452,5 +487,23 @@ check ol-tag-no-cidrfn "$(bash -c '
 STATE_DIR="$OLD_STATE"; rm -rf "$DIG"
 
 echo "----------------------------------------"
+# Review finding: a scratch set that is only PARTLY built must never be swapped
+# in — it would be a subset of the Cloudflare ranges and the DROP would refuse
+# real Cloudflare traffic. Inject one failing `ipset add`; the live set stays.
+_SAVED_CALLS="$CALLS"; CALLS="$TMP/calls.partial"; : > "$CALLS"; _OL_APPLY_ERRS=0; _OL_APPLY_ERR=""
+ipset() { echo "ipset $*" >> "$CALLS"; if [[ "$1" == "add" && "$3" == "198.51.100.0/24" ]]; then echo "ipset v7: hash is full" >&2; return 1; fi; if [[ "$1" == "list" ]]; then return "${IPSET_LIST_RC:-1}"; fi; return 0; }
+_ol_build_set cf_origin4 inet $'203.0.113.0/24\n198.51.100.0/24\n192.0.2.0/24' 2>/dev/null
+hasnt partial-build-no-swap "ipset swap cf_origin4_new cf_origin4"
+has   partial-build-scratch-destroyed "ipset destroy cf_origin4_new"
+has   partial-build-good-adds-attempted "ipset add cf_origin4_new 192.0.2.0/24"
+check partial-build-error-counted "$(( _OL_APPLY_ERRS >= 1 ))" "1"
+# ...and a clean build DOES swap.
+: > "$CALLS"; _OL_APPLY_ERRS=0; _OL_APPLY_ERR=""
+ipset() { echo "ipset $*" >> "$CALLS"; if [[ "$1" == "list" ]]; then return "${IPSET_LIST_RC:-1}"; fi; return 0; }
+_ol_build_set cf_origin4 inet $'203.0.113.0/24\n192.0.2.0/24' 2>/dev/null
+has   clean-build-swaps "ipset swap cf_origin4_new cf_origin4"
+check clean-build-no-errors "$_OL_APPLY_ERRS" "0"
+CALLS="$_SAVED_CALLS"
+
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

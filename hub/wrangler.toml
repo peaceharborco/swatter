@@ -16,10 +16,17 @@ routes = [
 # workers.dev stays enabled so the hub has a URL before/without the custom domain.
 workers_dev = true
 
+# Every numeric var is parsed by src/config.js and MUST be a positive integer;
+# a bad value makes every request a 500 (fail loud) rather than an open gate.
 [vars]
 SWARM_TTL = "604800"
 MAX_ENTRIES = "1000"
 FEED_MAX = "50000"
+# Live sightings ONE host may hold inside SWARM_TTL. cds1 runs ~8 perms/day
+# (~60 live), its largest ever batch was 257; a host at this many is a runaway
+# or a compromise, and without a cap it could evict every other host's rows
+# from a FEED_MAX-truncated feed. Over quota -> 429, client keeps its cursor.
+HOST_MAX = "10000"
 # Legacy shared-write-token path RETIRED 2026-07-17 (whole fleet migrated to per-host
 # tokens). After this unix ts the hub refuses SWARM_WRITE_TOKEN writes entirely; only
 # per-host tokens work. Bump/remove only to re-open the compat window for a NEW

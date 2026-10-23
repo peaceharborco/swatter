@@ -345,5 +345,36 @@ swatter_cf_block 1.2.3.4 3600 r x.com; check b2-dup-persistfail-failed "$?" "1"
 check b2-dup-persistfail-cause "$(printf '%s' "${SWATTER_LAST_BACKEND_ERR:-}" | grep -c 'ref not persisted')" "1"
 
 echo "----------------------------------------"
+# ==== 2026-10-23 audit ======================================================
+# Fresh functions again (the sweep cases above re-stub _cf_delete_ref/_cf_api).
+source "${ROOT}/lib/block_cf.sh"
+swatter_cf_manages_plane() { return 0; }
+_cf_load() { :; }
+SWATTER_HAVE_JQ=1; SWATTER_HAVE_CURL=1
+# (a) CF_SCOPE=zone resolved the account by walking the vhost up to its mapped
+#     parent, then looked the ZONE up by the FULL vhost: a cPanel subdomain with
+#     its own domlog (blog.example.com) never resolved, so its offenders failed
+#     every scan. The zone lookup must use the mapped (registrable) domain.
+_CF_ACCT_OF_DOMAIN[example.com]="acctZ"
+check zonedom-exact  "$(_cf_zone_domain_for_vhost example.com)"        "example.com"
+check zonedom-sub    "$(_cf_zone_domain_for_vhost blog.example.com)"   "example.com"
+check zonedom-deep   "$(_cf_zone_domain_for_vhost a.b.example.com)"    "example.com"
+check zonedom-unmapped "$(_cf_zone_domain_for_vhost other.net; echo "rc=$?")" "rc=1"
+check acct-sub-still "$(_cf_account_for_vhost blog.example.com)"       "acctZ"
+_CF_TOKEN[acctZ]="tokZ"; CF_SCOPE="zone"; SWATTER_MODE="enforce"
+_cf_zone_id() { printf '%s' "$1" > "${STATE_DIR}/zone_asked"; printf 'zoneZ'; return 0; }   # $(...) subshell: record via a file
+_CF_API_RESP='{"success":true,"result":{"id":"ruleZ"}}'
+_cf_api() { printf '%s' "${_CF_API_RESP:-}"; }
+swatter_cf_block 198.51.100.77 3600 r blog.example.com >/dev/null 2>&1; check zone-sub-rc "$?" "0"
+check zone-lookup-uses-mapped-domain "$(cat "${STATE_DIR}/zone_asked" 2>/dev/null)" "example.com"
+# (b) A DELETE answered "not found" (code 10001) means the rule is already gone:
+#     drop the ref (rc 0). Any other failure still keeps it.
+_cf_api() { printf '%s' '{"success":false,"errors":[{"code":10001,"message":"firewallaccessrules.api.not_found"}]}'; }
+check delete-notfound-is-done "$(_cf_delete_ref zone zoneZ ruleZ; echo "rc=$?")" "rc=0"
+_cf_api() { printf '%s' '{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}'; }
+check delete-auth-fail-kept "$(_cf_delete_ref zone zoneZ ruleZ; echo "rc=$?")" "rc=1"
+_cf_api() { printf ''; }
+check delete-transport-fail-kept "$(_cf_delete_ref zone zoneZ ruleZ; echo "rc=$?")" "rc=1"
+
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

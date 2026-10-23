@@ -48,6 +48,73 @@ check sweep-below-threshold "$(grep -c '^2.3.4.5' "$BLOCKS")" "0"       # hc=1 <
 check sweep-fleet-allow "$(grep -c '^5.5.5.5' "$BLOCKS")" "0"           # canary never swept
 check sweep-reason "$(grep -c 'swarm-corroborated hosts=3' "$BLOCKS")" "1"
 
+# 2026-10-23 audit (Blocker): the feed is outside input. A hostile or buggy hub
+# could hand the sweep "32.0.0.0/3" (an eighth of the internet), "192.0.0.0/8"
+# (contains the LAN), or a /16 that contains THIS server, and every one landed
+# as a csf deny — only the exact self address was exempt. The sweep now refuses
+# /0, reserved space and anything wider than /24 (v4) / /64 (v6), and never-block
+# matches prefixes by overlap against private space and the server's own IPs.
+: > "$BLOCKS"
+SWATTER_SELF_IPS="45.33.1.1"
+cat > "$META" <<'EOF'
+[
+ {"ip":"32.0.0.0/3","host_count":5,"category":null,"expires":99},
+ {"ip":"0.0.0.0/0","host_count":5,"category":null,"expires":99},
+ {"ip":"192.0.0.0/8","host_count":5,"category":null,"expires":99},
+ {"ip":"45.33.0.0/16","host_count":5,"category":null,"expires":99},
+ {"ip":"45.33.0.0/23","host_count":5,"category":null,"expires":99},
+ {"ip":"2001:db8::/48","host_count":5,"category":null,"expires":99},
+ {"ip":"203.0.113.0/24","host_count":5,"category":null,"expires":99},
+ {"ip":"2001:db8:1::/64","host_count":5,"category":null,"expires":99},
+ {"ip":"6.6.6.6","host_count":5,"category":null,"expires":99}
+]
+EOF
+touch "$META" "${STATE_DIR}/feeds/swarm.txt"
+swatter_swarm_sweep 2>/dev/null; check sweep-width-rc "$?" "0"
+check sweep-refuses-slash3     "$(grep -c '^32.0.0.0/3 ' "$BLOCKS")" "0"
+check sweep-refuses-slash0     "$(grep -c '^0.0.0.0/0 ' "$BLOCKS")" "0"
+check sweep-refuses-slash8     "$(grep -c '^192.0.0.0/8 ' "$BLOCKS")" "0"
+check sweep-refuses-slash16    "$(grep -c '^45.33.0.0/16 ' "$BLOCKS")" "0"
+check sweep-refuses-slash23    "$(grep -c '^45.33.0.0/23 ' "$BLOCKS")" "0"
+check sweep-refuses-v6-slash48 "$(grep -c '^2001:db8::/48 ' "$BLOCKS")" "0"
+check sweep-allows-slash24     "$(grep -c '^203.0.113.0/24 DIRECT temp' "$BLOCKS")" "1"
+check sweep-allows-v6-slash64  "$(grep -c '^2001:db8:1::/64 DIRECT temp' "$BLOCKS")" "1"
+check sweep-allows-host        "$(grep -c '^6.6.6.6 DIRECT temp' "$BLOCKS")" "1"
+# Prefix never-block by overlap (the real swatter_is_never_block, sourced above):
+check nb-prefix-contains-lan   "$(swatter_is_never_block 192.0.0.0/8)"   "local/private(overlap)"
+check nb-prefix-contains-10    "$(swatter_is_never_block 8.0.0.0/5)"     "local/private(overlap)"
+check nb-prefix-contains-self  "$(swatter_is_never_block 45.33.0.0/16)"  "server-self(overlap)"
+check nb-prefix-public-ok      "$(swatter_is_never_block 203.0.113.0/24; echo "rc=$?")" "rc=1"
+check nb-host-self             "$(swatter_is_never_block 45.33.1.1)"     "server-self"
+unset SWATTER_SELF_IPS
+
+# 2026-10-23 audit (Major): the sweep runs outside swatter_scan, where the
+# run counters are unset; the block path's `SWATTER_RUN_ACTED=$(( SWATTER_RUN_ACTED + 1 ))`
+# aborted refresh-feeds under set -u on the first landed block. Prove the sweep
+# seeds the counters: a stub that increments like _swatter_execute_block does
+# must not abort, and the second candidate must still be dispatched.
+: > "$BLOCKS"
+unset SWATTER_RUN_ACTED SWATTER_RUN_WATCHED SWATTER_RUN_BREAKER SWATTER_RUN_PERMS SWATTER_RUN_SHARED_CAPS
+_swatter_apply_plane() { printf '%s %s %s %s\n' "$1" "$2" "$3" "$5" >> "$BLOCKS"; SWATTER_RUN_ACTED=$(( SWATTER_RUN_ACTED + 1 )); return 0; }
+cat > "$META" <<'EOF'
+[ {"ip":"7.7.7.7","host_count":5,"category":null,"expires":99},
+  {"ip":"7.7.7.8","host_count":5,"category":null,"expires":99} ]
+EOF
+touch "$META" "${STATE_DIR}/feeds/swarm.txt"
+( set -u; swatter_swarm_sweep 2>/dev/null; echo "rc=$? acted=${SWATTER_RUN_ACTED}" ) > "${STATE_DIR}/cnt.out" 2>&1
+check sweep-counters-seeded "$(cat "${STATE_DIR}/cnt.out")" "rc=0 acted=2"
+check sweep-counters-both-dispatched "$(grep -c . "$BLOCKS")" "2"
+_swatter_apply_plane() { printf '%s %s %s %s\n' "$1" "$2" "$3" "$5" >> "$BLOCKS"; return 0; }
+# restore the original feed for the cases below
+cat > "$META" <<'EOF'
+[
+ {"ip":"1.2.3.4","host_count":3,"category":null,"expires":99},
+ {"ip":"2.3.4.5","host_count":1,"category":null,"expires":99},
+ {"ip":"5.5.5.5","host_count":5,"category":null,"expires":99}
+]
+EOF
+touch "$META" "${STATE_DIR}/feeds/swarm.txt"
+
 # already-perm IPs are skipped (no churn)
 swatter_now() { echo 100; }; swatter_store_record 1.2.3.4 perm csf 0 90 "already" 0
 # Restore the real clock (unset -f would ERASE the common.sh definition — the

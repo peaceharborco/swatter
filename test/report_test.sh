@@ -24,6 +24,25 @@ check verdict-red   "$(_report_verdict | cut -f1)" "red"
 
 # subject: "<icon> Report YYYY-MM-DD - <summary>" — leads with the status icon.
 ERR_GENUINE=0 ERR_FATAL=0; REPORT_GRADE_FORCE="" _report_grade   # GREEN -> 🟢
+# 2026-10-23 audit: a plane that could not read its evidence is RED and sent.
+ERR_GENUINE=0 ERR_FATAL=0 RPT_ACTED=0 RPT_EXEMPT=0 RPT_FAILED=0 OL_HITS=0
+ERR_FEED_UNREADABLE=1; REPORT_GRADE_FORCE="" _report_grade
+check feed-unreadable-red      "$RPT_GRADE" "RED"
+check feed-unreadable-headline "$RPT_GRADE_HEADLINE" "Blind Spot"
+check feed-unreadable-sends    "$(_report_should_send && echo send || echo quiet)" "send"
+ERR_FEED_UNREADABLE=0; RPT_PLANE_FAILED=1; REPORT_GRADE_FORCE="" _report_grade
+check plane-failed-red         "$RPT_GRADE" "RED"
+check plane-failed-sends       "$(_report_should_send && echo send || echo quiet)" "send"
+RPT_PLANE_FAILED=0; REPORT_GRADE_FORCE="" _report_grade
+check planes-ok-green-again    "$RPT_GRADE" "GREEN"
+check planes-ok-quiet-again    "$(_report_should_send && echo send || echo quiet)" "quiet"
+# One non-fatal figure everywhere: ERR_GENUINE includes the fatal lines.
+ERR_GENUINE=2 ERR_FATAL=2 ERR_FATAL_GENUINE=2 ERR_FATAL_SCANNER=0
+check nonfatal-helper          "$(_report_err_nonfatal)" "0"
+check nonfatal-summary         "$(_report_summary_errors | grep -c '0 non-fatal alongside')" "1"
+unset ERR_FATAL_GENUINE ERR_FATAL_SCANNER
+# restore the fixture counters the cases below assume
+RPT_PERM=36 RPT_TEMP=162 RPT_ACTED=198 RPT_EXEMPT=0 OL_HITS=0 ERR_GENUINE=0 ERR_FATAL=0
 check subject-shape "$(_report_subject 24h)" "🟢 Report ${DATE_UTC} - healthy · 198 blocked, 0 FATAL"
 OL_HITS=253
 check subject-ol "$(_report_subject 24h | grep -c '253 origin-lock')" "1"

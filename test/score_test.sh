@@ -1173,6 +1173,62 @@ assert_band "below-min-reqs" "$(score_of example.com "$tmp/lowvol.log")" 0 49
 : > "$tmp/xmlrpc.log"
 emit_spread "$tmp/xmlrpc.log" "91.219.236.7" "POST /xmlrpc.php HTTP/1.1" 200 "Mozilla/5.0" 40
 assert_band "xmlrpc-flood" "$(score_of example.com "$tmp/xmlrpc.log")" 80 100
+# 2026-10-23 audit: a legitimate WordPress integration POSTs xmlrpc.php in
+# bursts and gets 200 back; counting every HIGH-path POST as "failure evidence"
+# floored Jetpack at 80 -> temp -> perm -> AbuseIPDB report. The floor now
+# exempts the documented integration UAs on the credential endpoints only.
+: > "$tmp/jetpack.log"
+emit_spread "$tmp/jetpack.log" "192.0.64.10" "POST /xmlrpc.php HTTP/1.1" 200 "Jetpack by WordPress.com" 40
+assert_band "xmlrpc-jetpack-not-floored" "$(score_of example.com "$tmp/jetpack.log")" 0 69
+: > "$tmp/wpapp.log"
+emit_spread "$tmp/wpapp.log" "192.0.64.11" "POST /xmlrpc.php HTTP/1.1" 200 "wp-android/23.1" 40
+assert_band "xmlrpc-wpapp-not-floored" "$(score_of example.com "$tmp/wpapp.log")" 0 69
+# ...but failures from those UAs, and a browser UA posting xmlrpc, still floor.
+: > "$tmp/jetpack401.log"
+emit_spread "$tmp/jetpack401.log" "203.0.113.60" "POST /xmlrpc.php HTTP/1.1" 403 "Jetpack by WordPress.com" 40
+assert_band "xmlrpc-jetpack-ua-failures-floor" "$(score_of example.com "$tmp/jetpack401.log")" 80 100
+# Review finding: the exemption is xmlrpc.php ONLY. A spoofed integration UA
+# posting wp-login.php forty times (200s — WordPress answers a failed login 200)
+# still floors; nothing legitimate does that.
+: > "$tmp/wplogin-spoof.log"
+emit_spread "$tmp/wplogin-spoof.log" "203.0.113.61" "POST /wp-login.php HTTP/1.1" 200 "Jetpack by WordPress.com" 40
+assert_band "wp-login-spoofed-ua-still-floors" "$(score_of example.com "$tmp/wplogin-spoof.log")" 80 100
+
+# --- 2026-10-23 audit: parser hardening ------------------------------------
+# (a) percent-encoded critical probe: Apache serves /%2Eenv as /.env but logs
+#     the raw target; the badpath table never saw it. Decoded before matching.
+: > "$tmp/pctenc.log"
+emit_spread "$tmp/pctenc.log" "203.0.113.70" "GET /%2Eenv HTTP/1.1" 404 "Mozilla/5.0" 1
+assert_band "pct-encoded-env-critical" "$(score_of example.com "$tmp/pctenc.log")" 85 100
+: > "$tmp/pctenc2.log"
+emit_spread "$tmp/pctenc2.log" "203.0.113.71" "GET /%2egit/config HTTP/1.1" 404 "Mozilla/5.0" 1
+assert_band "pct-encoded-git-critical" "$(score_of example.com "$tmp/pctenc2.log")" 85 100
+# (b) an escaped quote in the request must not end the request early: with the
+#     old parser "GET /probeN.php\"200 HTTP/1.1" 404 read as status 200 and 30
+#     distinct 404 probes scored 13 instead of 78 (status/2xx dilution).
+: > "$tmp/qspoof.log"
+for i in $(seq 1 30); do
+    printf '%s - - [%s] "GET /probe%s.php\\"200 HTTP/1.1" 404 0 "-" "Mozilla/5.0"\n' "203.0.113.72" "$(tstamp $(( NOW_EPOCH - 300 + i*5 )))" "$i" >> "$tmp/qspoof.log"
+done
+assert_band "escaped-quote-does-not-spoof-status" "$(score_of example.com "$tmp/qspoof.log")" 70 100
+# Parsed fields directly: status and path survive the escaped quote.
+_pq="$(printf '%s - - [%s] "GET /probe1.php\\"200 HTTP/1.1" 404 0 "-" "Mozilla/5.0"\n' 203.0.113.72 "$(tstamp "$NOW_EPOCH")" | _swatter_parse example.com)"
+assert_eq "escaped-quote-status-404" "$(printf '%s' "$_pq" | cut -f5)" "404"
+# (c) a "[" in the %u (auth user) field — attacker-chosen on a 401 — used to hide
+#     the whole line: the timestamp is now located by its dd/Mon/yyyy: shape.
+_pu="$(printf '%s - [ [%s] "POST /wp-login.php HTTP/1.1" 401 0 "-" "Mozilla/5.0"\n' 203.0.113.73 "$(tstamp "$NOW_EPOCH")" | _swatter_parse example.com)"
+assert_eq "bracket-username-line-parsed" "$(printf '%s' "$_pu" | cut -f1,5)" "$(printf '203.0.113.73\t401')"
+# (d) an escaped quote inside the user agent no longer hides it.
+_pa="$(printf '%s - - [%s] "GET / HTTP/1.1" 200 0 "-" "sqlmap/1.7 \\" x"\n' 203.0.113.74 "$(tstamp "$NOW_EPOCH")" | _swatter_parse example.com)"
+assert_eq "escaped-quote-ua-intact" "$(printf '%s' "$_pa" | cut -f7 | grep -c sqlmap)" "1"
+# (e) query strip happens BEFORE decoding: %3F is not a delimiter.
+_px="$(printf '%s - - [%s] "GET /a%%3Fb/.env?x=1 HTTP/1.1" 404 0 "-" "-"\n' 203.0.113.75 "$(tstamp "$NOW_EPOCH")" | _swatter_parse example.com)"
+assert_eq "pct-3f-not-a-query-delimiter" "$(printf '%s' "$_px" | cut -f4)" "/a%3fb/.env"
+# (f) badpaths.conf rules that required a literal "?" could never match (the
+#     query is stripped first): plugin-PHP exploitation now scores.
+: > "$tmp/plugin.log"
+emit_spread "$tmp/plugin.log" "203.0.113.76" "GET /wp-content/plugins/revslider/temp/x.php?cmd=id HTTP/1.1" 404 "Mozilla/5.0" 20
+assert_band "plugin-php-rule-live" "$(score_of example.com "$tmp/plugin.log")" 70 100
 
 # --- 8: site owner logging in and working in wp-admin -> never blockable ----
 # Modeled on a real 2026-06-10 false positive: one login (two mistyped

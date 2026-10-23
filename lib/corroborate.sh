@@ -165,6 +165,13 @@ swatter_corroborate() {
             | LC_ALL=C grep -hF -f <(printf '%s\n' "$keys") 2>/dev/null \
             | awk -v selfips="${SERVER_IPS:-} 127.0.0.1 ::1" -v banned="${CORR_BANNED_IPS:-}" \
                   -v banfile="${CORR_BANNED_FILE:-}" '
+                # Next UNESCAPED quote at/after start (Apache logs a quote inside a
+                # field as \"); same closer rule as lib/ingest.sh.
+                function endq(s, start,    i, c) {
+                  for (i = start; i <= length(s); i++) { c = substr(s, i, 1)
+                    if (c == "\\") { i++; continue }
+                    if (c == "\"") return i }
+                  return 0 }
                 BEGIN { n=split(selfips,s," "); for(i=1;i<=n;i++) self[s[i]]=1
                         if (banfile != "") { while ((getline ln < banfile) > 0) { gsub(/[ \t\r]/,"",ln); if (ln!="") ban[ln]=1 }
                                              close(banfile) }
@@ -174,16 +181,14 @@ swatter_corroborate() {
                   # Combined format: the request is quoted and may contain spaces,
                   # so find the closing quote instead of trusting a field offset.
                   rq=index($0,"\""); if (rq==0) next
-                  rest=substr($0,rq+1); rq2=index(rest,"\""); if (rq2==0) next
-                  req=substr(rest,1,rq2-1); tail=substr(rest,rq2+1)
+                  rq2=endq($0,rq+1); if (rq2==0) next
+                  req=substr($0,rq+1,rq2-rq-1); tail=substr($0,rq2+1)
                   split(tail,T," "); st=T[1]
                   if (st !~ /^5[0-9][0-9]$/) next
-                  # UA is the last quoted field on the line.
-                  ua=""; lq=0
-                  for (i=length(tail); i>1; i--) if (substr(tail,i,1)=="\"") { lq=i; break }
-                  if (lq>1) { pre=0
-                              for (i=lq-1; i>0; i--) if (substr(tail,i,1)=="\"") { pre=i; break }
-                              if (pre>0) ua=substr(tail,pre+1,lq-pre-1) }
+                  # UA is the last complete quoted field after the request (forward, escape-aware).
+                  ua=""; pos=1
+                  while ((o=index(substr(tail,pos),"\""))>0) { o=pos+o-1; e=endq(tail,o+1); if (e==0) break
+                                                               ua=substr(tail,o+1,e-o-1); pos=e+1 }
                   # Self, then scanner, then no-UA, then visitor. An unrecognized
                   # client falls through to visitor, the louder reading.
                   #

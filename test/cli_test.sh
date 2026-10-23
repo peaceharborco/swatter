@@ -23,6 +23,26 @@ case "$out" in *'display:none'*|*'hidden'*) PASS=$((PASS+1));; *) echo "FAIL hon
 out="$(bash "${ROOT}/bin/swatter" metrics --print 2>/dev/null)"
 case "$out" in *'swatter_build_info'*) PASS=$((PASS+1));; *) echo "FAIL metrics-print"; FAIL=$((FAIL+1));; esac
 
+# 2026-10-23 audit: `swatter allow` is the never-block sink for both planes and
+# accepted 0.0.0.0/0 (every scan then exempted everything) and a note carrying a
+# newline (which forged a second allow line). Both refused / sanitised now.
+printf 'OPERATOR_ALLOW_FILE="%s/allow.cidr"\n' "$state" >> "$SWATTER_CONF"
+bash "${ROOT}/bin/swatter" allow 0.0.0.0/0 oops >/dev/null 2>&1; rc=$?
+[[ $rc -ne 0 ]] && PASS=$((PASS+1)) || { echo "FAIL allow-slash0-accepted"; FAIL=$((FAIL+1)); }
+bash "${ROOT}/bin/swatter" allow 1.0.0.0/7 wide >/dev/null 2>&1; rc=$?
+[[ $rc -ne 0 ]] && PASS=$((PASS+1)) || { echo "FAIL allow-slash7-accepted"; FAIL=$((FAIL+1)); }
+bash "${ROOT}/bin/swatter" allow 203.0.113.7 $'office\n0.0.0.0/0 #' >/dev/null 2>&1; rc=$?
+[[ $rc -eq 0 ]] && PASS=$((PASS+1)) || { echo "FAIL allow-host-refused (rc=$rc)"; FAIL=$((FAIL+1)); }
+[[ "$(grep -c . "$state/allow.cidr")" == "1" ]] && PASS=$((PASS+1)) || { echo "FAIL allow-note-newline-forged-a-line: $(cat "$state/allow.cidr")"; FAIL=$((FAIL+1)); }
+grep -q '^0.0.0.0/0' "$state/allow.cidr" && { echo "FAIL allow-note-smuggled-slash0"; FAIL=$((FAIL+1)); } || PASS=$((PASS+1))
+bash "${ROOT}/bin/swatter" allow 10.0.0.0/8 lan >/dev/null 2>&1; rc=$?     # /8 is the floor: allowed
+[[ $rc -eq 0 ]] && PASS=$((PASS+1)) || { echo "FAIL allow-slash8-refused"; FAIL=$((FAIL+1)); }
+# flag hygiene: a typo'd flag aborts instead of silently doing something else
+bash "${ROOT}/bin/swatter" scan --dry-run --enforce >/dev/null 2>&1; rc=$?
+[[ $rc -ne 0 ]] && PASS=$((PASS+1)) || { echo "FAIL scan-contradictory-flags-accepted"; FAIL=$((FAIL+1)); }
+bash "${ROOT}/bin/swatter" report --prnit >/dev/null 2>&1; rc=$?
+[[ $rc -ne 0 ]] && PASS=$((PASS+1)) || { echo "FAIL report-typo-flag-accepted"; FAIL=$((FAIL+1)); }
+
 # A store-init failure must ABORT `scan`, not proceed on a silently-empty ledger
 # (blocking without the ledger loses caps + repeat-escalation + perm tracking).
 # Force it by making the DB path a DIRECTORY so sqlite3 can't open it as a file.

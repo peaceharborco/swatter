@@ -52,12 +52,12 @@ describe("feedRows / host_count", () => {
 
   it("excludes expired offenders, orders by ip, flags truncation at the cap", async () => {
     await registerHost(env, { host: "boxA", now });
-    for (const ip of ["10.0.0.3", "10.0.0.1", "10.0.0.2"])
+    for (const ip of ["198.18.0.3", "198.18.0.1", "198.18.0.2"])
       await contributeOne(env, { ip, host: "boxA", category: "a", now });
-    await env.DB.prepare("UPDATE offenders SET expires=? WHERE ip='10.0.0.2'").bind(now - 1).run();
+    await env.DB.prepare("UPDATE offenders SET expires=? WHERE ip='198.18.0.2'").bind(now - 1).run();
     const { rows, truncated } = await feedRows(env, { now, limit: 1 });
     expect(rows.length).toBe(1);
-    expect(rows[0].ip).toBe("10.0.0.1");   // lowest non-expired, ordered
+    expect(rows[0].ip).toBe("198.18.0.1");   // lowest non-expired, ordered
     expect(truncated).toBe(true);
   });
 });

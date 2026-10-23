@@ -1,3 +1,5 @@
+import { cfg } from "./config.js";
+
 // SHA-256 hex of a string (Web Crypto; available in Workers).
 export async function sha256Hex(s) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
@@ -68,7 +70,7 @@ export async function isEnrolled(env, host) {
 // NOT stored here (derived at read time), so there is no count race to protect.
 const CHUNK = 50;
 export async function contributeMany(env, { entries, host, now }) {
-  const ttl = Number(env.SWARM_TTL);
+  const { ttl } = cfg(env);
   for (let i = 0; i < entries.length; i += CHUNK) {
     const stmts = [];
     for (const e of entries.slice(i, i + CHUNK)) {
@@ -90,24 +92,39 @@ export async function contributeOne(env, { ip, host, category, now }) {
   return contributeMany(env, { entries: [{ ip, category }], host, now });
 }
 
+// Live sightings this host currently holds (the per-host quota's measure).
+// Uses ix_sightings_host_seen (migration 0003).
+export async function hostLiveCount(env, { host, now, ttl }) {
+  const row = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM sightings WHERE host = ?1 AND last_seen > ?2"
+  ).bind(host, now - ttl).first();
+  return Number(row?.n ?? 0);
+}
+
 export async function feedRows(env, { now, limit }) {
-  const ttl = Number(env.SWARM_TTL);
+  const { ttl, feedMax: max } = cfg(env);
   const cutoff = now - ttl;
-  const max = Number(env.FEED_MAX);
   // Clamp to [1, FEED_MAX]: a garbage/negative/zero ?limit must never yield a
   // negative LIMIT or a silently-empty feed (a consumer may treat empty as
   // "clear my blocks"). round-2 review.
   const req = Number(limit);
   const cap = Number.isFinite(req) && req >= 1 ? Math.min(Math.floor(req), max) : max;
+  // host_count counts ENROLLED hosts only (the hosts join), as before, but as one
+  // grouped join instead of a correlated subquery per row. Ordering is by
+  // corroboration first, then recency, so when the feed is truncated at FEED_MAX
+  // it drops the least-trusted rows — not whichever IPs happen to sort last as
+  // strings, which let a single host evict everyone else's rows by publishing
+  // lexically low addresses.
   const { results } = await env.DB.prepare(
     `SELECT o.ip AS ip,
-            (SELECT COUNT(DISTINCT s.host) FROM sightings s
-              JOIN hosts h ON s.host = h.host
-             WHERE s.ip = o.ip AND s.last_seen > ?2) AS host_count,
+            COUNT(DISTINCT CASE WHEN h.host IS NOT NULL THEN s.host END) AS host_count,
             o.category AS category, o.expires AS expires
        FROM offenders o
+       LEFT JOIN sightings s ON s.ip = o.ip AND s.last_seen > ?2
+       LEFT JOIN hosts h ON h.host = s.host
       WHERE o.expires > ?1
-      ORDER BY o.ip
+      GROUP BY o.ip
+      ORDER BY host_count DESC, o.last_seen DESC, o.ip
       LIMIT ?3`
   ).bind(now, cutoff, cap + 1).all();
   const rows = (results ?? []).slice(0, cap);
@@ -115,7 +132,7 @@ export async function feedRows(env, { now, limit }) {
 }
 
 export async function prune(env, { now }) {
-  const cutoff = now - Number(env.SWARM_TTL);
+  const cutoff = now - cfg(env).ttl;
   // One batch (atomic transaction) so a concurrent feed can't observe offenders
   // and sightings out of sync between the two DELETEs (round-2 review).
   const [o, s] = await env.DB.batch([

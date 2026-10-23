@@ -81,7 +81,7 @@ _mailer_sendgrid() {
     [[ "${SWATTER_HAVE_CURL}" -eq 1 && "${SWATTER_HAVE_JQ}" -eq 1 ]] || { log_error "sendgrid needs curl+jq"; return 1; }
     [[ -r "${SENDGRID_KEY_FILE}" ]] || { log_error "SendGrid key not readable: ${SENDGRID_KEY_FILE}"; return 1; }
     local key payload code
-    key="$(cat "${SENDGRID_KEY_FILE}")"
+    key="$(tr -d "[:space:]" < "${SENDGRID_KEY_FILE}")"   # a CRLF key file put "\r" on the wire -> 401
     # SendGrid requires text/plain before text/html in the content array.
     payload="$(jq -nc --arg to "${to}" --arg from "${REPORT_FROM}" \
         --arg fromname "${REPORT_FROM_NAME}" --arg subj "${subject}" --arg body "${body}" --arg html "${html}" '{

@@ -186,13 +186,29 @@ swatter_swarm_sweep() {
     # its own MAX_BLOCKS_PER_RUN budget via _SW_TOTAL_BLOCKS (score.sh:93-97).
     local healthy=1
     swatter_failclosed_active && healthy=0
+    # The sweep runs from refresh-feeds, OUTSIDE swatter_scan, so the scan's
+    # run-scoped counters are unset here. _swatter_execute_block increments
+    # SWATTER_RUN_ACTED on a landed block; under set -u that aborted the whole
+    # refresh-feeds process AFTER the csf deny and BEFORE the ledger/audit write
+    # (firewall and ledger diverged, detect_cf and state_gc never ran). Seed
+    # every counter the block path touches, preserving a caller's values.
     _SW_TOTAL_BLOCKS=0
+    SWATTER_RUN_ACTED="${SWATTER_RUN_ACTED:-0}"; SWATTER_RUN_WATCHED="${SWATTER_RUN_WATCHED:-0}"
+    SWATTER_RUN_BREAKER="${SWATTER_RUN_BREAKER:-0}"; SWATTER_RUN_PERMS="${SWATTER_RUN_PERMS:-0}"
+    SWATTER_RUN_SHARED_CAPS="${SWATTER_RUN_SHARED_CAPS:-0}"
 
     local ip hc n=0 score ttl prior
     while IFS=$'\t' read -r ip hc; do
         [[ -n "$ip" ]] || continue
         [[ "$hc" =~ ^[0-9]+$ ]] || continue
         swatter_is_valid_ip_or_cidr "$ip" || continue
+        # The feed is OUTSIDE input: the hub refuses /0, reserved space and any
+        # prefix wider than /24 (v4) or /64 (v6) — but a compromised hub, or a
+        # future one, must not be able to hand this box a /3 to csf-deny. Same
+        # floor here, independently. never-block (overlap, incl. this server's
+        # own addresses) is re-checked inside _swatter_apply_plane.
+        _swatter_is_unsafe_block_target "$ip" && { log_warn "swarm sweep: refusing unsafe feed target ${ip}"; continue; }
+        _swatter_prefix_too_wide "$ip" 24 64 && { log_warn "swarm sweep: refusing over-wide feed prefix ${ip} (floor /24 v4, /64 v6)"; continue; }
         # Fleet canary consult (spec §4.5) — cheap pre-filter; never-block and
         # the rest are re-checked inside _swatter_apply_plane.
         [[ -s "${SWARM_ALLOW_FILE:-}" ]] && _ip_in_cidr_file "$ip" "${SWARM_ALLOW_FILE}" && continue

@@ -42,7 +42,7 @@ umask 0027
 
 SWATTER_ENTRYPOINT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
 SWATTER_ARGV=("$@")
-SWATTER_VERSION="2.19.2"
+SWATTER_VERSION="2.20.0"
 
 # Locate libs: installed layout (/usr/local/lib/swatter) or repo layout (../lib).
 _self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -70,14 +70,15 @@ for m in allowlist classify ingest store_sqlite block_csf block_ipset block bloc
 done
 
 cmd_scan() {
-    local arg
+    local arg dry=0 enf=0
     for arg in "$@"; do
         case "$arg" in
-            --dry-run) SWATTER_MODE="report" ;;
-            --enforce) SWATTER_MODE="enforce" ;;
+            --dry-run) SWATTER_MODE="report";  dry=1 ;;
+            --enforce) SWATTER_MODE="enforce"; enf=1 ;;
             *) die "scan: unknown flag $arg" ;;
         esac
     done
+    (( dry && enf )) && die "scan: --dry-run and --enforce together are contradictory (last one silently won before)"
     swatter_init_dirs
     swatter_acquire_lock
     # A broken ledger must ABORT the scan, not degrade silently: blocking without
@@ -155,7 +156,11 @@ cmd_unblock() {
     local ip="${1:-}" perm_allow=0
     [[ -n "$ip" ]] || die "usage: swatter unblock IP [--perm-allow]"
     swatter_validate_ip_or_cidr "$ip"
-    [[ "${2:-}" == "--perm-allow" ]] && perm_allow=1
+    case "${2:-}" in
+        --perm-allow) perm_allow=1 ;;
+        "") ;;
+        *) die "unblock: unknown flag ${2} (did you mean --perm-allow?)" ;;   # a typo used to unblock WITHOUT allowlisting, silently
+    esac
     # Serialize with a running scan — unblock rewrites cf-rules.tsv + the ledger.
     swatter_with_state_lock || die "a swatter scan is running (lock held) — try again in a moment"
     swatter_store_init
@@ -189,6 +194,15 @@ cmd_allow() {
     local note="${*:-}"
     [[ -n "$ip" ]] || die "usage: swatter allow IP|CIDR [note]"
     swatter_validate_ip_or_cidr "$ip"
+    # The allow file is a NEVER-BLOCK sink for both planes: an entry of
+    # 0.0.0.0/0 (or any prefix wider than /8) exempts the whole internet and
+    # every scan from then on logs "exempt". The block sinks already refuse
+    # these targets; the allow sink is their mirror image and must too.
+    _swatter_is_unsafe_block_target "$ip" && die "refusing to allow ${ip}: that exempts every address (use a specific IP or CIDR)"
+    _swatter_prefix_too_wide "$ip" 8 32 && die "refusing to allow ${ip}: wider than /8 (v4) or /32 (v6) — that is not an allowlist, it is a kill switch"
+    # The note is free text written to a line-oriented file: a newline in it
+    # would forge a SECOND entry ("office\n0.0.0.0/0 #" allowed everything).
+    note="$(printf '%s' "$note" | tr -d '\r\n' | tr -c '[:print:]' ' ')"
     local f="${OPERATOR_ALLOW_FILE}"
     if [[ -f "$f" ]] && awk -v ip="$ip" '$1 == ip { found=1; exit } END { exit !found }' "$f"; then
         echo "already allowed: ${ip}"

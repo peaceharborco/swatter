@@ -45,6 +45,19 @@ out="$(_swatter_report_cron_from_conf "/nonexistent/swatter.conf")"
 check conf-missing-default "$(printf '%s\n' "$out" | grep -Ec '^0 4 \* \* \* root .*swatter report')" "1"
 check conf-missing-no-tz   "$(printf '%s\n' "$out" | grep -c '^CRON_TZ=')" "0"
 
+# 2026-10-23 audit: a malformed REPORT_CRON ("0 4 *", "4") rendered a line cron
+# rejects, so the nightly report (and its RED SMS) was never scheduled. It must
+# fall back to "0 4" and say so.
+for bad in '0 4 *' '4' '0;4' ''; do
+    conf="$(mktemp "${TMPDIR:-/tmp}/swatter-conf.XXXXXX")"
+    printf 'REPORT_CRON="%s"\n' "$bad" > "$conf"
+    out="$(_swatter_report_cron_from_conf "$conf" 2>/dev/null)"
+    check "cron-bad-[${bad}]-falls-back" "$(printf '%s\n' "$out" | grep -Ec '^0 4 \* \* \* root .*swatter report')" "1"
+    rm -f "$conf"
+done
+conf="$(mktemp "${TMPDIR:-/tmp}/swatter-conf.XXXXXX")"; printf 'REPORT_CRON="*/30 2-4"\n' > "$conf"
+check cron-ranges-ok "$(_swatter_report_cron_from_conf "$conf" | grep -Ec '^\*/30 2-4 \* \* \* root ')" "1"; rm -f "$conf"
+
 # _install_local must render via the conf-reading path (one-line call so this
 # guard can see it), never from install.sh's own environment again.
 check install-renders-from-conf "$(grep -c '_swatter_report_cron_from_conf /etc/swatter/swatter.conf > /etc/cron.d/swatter-report' "${ROOT}/install/install.sh")" "1"

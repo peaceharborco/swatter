@@ -27,7 +27,7 @@ _alert_sms_twilio() {
     [[ "${SWATTER_HAVE_CURL:-0}" -eq 1 ]] || { log_error "alerts: twilio needs curl"; return 1; }
     [[ -n "${TWILIO_SID:-}" && -n "${TWILIO_FROM:-}" && -r "${TWILIO_TOKEN_FILE:-}" ]] || {
         log_error "alerts: twilio not configured (need TWILIO_SID, TWILIO_FROM, readable TWILIO_TOKEN_FILE)"; return 1; }
-    local token; token="$(cat "${TWILIO_TOKEN_FILE}")"
+    local token; token="$(tr -d "[:space:]" < "${TWILIO_TOKEN_FILE}")"   # strip CR/LF/BOM-less whitespace: a CRLF file sent "tok\r" and Twilio answered 401
     # TWILIO_FROM may be a phone number (+1…) or a Messaging Service SID (MG…).
     local fromkey="From"; [[ "${TWILIO_FROM}" == MG* ]] && fromkey="MessagingServiceSid"
     # SID:token via -K config file, never argv (visible in `ps` on a shared box).

@@ -80,7 +80,7 @@ describe("routes", () => {
 
   it("rejects an oversized entries batch with 413", async () => {
     const T = await enroll("boxA");
-    const many = Array.from({ length: Number(env.MAX_ENTRIES) + 1 }, (_, i) => ({ ip: "10.0." + ((i>>8)&255) + "." + (i&255) }));
+    const many = Array.from({ length: Number(env.MAX_ENTRIES) + 1 }, (_, i) => ({ ip: "198.18." + ((i>>8)&255) + "." + (i&255) }));
     const res = await call("/contribute", { method: "POST", headers: T, body: JSON.stringify({ entries: many }) });
     expect(res.status).toBe(413);
   });
@@ -161,7 +161,7 @@ describe("routes (grok-review hardening)", () => {
 
   it("full MAX_ENTRIES batch succeeds (chunked, no per-entry round trips)", async () => {
     const T = await enroll("boxA");
-    const many = Array.from({ length: Number(env.MAX_ENTRIES) }, (_, i) => ({ ip: "10.2." + ((i>>8)&255) + "." + (i&255) }));
+    const many = Array.from({ length: Number(env.MAX_ENTRIES) }, (_, i) => ({ ip: "198.19." + ((i>>8)&255) + "." + (i&255) }));
     const res = await call("/contribute", { method: "POST", headers: T, body: JSON.stringify({ entries: many }) });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ accepted: many.length, rejected: 0, enrolled: true });

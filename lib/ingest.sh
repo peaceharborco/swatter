@@ -17,9 +17,47 @@
 _swatter_parse() {
     local vhost="$1"
     gawk -v vhost="${vhost}" '
+        # Position of the next UNESCAPED double quote in s at/after start (0 if
+        # none). Apache escapes a quote inside a logged field as \" (and a
+        # backslash as \\), so the closer of a quoted field is the first quote
+        # not preceded by a backslash.
+        function endq(s, start,    i, c) {
+            for (i = start; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                if (c == "\\") { i++; continue }
+                if (c == "\"") return i
+            }
+            return 0
+        }
+        # Decode %XX for the bytes an attacker encodes to dodge a pattern table:
+        # letters, digits, "." "/" "\\" "-" "_" "~". Apache decodes these before
+        # the file lookup, so "/%2Eenv" serves .env, but the log keeps the raw
+        # request-target and "/.env" patterns never saw it. Everything else
+        # (%00, %20, %3F, multibyte) is left encoded — "?" in particular must NOT
+        # become a query delimiter after the query was already stripped.
+        function pctdecode(s,    out, i, c, h, v) {
+            if (index(s, "%") == 0) return s
+            out = ""
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                if (c == "%" && i + 2 <= length(s)) {
+                    h = tolower(substr(s, i + 1, 2))
+                    if (h ~ /^[0-9a-f][0-9a-f]$/) {
+                        v = hexv[substr(h, 1, 1)] * 16 + hexv[substr(h, 2, 1)]
+                        if ((v >= 48 && v <= 57) || (v >= 65 && v <= 90) || (v >= 97 && v <= 122) \
+                            || v == 46 || v == 47 || v == 92 || v == 45 || v == 95 || v == 126) {
+                            out = out sprintf("%c", v); i += 2; continue
+                        }
+                    }
+                }
+                out = out c
+            }
+            return out
+        }
         BEGIN { OFS = "\t"
             split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", _mn, " ")
             for (_i=1;_i<=12;_i++) mon[_mn[_i]] = _i
+            for (_i=0;_i<16;_i++) hexv[substr("0123456789abcdef", _i+1, 1)] = _i
         }
         {
             ip = $1
@@ -33,10 +71,14 @@ _swatter_parse() {
             if (ip ~ /^::[fF][fF][fF][fF]:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/)
                 sub(/^::[fF][fF][fF][fF]:/, "", ip)
 
-            # Timestamp: [dd/Mon/yyyy:HH:MM:SS +zzzz]
-            lb = index($0, "[")
-            rb = index($0, "]")
-            if (lb == 0 || rb == 0 || rb < lb) next
+            # Timestamp: the first "[dd/Mon/yyyy:" — NOT the first "[". The %u
+            # field (authenticated user) sits before it and is attacker-chosen on
+            # a 401: a username of "[" made the whole line unparseable, so a
+            # credential brute against an htpasswd-protected path was invisible.
+            if (!match($0, /\[[0-9][0-9]\/[A-Z][a-z][a-z]\/[0-9][0-9][0-9][0-9]:/)) next
+            lb = RSTART
+            rb = index(substr($0, lb), "]"); if (rb == 0) next
+            rb = lb + rb - 1
             tsraw = substr($0, lb+1, rb-lb-1)        # dd/Mon/yyyy:HH:MM:SS +zzzz
             # Apache stamps log time in the SERVER timezone with the offset in
             # the +zzzz token. We run mktime under TZ=UTC, so subtract the offset
@@ -54,20 +96,22 @@ _swatter_parse() {
                 epoch = epoch - sign*(offh*3600 + offm*60)
             }
 
-            # Request line: first double-quoted field after the timestamp.
-            q1 = index($0, "\"")
-            if (q1 == 0) next
-            rest = substr($0, q1+1)
-            q2 = index(rest, "\"")
-            if (q2 == 0) next
-            req = substr(rest, 1, q2-1)              # METHOD path proto
-            after = substr(rest, q2+1)
+            # Request line: first quoted field AFTER the timestamp, closed by the
+            # first UNESCAPED quote. Taking the next quote as the closer let
+            # "GET /x\"200 HTTP/1.1" 404 read as status 200 and the real status
+            # as noise (30 probes scored 13 instead of 78).
+            q1 = index(substr($0, rb+1), "\""); if (q1 == 0) next
+            q1 = rb + q1
+            q2 = endq($0, q1+1); if (q2 == 0) next
+            req = substr($0, q1+1, q2-q1-1)          # METHOD path proto
+            after = substr($0, q2+1)
 
             split(req, rp, " ")
             method = rp[1]
             path = rp[2]
             if (path == "") path = "-"
-            sub(/\?.*$/, "", path)                   # strip query string
+            sub(/\?.*$/, "", path)                   # strip query string (before decoding — %3F is not a delimiter)
+            path = pctdecode(path)
             path = tolower(path)
             if (length(path) > 256) path = substr(path, 1, 256)
             method = toupper(method)
@@ -80,16 +124,16 @@ _swatter_parse() {
             }
             if (bytes == "-") bytes = "0"
 
-            # User-agent: substring between the LAST pair of double quotes.
-            ualast = ""
-            p = $0
-            # find last quote
-            lastq = 0
-            for (i = length(p); i >= 1; i--) { if (substr(p,i,1) == "\"") { lastq = i; break } }
-            if (lastq > 1) {
-                prevq = 0
-                for (i = lastq-1; i >= 1; i--) { if (substr(p,i,1) == "\"") { prevq = i; break } }
-                if (prevq > 0) ualast = substr(p, prevq+1, lastq-prevq-1)
+            # User-agent: the LAST complete quoted field after the request,
+            # walked FORWARD with escape-aware closers ("referer" "ua" in the
+            # combined format). Scanning backwards for a bare quote let a UA of
+            # `sqlmap/1.7 \" x` parse as ` x` — neither empty nor suspicious.
+            ualast = ""; pos = 1
+            while ((o = index(substr(after, pos), "\"")) > 0) {
+                o = pos + o - 1
+                e = endq(after, o+1); if (e == 0) break
+                ualast = substr(after, o+1, e-o-1)
+                pos = e + 1
             }
             ua = tolower(ualast)
             if (ua == "") ua = "-"

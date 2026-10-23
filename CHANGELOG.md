@@ -7,6 +7,135 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.20.0] - 2026-10-23
+
+A whole-tool audit (five independent read-throughs of the detection, enforcement,
+reporting, CLI/config and hub planes, each finding reproduced before it was fixed)
+on top of the digest double-count that started it.
+
+### Fixed — nightly digest
+- **The origin-lock count covered two calendar days, not 24 hours.** The window
+  filter kept every syslog line stamped today *or yesterday*, so the 04:00
+  Pacific report counted roughly 35 hours: it said 6,168 drops on 2026-10-23
+  where the real 24-hour figure was 3,169. Every stamp is now parsed to an epoch
+  (traditional `Mon DD HH:MM:SS` in the host zone with the year inferred, ISO
+  with its own offset honoured) and compared with the real cutoff. Re-run on
+  cds1's live log: old code 6,202, new code 3,098, `journalctl --since 24h`
+  3,097.
+- **A typo in any of 25 more numeric knobs no longer kills the scan or the
+  report.** `RATE_SAT=0`/`"abc"` made the scorer divide by zero and emit
+  nothing while the scan logged "0 acted" and exited 0; `SEED_BYTES`,
+  `MAX_BYTES_PER_FILE`, `ALLOWLIST_MAX_AGE_DAYS`, `MAX_CSF_DENIES_PER_RUN`,
+  `CRITICAL_TTL_FLOOR`, `W_*`, `PERSIST_N`, `INTEL_CACHE_TTL` and friends
+  aborted the `*/5` scan under `set -u`; `REPORT_GRADE_C_ERRORS`,
+  `REPORT_GRADE_D_ERRORS`, `ALERT_SMS_DEDUP_HOURS` and `SWARM_MAX_AGE_DAYS`
+  aborted the nightly report between the email and the RED SMS (the v2.15.0
+  class, five more instances). All go through `_swatter_validate_int` at config
+  load now, as do each rung of `TTL_LADDER`, `CF_SCOPE` and `REPORT_CRON`
+  (a malformed `REPORT_CRON` rendered a cron line cron rejected, so the report
+  was never scheduled at all). The scorer's exit status is now read: a dead
+  scorer is a logged error plus an alert, never a quiet empty window.
+- **A plane that cannot read its evidence is RED and sent, never "quiet".** A
+  configured `ERROR_DIGEST_LOG` that is missing or unreadable graded GREEN with
+  no warning; an unwritable `TMPDIR` made every report section silently skip
+  and the night read as nothing to report. Both now produce a RED "Blind Spot"
+  status that names the cause. A corrupt line in `decisions.jsonl` no longer
+  hides every record after it (`jq` now skips bad lines and warns with a
+  count); the no-`jq` subject counts blocks rather than every decision; the
+  "non-fatal" figure is the same number in the summary, the section header and
+  the HTML tile (it used to include the fatal lines in two of the three); PHP
+  `error_log` stamps in a non-UTC `date.timezone` are read in their own zone.
+- **Credential files with a CRLF line ending work.** The SendGrid key and the
+  Twilio token were read with `cat`, which left a `\r` on the wire and got a
+  401 — on exactly the RED night. All three readers now strip whitespace like
+  the intel key loader already did. A failed `swatter_notify` send no longer
+  stamps its rate-limit marker, so it is retried next scan instead of being
+  silenced for six hours.
+
+### Fixed — detection
+- **Percent-encoded probes reached the server decoded but the scorer encoded.**
+  `GET /%2Eenv` serves `.env` but matched no CRITICAL pattern. Paths are decoded
+  (letters, digits, `. / \ - _ ~` only; `%3F` is never a query delimiter) before
+  matching.
+- **Attacker-chosen bytes steered the log parser.** A `\"` inside the request
+  ended it early and the next token was read as the status (30 probes scored 13
+  instead of 78); a `\"` in the user agent hid it; a `[` as the Basic-auth
+  username made the whole line unparseable, so a credential brute against an
+  htpasswd-protected path was invisible, 401s included. The timestamp is now
+  located by its `dd/Mon/yyyy:` shape and every quoted field is closed by the
+  first *unescaped* quote. The outage corroborator's request split got the same
+  fix.
+- **Four `badpaths.conf` rules could never fire** (they required a literal `?`,
+  which is stripped with the query string, or a space). Plugin-PHP exploitation
+  (`/wp-content/plugins/…/x.php?cmd=`) now scores HIGH as intended.
+- **Successful `POST /xmlrpc.php` from Jetpack or the WordPress apps no longer
+  trips the brute-force floor.** Every HIGH-path POST counted as failure
+  evidence, so a sync burst floored a real integration at 80 → temp → perm →
+  AbuseIPDB. A POST counts on the credential endpoints only when it failed, or
+  when the agent is not one of the documented WordPress integrations.
+- The lfd cPanel-port regex matched the daemon's own PID (`lfd[20823]`), so a
+  proxied mod_security line became "direct" evidence; ports are now matched as
+  whole numbers with the PID stripped.
+
+### Fixed — enforcement
+- **A hostile or buggy swarm feed could make the box firewall arbitrary
+  ranges.** The corroborated-block sweep accepted any prefix width from the hub
+  and the never-block set only recognised a token *inside* private space — a
+  feed row of `32.0.0.0/3`, `192.0.0.0/8` or a `/16` containing the server
+  itself landed as `csf -td`. The sweep now refuses `/0`, reserved space and
+  anything wider than `/24` (v4) or `/64` (v6), and never-block matches
+  prefixes by overlap against private space and the server's own addresses.
+  The sweep also seeds the run counters it inherits from the scan: the first
+  real corroborated block used to abort `refresh-feeds` under `set -u` after
+  the deny landed and before the ledger wrote.
+- `CF_SCOPE=zone` looked the zone up by the full vhost, so an offender whose top
+  vhost was a cPanel subdomain (`blog.example.com`) never got a zone-scoped block
+  and retried to exhaustion. The lookup uses the mapped registrable domain.
+- A Cloudflare rule deleted by hand answered "not found" forever: unblock and
+  rollback-ladder exited 1 every run and the sweep re-issued the DELETE every
+  scan. Code 10001 now counts as deleted and the ref is dropped.
+- The origin-lock ipset only ever grew: a range Cloudflare retired stayed
+  ACCEPTed until `origin-lock disable`. The set is now built in a scratch set
+  and `ipset swap`ped in (atomic; rules reference the set by name).
+
+### Fixed — CLI
+- `swatter allow` refused nothing: `0.0.0.0/0` was accepted (every scan then
+  exempted everything) and a note containing a newline forged a second entry.
+  It now refuses `/0`, anything wider than `/8`, and strips control characters
+  from the note. `report --prnit` SENT the email (unknown arguments now exit 2),
+  `unblock IP --perm-alow` silently skipped the allow (unknown flag now dies),
+  `scan --dry-run --enforce` ran enforce (now refused). A scan that lost the
+  single-run lock exited 1 with no output; it now says so.
+
+### Changed — swarm hub (deploy: `wrangler d1 migrations apply swatter-swarm --remote`, then `wrangler deploy`)
+- **Reserved space and wide prefixes are refused at the hub** (`rejected` in
+  the response): private, loopback, link-local, CGNAT, multicast and reserved
+  ranges, anything overlapping them, and any v4 prefix shorter than `/24` or v6
+  shorter than `/64`. One compromised box can no longer poison every consumer.
+- **The feed is ordered by corroboration before truncation** (`host_count`
+  desc, then recency), computed with one grouped join instead of a correlated
+  subquery per row. With `FEED_MAX` reached, the least-trusted rows drop — not
+  whichever IPs sort last as strings, which let one host evict everyone else by
+  publishing lexically low addresses.
+- **Per-host live-row quota** (`HOST_MAX`, 10,000): a host at quota gets 429 and
+  keeps its publish cursor. New index on `sightings(host, last_seen)`
+  (migration 0003) backs the quota count and `/purge`.
+- The global rate limiter is charged after authentication, so unauthenticated
+  POSTs can no longer drain the fleet-wide budget and 429 every real box.
+- Numeric `[vars]` are parsed once and a bad value is a JSON 500, never an open
+  gate: `MAX_ENTRIES="abc"` used to accept a 1,001-entry batch and
+  `SWARM_TTL=""` expired every row on write and served a valid-looking empty
+  feed that consumers read as "no active offenders".
+- A never-enrolled legacy `host_id` can no longer reach the orphan-offender
+  purge. The retired shared-token path itself is unchanged (hard-refused in
+  prod since 2026-07-17); removing it is deferred.
+
+### Not changed, on purpose
+- `/feed` has no rate limit of its own (a leaked read token is a D1 cost lever,
+  not a safety issue); the retired legacy write path stays compiled in; csf's
+  `DENY_IP_LIMIT` rotation of old permanent denies is not re-verified by the
+  ledger. All three are in the audit notes for a later release.
+
 ## [2.19.2] - 2026-10-02
 
 ### Fixed

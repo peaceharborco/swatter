@@ -45,6 +45,22 @@ _report_window_secs() {
     esac
 }
 
+# _report_tmp <label> -> a writable temp file path on stdout (rc 0), trying
+# mktemp under TMPDIR, then STATE_DIR. rc 1 (and RPT_PLANE_FAILED=1, logged)
+# when neither works — the caller skips that plane and the grade goes RED.
+_report_tmp() {
+    local f
+    f="$(mktemp "${TMPDIR:-/tmp}/swatter-${1}.XXXXXX" 2>/dev/null)" && [[ -n "$f" ]] && { printf '%s' "$f"; return 0; }
+    f="${STATE_DIR:-/var/lib/swatter}/.report-${1}.$$"
+    if : > "$f" 2>/dev/null; then
+        log_warn "report: mktemp failed under ${TMPDIR:-/tmp}; using ${f}"
+        printf '%s' "$f"; return 0
+    fi
+    log_error "report: cannot create a temp file under ${TMPDIR:-/tmp} or ${STATE_DIR:-/var/lib/swatter} — the ${1} section cannot run"
+    RPT_PLANE_FAILED=1
+    return 1
+}
+
 # Build the plain-text digest body on stdout. Sets globals used for the subject:
 #   RPT_ACTED RPT_PERM RPT_TEMP RPT_CF RPT_DIRECT RPT_EXEMPT RPT_WATCH RPT_RECID
 swatter_report_build() {
@@ -61,33 +77,34 @@ swatter_report_build() {
     unset MAILCAMP_OK MAILCAMP_N MAILCAMP_FAILS MAILCAMP_IPS
     OL_HITS=0 OL_IPS=0 OL_P80=0 OL_P443=0 OL_MODE="" OL_TOP_ROWS=""
     SWARM_FEED_N=0 SWARM_STALE=0 SWARM_PREBLOCKED=0 SWARM_CONTRIB=0 SWARM_LAST_PUB="none" SWARM_COUNTS_OK=1
+    unset ERR_NONFATAL   # set by the errors plane when it ran; unset = fall back to the subtraction
 
     # Gather ALL THREE planes first (via redirection so their RPT_*/OL_*/ERR_*
     # counters persist in this shell — a command substitution would run in a
     # subshell and lose them). The grade needs every plane, so it can't be computed
     # until they're all in.
+    # Every plane writes through a temp file so its counters stay in THIS shell.
+    # mktemp failing (TMPDIR unwritable/missing) used to leave every file name
+    # empty: each `> ""` redirect failed, no plane ran, every counter stayed 0,
+    # and a RED night was reported as "quiet" with rc 0. _report_tmp falls back
+    # to STATE_DIR and, failing that too, flags RPT_PLANE_FAILED -> RED, sent.
+    RPT_PLANE_FAILED=0
     local olfile="" errsec="" errfile="" abusefile
-    abusefile="$(mktemp "${TMPDIR:-/tmp}/swatter-abuse.XXXXXX")"
-    _report_emit_abuse "$window" "$cutoff" "$log" > "$abusefile"
+    abusefile="$(_report_tmp abuse)" && _report_emit_abuse "$window" "$cutoff" "$log" > "$abusefile"
     if [[ "${ORIGIN_LOCK_DIGEST:-auto}" != "off" ]]; then
-        olfile="$(mktemp "${TMPDIR:-/tmp}/swatter-olsec.XXXXXX")"
-        swatter_originlock_section "$window" > "$olfile"
+        olfile="$(_report_tmp olsec)" && swatter_originlock_section "$window" > "$olfile"
     fi
     if [[ "${ERROR_DIGEST_ENABLE}" == "true" ]] && declare -F swatter_errors_section >/dev/null; then
-        errfile="$(mktemp "${TMPDIR:-/tmp}/swatter-errsec.XXXXXX")"
-        swatter_errors_section "$window" > "$errfile"
-        errsec="$(cat "$errfile")"
-        rm -f "$errfile"
+        errfile="$(_report_tmp errsec)" && swatter_errors_section "$window" > "$errfile"
+        [[ -n "$errfile" ]] && { errsec="$(cat "$errfile")"; rm -f "$errfile"; }
     fi
     local swfile=""
     if _swarm_enabled; then
-        swfile="$(mktemp "${TMPDIR:-/tmp}/swatter-swsec.XXXXXX")"
-        swatter_swarm_section "$window" "$cutoff" "$log" > "$swfile"
+        swfile="$(_report_tmp swsec)" && swatter_swarm_section "$window" "$cutoff" "$log" > "$swfile"
     fi
     local mcfile=""
     if declare -F _mailcamp_should_run >/dev/null && _mailcamp_should_run; then
-        mcfile="$(mktemp "${TMPDIR:-/tmp}/swatter-mcsec.XXXXXX")"
-        swatter_mail_campaigns_section "$window" > "$mcfile"
+        mcfile="$(_report_tmp mcsec)" && swatter_mail_campaigns_section "$window" > "$mcfile"
     fi
 
     _report_grade   # sets RPT_GRADE / RPT_GRADE_WORD / RPT_GRADE_HEADLINE / RPT_GRADE_SUB / RPT_RECO
@@ -103,8 +120,7 @@ swatter_report_build() {
     echo
     _report_summary_actors
     echo
-    cat "$abusefile"
-    rm -f "$abusefile"
+    [[ -n "$abusefile" ]] && { cat "$abusefile"; rm -f "$abusefile"; }
 
     if _ol_digest_should_render "${OL_HITS:-0}"; then
         echo
@@ -112,9 +128,9 @@ swatter_report_build() {
         echo
         _report_summary_origin
         echo
-        cat "$olfile"
+        [[ -n "$olfile" ]] && cat "$olfile"
     fi
-    rm -f "$olfile"
+    [[ -n "$olfile" ]] && rm -f "$olfile"
 
     if [[ "${ERROR_DIGEST_ENABLE}" == "true" ]]; then
         echo
@@ -165,14 +181,24 @@ _report_emit_abuse() {
     fi
     if [[ "${SWATTER_HAVE_JQ}" -ne 1 ]]; then
         # Degraded: flat counts via grep.
-        local n; n="$(awk -F'"ts":' 'NF>1{split($2,a,","); if (a[1]+0 >= '"$cutoff"') c++} END{print c+0}' "$log")"
-        echo "Swatter activity in last ${window}: ${n} decisions (install jq for the grouped digest)."
-        RPT_ACTED="$n"
+        # Count only BLOCKS toward RPT_ACTED (the subject's "N blocked"): watch,
+        # exempt and skipped rows are decisions too, and counting them all made
+        # the no-jq subject read "5 blocked" for 1 perm + 4 watches.
+        local n nb
+        n="$(awk -F'"ts":' 'NF>1{split($2,a,","); if (a[1]+0 >= '"$cutoff"') c++} END{print c+0}' "$log")"
+        nb="$(awk -F'"ts":' 'NF>1 && /"action":"(perm|temp)"/{split($2,a,","); if (a[1]+0 >= '"$cutoff"') c++} END{print c+0}' "$log")"
+        echo "Swatter activity in last ${window}: ${n} decisions, ${nb} blocks (install jq for the grouped digest)."
+        RPT_ACTED="$nb"
         return 0
     fi
 
     # All in-window records.
-    local recs; recs="$(jq -c "select(.ts >= ${cutoff})" "$log" 2>/dev/null)"
+    # -R + fromjson? : jq stops at the FIRST malformed line otherwise (a partial
+    # write from a killed scan), silently dropping every newer record — a night
+    # whose only activity followed a corrupt line was sent as "quiet".
+    local recs; recs="$(jq -Rc "fromjson? | select(.ts >= ${cutoff})" "$log" 2>/dev/null)"
+    local nbad; nbad="$(jq -R 'try (fromjson|empty) catch 1' "$log" 2>/dev/null | grep -c . || true)"
+    (( ${nbad:-0} > 0 )) && log_warn "report: ${nbad} unparseable line(s) in ${log} skipped"
     [[ -n "$recs" ]] || { echo "No Swatter activity in the last ${window} — quiet."; return 0; }
 
     RPT_PERM=$(printf '%s\n'   "$recs" | jq -rc 'select(.action=="perm")'   | grep -c . || true)
@@ -400,7 +426,7 @@ _report_render_html() {
         printf '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-top:1px solid %s;"><tr><td style="padding-top:14px;%s">Server Errors</td><td style="padding-top:14px;%s;font-weight:700;font-size:20px;color:%s;text-align:right;">%s</td></tr></table>' \
             "$bdr" "$h3" "$f_h" "$efc" "${ERR_GENUINE:-0}"
         printf '<div style="font-size:13px;color:%s;margin-top:5px;line-height:1.55;">%s</div><div style="font-size:12px;color:%s;margin-top:6px;"><b>%s</b> Non-Fatal &middot; <b style="color:%s;">%s</b> Fatal</div>' \
-            "$ink" "$(_report_summary_errors | esc)" "$slate" "${ERR_GENUINE:-0}" "$efc" "${ERR_FATAL:-0}"
+            "$ink" "$(_report_summary_errors | esc)" "$slate" "$(_report_err_nonfatal)" "$efc" "${ERR_FATAL:-0}"
     fi
 
     # Swarm (gated) — informational; headline = fleet IPs consumed, summary sub-line.
@@ -511,6 +537,7 @@ _report_grade() {
     if [[ -n "$force" ]]; then
         RPT_GRADE_LEVEL="$force"
     elif (( f > 0 ));   then RPT_GRADE_LEVEL=red      # fatal → outage
+    elif (( ${ERR_FEED_UNREADABLE:-0} || ${RPT_PLANE_FAILED:-0} )); then RPT_GRADE_LEVEL=red   # a plane could not read its evidence: never "quiet"
     elif (( e >= cE )); then RPT_GRADE_LEVEL=yellow   # elevated error volume
     else                     RPT_GRADE_LEVEL=green    # blocks/origin-lock are Swatter working
     fi
@@ -575,6 +602,12 @@ _report_grade() {
             if (( f > 0 )); then
                 RPT_GRADE_SUB="${f} fatal error${fs} — a service or app may be down."
                 (( fsc > 0 )) && RPT_GRADE_SUB="${RPT_GRADE_SUB} (${fsc} more scanner-induced, not counted.)"
+            elif (( ${ERR_FEED_UNREADABLE:-0} )); then
+                RPT_GRADE_HEADLINE="Blind Spot"
+                RPT_GRADE_SUB="The server-errors feed ${ERROR_DIGEST_LOG:-} could not be read, so this report cannot say whether anything crashed."
+            elif (( ${RPT_PLANE_FAILED:-0} )); then
+                RPT_GRADE_HEADLINE="Blind Spot"
+                RPT_GRADE_SUB="A report section could not run (temp dir unwritable: ${TMPDIR:-/tmp}); its counts above are NOT trustworthy."
             else
                 # Forced-red preview (REPORT_GRADE_FORCE=red with no fatal counted).
                 RPT_GRADE_SUB="A service or app may be down."
@@ -599,6 +632,10 @@ _report_grade() {
         red)
             if (( f > 0 )); then
                 [[ -n "$hint" ]] && RPT_RECO="Run ${hint} now — ${f} fatal error${fs}." || RPT_RECO="Investigate the ${f} fatal error${fs} now."
+            elif (( ${ERR_FEED_UNREADABLE:-0} )); then
+                RPT_RECO="Restore ${ERROR_DIGEST_LOG:-the feed} (path, rotation, permissions) and check the host's error logs by hand for this window."
+            elif (( ${RPT_PLANE_FAILED:-0} )); then
+                RPT_RECO="Fix the temp directory on this host, then run: swatter report --print"
             else
                 [[ -n "$hint" ]] && RPT_RECO="Run ${hint} now." || RPT_RECO="Investigate now."
             fi ;;
@@ -651,9 +688,9 @@ swatter_swarm_section() {
     if [[ "${SWATTER_HAVE_JQ:-0}" -eq 1 ]]; then
         # Corroborated pre-blocks in-window. Match evidence.swarm (stamped on
         # EVERY dispatched row), NOT .reason (prefixed on novhost/failed paths).
-        [[ -s "$log" ]] && SWARM_PREBLOCKED="$(jq -c "select(.ts >= ${cutoff} and (.evidence.swarm == true))" "$log" 2>/dev/null | grep -c . )"
+        [[ -s "$log" ]] && SWARM_PREBLOCKED="$(jq -Rc "fromjson? | select(.ts >= ${cutoff} and (.evidence.swarm == true))" "$log" 2>/dev/null | grep -c . )"
         # Contribution made in-window (sum of counts from the publish audit).
-        [[ -s "$plog" ]] && SWARM_CONTRIB="$(jq -s "map(select(.ts >= ${cutoff}))|map(.count)|add // 0" "$plog" 2>/dev/null)"
+        [[ -s "$plog" ]] && SWARM_CONTRIB="$(jq -Rn "[inputs | fromjson? | select(.ts >= ${cutoff})] | map(.count) | add // 0" "$plog" 2>/dev/null)"
         [[ -n "$SWARM_CONTRIB" ]] || SWARM_CONTRIB=0   # empty jq output => 0
     else
         SWARM_COUNTS_OK=0
@@ -685,12 +722,21 @@ _report_summary_origin() {
     [[ "${OL_MODE:-}" == log* ]] && disp="logged in dry-run mode — not yet enforced"
     echo "Bots hitting the raw server IP to bypass Cloudflare — a mix of known attackers and unclassified scanners, ${disp}."
 }
+# Non-fatal count. ERR_GENUINE includes every fatal line (genuine AND
+# scanner-induced), so the figure shown as "non-fatal" anywhere must subtract
+# ERR_FATAL — the grade recap already did; the summary line, the HTML tile and
+# the section header did not, and one email gave three different answers.
+_report_err_nonfatal() {
+    if [[ "${ERR_NONFATAL+x}" == "x" ]]; then printf '%s' "${ERR_NONFATAL}"; return 0; fi   # counted directly by lib/errors.sh
+    local n=$(( ${ERR_GENUINE:-0} - ${ERR_FATAL:-0} )); (( n < 0 )) && n=0
+    printf '%s' "$n"
+}
 _report_summary_errors() {
     local f; f="$(_report_fatal_effective)"
-    local fsc="${ERR_FATAL_SCANNER:-0}" e="${ERR_GENUINE:-0}"
+    local fsc="${ERR_FATAL_SCANNER:-0}" e="${ERR_GENUINE:-0}" enf; enf="$(_report_err_nonfatal)"
     if (( f > 0 )); then
         local fs; fs="$( (( f == 1 )) || echo s )"
-        echo "${f} fatal error${fs} — a service or app crashed; investigate now. ${e} non-fatal alongside."
+        echo "${f} fatal error${fs} — a service or app crashed; investigate now. ${enf} non-fatal alongside."
     elif (( fsc > 0 )); then
         # Non-fatal residual (ERR_GENUINE includes the scanner fatals): the calm
         # wording is only honest when that volume is below the YELLOW threshold —
@@ -724,6 +770,8 @@ _report_summary_mailcamp() {
 # 0 = send. Campaigns or UNREADABLE send; a successful zero does not by itself.
 # Grade and SMS do not call this and do not read MAILCAMP_*.
 _report_should_send() {
+    (( ${ERR_FEED_UNREADABLE:-0} )) && return 0   # a blind plane is never "quiet"
+    (( ${RPT_PLANE_FAILED:-0} )) && return 0
     (( ${RPT_ACTED:-0} > 0 )) && return 0
     (( ${RPT_EXEMPT:-0} > 0 )) && return 0
     (( ${RPT_FAILED:-0} > 0 )) && return 0
@@ -755,6 +803,7 @@ swatter_report() {
             --test) test_mode=1 ;;
             --print) print_mode=1 ;;
             [0-9]*h|[0-9]*d|[0-9]*m) window="$arg" ;;
+            *) log_error "report: unknown argument '${arg}' (want [WINDOW] [--test|--print])"; return 2 ;;   # "--prnit" used to SEND the email
         esac
     done
     if (( print_mode )); then
@@ -766,11 +815,18 @@ swatter_report() {
     # Build into a temp file via redirection (NOT $(...)), so the RPT_* counters
     # the builder sets persist in this shell — a command substitution would run
     # the builder in a subshell and lose them.
-    local bodyfile; bodyfile="$(mktemp "${TMPDIR:-/tmp}/swatter-report.XXXXXX")"
-    # shellcheck disable=SC2064
-    trap "rm -f '$bodyfile'" RETURN
-    swatter_report_build "$window" > "$bodyfile"
-    local body; body="$(cat "$bodyfile")"
+    local bodyfile body
+    if bodyfile="$(_report_tmp body)"; then
+        # shellcheck disable=SC2064
+        trap "rm -f '$bodyfile'" RETURN
+        swatter_report_build "$window" > "$bodyfile"
+        body="$(cat "$bodyfile")"
+    else
+        # No temp file anywhere: build in a subshell (counters are lost) and
+        # send a RED "blind spot" so the night is never silently skipped.
+        body="$(swatter_report_build "$window" 2>/dev/null)"
+        RPT_PLANE_FAILED=1; _report_grade
+    fi
 
     # Stay silent only when ALL THREE planes are quiet (no actions, no exemptions,
     # no backend-failed blocks, no origin-lock hits, no genuine server errors, no

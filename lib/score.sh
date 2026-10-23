@@ -298,7 +298,7 @@ _swatter_apply_plane() {
     fi
     (( rc == 0 )) && did=1
     if (( did )); then
-        _SW_TOTAL_BLOCKS=$(( _SW_TOTAL_BLOCKS + 1 )); SWATTER_RUN_ACTED=$(( SWATTER_RUN_ACTED + 1 ))
+        _SW_TOTAL_BLOCKS=$(( ${_SW_TOTAL_BLOCKS:-0} + 1 )); SWATTER_RUN_ACTED=$(( ${SWATTER_RUN_ACTED:-0} + 1 ))
         # Ladder perms only, enforce-mode only: a dual-plane / plane-upgrade
         # second leg carries a distinct audit_action and would otherwise
         # double-count one IP, and report mode's backend calls short-circuit to
@@ -655,6 +655,17 @@ swatter_scan() {
 
     swatter_ingest > "$parsed"
     _swatter_run_scorer < "$parsed" | sort -t$'\t' -k2,2nr > "$scored"
+    # The scorer's exit status was never read: a gawk fatal (division by zero on
+    # RATE_SAT=0, a bad -v value, a broken badpaths regex) produced an EMPTY
+    # scored file, the loop below ran zero times, and the scan logged "0 acted"
+    # and exited 0 — the quiet direction. A scorer that died is a loud failure.
+    local _src=${PIPESTATUS[0]}
+    if (( _src != 0 )); then
+        log_error "scorer (score.awk) exited ${_src} — NOTHING was scored this run; check RATE_SAT/SCORE_WATCH/W_* in the conf and ${BADPATHS_CONF}"
+        declare -F swatter_notify >/dev/null && swatter_notify "swatter scorer failed on $(hostname -s 2>/dev/null)" \
+            "score.awk exited ${_src}; no IP was scored or blocked this run. Check the numeric knobs and badpaths.conf." "scorer-failed"
+        return 1
+    fi
 
     local ip score reqs ev novhost rep replabel suppress folded
     _SW_TOTAL_BLOCKS=0; SWATTER_RUN_WATCHED=0; SWATTER_RUN_ACTED=0; SWATTER_RUN_BREAKER=0

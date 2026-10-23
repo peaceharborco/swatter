@@ -210,6 +210,12 @@ _swatter_report_cron_from_conf() {
     local conf="${1:-/etc/swatter/swatter.conf}" rcron rtz
     rcron="$(bash -c 'source "$1" 2>/dev/null; echo "${REPORT_CRON:-0 4}"' _ "$conf" 2>/dev/null || echo "0 4")"
     rtz="$(bash -c 'source "$1" 2>/dev/null; echo "${REPORT_CRON_TZ:-}"' _ "$conf" 2>/dev/null || true)"
+    # Same shape check as swatter_load_config: a malformed value renders a cron
+    # line cron rejects, and the report is never scheduled.
+    if ! [[ "${rcron:-0 4}" =~ ^[0-9*/,-]+[[:space:]]+[0-9*/,-]+$ ]]; then
+        echo "install: REPORT_CRON='${rcron}' invalid (want \"minute hour\"); scheduling the report at \"0 4\"" >&2
+        rcron="0 4"
+    fi
     _swatter_report_cron_file "${rcron:-0 4}" "$rtz"
 }
 

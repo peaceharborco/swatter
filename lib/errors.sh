@@ -90,14 +90,24 @@ _errors_collect_apache() {
 _errors_collect_php() {
     local cutoff="$1" f acct
     [[ -n "${ERROR_PHP_HOME_GLOB}" ]] || return 0
+    local zone
     while IFS= read -r f; do
         [[ -s "$f" ]] || continue
         acct="${f#"${ERROR_PHP_HOME_GLOB}"/}"; acct="${acct%%/*}"; [[ -n "$acct" ]] || acct="unknown"
-        TZ=UTC gawk -v cutoff="$cutoff" -v srcid="php/${acct}" "${_ERR_AWKLIB}"'
+        # PHP stamps error_log in php.ini's date.timezone: "[22-Oct-2026 13:08:16
+        # America/Los_Angeles]". Reading every stamp as UTC shifted the window by
+        # the offset and lost the fatals from the oldest hours of the night. Take
+        # the zone from the file's latest stamped line (per-site constant) and
+        # run gawk's mktime under it; an absent token or "UTC" stays UTC.
+        # The LAST stamped line in the whole file, not a fixed tail: a long stack
+        # trace at the end would otherwise hide every stamp and default to UTC.
+        zone="$(grep -oE '^\[[0-9]{2}-[A-Za-z]{3}-[0-9]{4} [0-9:]{8} [A-Za-z_/+-]+\]' "$f" 2>/dev/null | tail -n 1 | sed -E 's/^.* ([A-Za-z_/+-]+)\]$/\1/')"
+        [[ "$zone" =~ ^[A-Za-z_/+-]+$ ]] || zone="UTC"
+        TZ="$zone" gawk -v cutoff="$cutoff" -v srcid="php/${acct}" "${_ERR_AWKLIB}"'
             {
                 if(substr($0,1,1)!="[") next
                 c=index($0,"]"); if(c==0) next
-                ts=substr($0,2,c-2); sub(/ +UTC$/,"",ts); rest=substr($0,c+1); sub(/^[ \t]+/,"",rest)
+                ts=substr($0,2,c-2); sub(/ +[A-Za-z_\/+-]+$/,"",ts); rest=substr($0,c+1); sub(/^[ \t]+/,"",rest)
                 if(rest ~ /^PHP (Fatal|Parse) error/) level="FATAL"
                 else if(rest ~ /^PHP (Warning|Deprecated|Notice)/) level="WARN"
                 else next
@@ -459,11 +469,22 @@ _errors_corroborate() {
 swatter_errors_section() {
     local window="$1" cutoff
     cutoff=$(( $(swatter_now) - $(_report_window_secs "$window") ))
-    ERR_TOTAL=0 ERR_FATAL=0 ERR_FATAL_GENUINE=0 ERR_FATAL_SCANNER=0 ERR_GENUINE=0 ERR_NOISE=0
+    ERR_TOTAL=0 ERR_FATAL=0 ERR_FATAL_GENUINE=0 ERR_FATAL_SCANNER=0 ERR_GENUINE=0 ERR_NOISE=0 ERR_NONFATAL=0
     ERR_FATAL_FANOUT_MAX=0
     ERR_CORR_AFTER=0 ERR_CORR_BEFORE=0 ERR_CORR_ACCTS=""
     ERR_CORR_VERDICT="" ERR_CORR_NOTE=""
 
+    # A CONFIGURED feed that cannot be read is not "not configured": falling
+    # through to live aggregation (usually empty on a feed host) graded the
+    # night GREEN with no warning while the whole errors plane was blind. Say
+    # so, and let the grade treat it as the louder reading (ERR_FEED_UNREADABLE).
+    ERR_FEED_UNREADABLE=0
+    if [[ -n "${ERROR_DIGEST_LOG:-}" && ! -r "${ERROR_DIGEST_LOG}" ]]; then
+        ERR_FEED_UNREADABLE=1
+        log_error "errors: ERROR_DIGEST_LOG=${ERROR_DIGEST_LOG} is missing or unreadable — the errors plane could not run"
+        echo "Server errors: UNREADABLE — the configured feed ${ERROR_DIGEST_LOG} is missing or unreadable. This is NOT an all-clear; fix the path/permissions (or unset ERROR_DIGEST_LOG to aggregate live)."
+        return 0
+    fi
     local stream; stream="$(_errors_consolidated "$cutoff")"
     [[ -n "$stream" ]] || { echo "Server errors: none in the last ${window}."; return 0; }
 
@@ -481,6 +502,10 @@ swatter_errors_section() {
         genuine="$win"
     fi
     ERR_GENUINE=$(printf '%s\n' "$genuine" | grep -c . || true)
+    # Non-fatal = genuine lines that are not FATAL, counted directly: ERR_FATAL is
+    # taken from the UNFILTERED window below, so "genuine - fatal" under-counts
+    # whenever a fatal line matched ERROR_NOISE.
+    ERR_NONFATAL=$(printf '%s\n' "$genuine" | grep -Ev '\] \[FATAL\]' | grep -c . || true)
     fatal="$(printf '%s\n' "$win" | grep -E '\] \[FATAL\]' || true)"
     ERR_FATAL=$(printf '%s\n' "$fatal" | grep -c . || true)
     ERR_NOISE=$(( ERR_TOTAL - ERR_GENUINE ))
@@ -702,7 +727,7 @@ swatter_errors_section() {
     local fshow="Fatal: ${ERR_FATAL}"
     (( ERR_FATAL_SCANNER > 0 )) && fshow="Fatal: ${ERR_FATAL_GENUINE} genuine · ${ERR_FATAL_SCANNER} scanner-induced"
     {
-        echo "Non-fatal: ${ERR_GENUINE}  ·  ${fshow}  ·  filtered as known noise: ${ERR_NOISE}"
+        echo "Non-fatal: ${ERR_NONFATAL}  ·  ${fshow}  ·  filtered as known noise: ${ERR_NOISE}"
         echo
         if (( ERR_GENUINE > 0 )); then
             echo "Issue signatures (count x normalized error):"
