@@ -19,6 +19,7 @@ workers_dev = true
 # Every numeric var is parsed by src/config.js and MUST be a positive integer;
 # a bad value makes every request a 500 (fail loud) rather than an open gate.
 [vars]
+COASTGUARD = "1"   # CoastGuard marker (toolbox/coastguard): the fleet audit reads it
 SWARM_TTL = "604800"
 MAX_ENTRIES = "1000"
 FEED_MAX = "50000"
@@ -70,7 +71,8 @@ crons = ["17 4 * * *"]
 
 # CoastGuard (peaceharbor/toolbox/coastguard/SPEC.md): caps one invocation
 # so a loop or a flood cannot run up the Workers Paid bill. Cloudflare's
-# defaults are 30 s CPU / 10,000 subrequests. Worst CPU seen 2026-10-14..21: 11 ms.
+# defaults are 30 s CPU / 10,000 subrequests. Worst CPU seen 2026-10-22..29: 14 ms;
+# cap is about 3x that (toolbox/coastguard SPEC, 2026-10-29).
 [limits]
-cpu_ms = 2000
+cpu_ms = 200
 subrequests = 1000

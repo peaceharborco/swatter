@@ -2,6 +2,7 @@ import { checkAuth } from "./auth.js";
 import { isValidIpOrCidr, isUnsafeTarget } from "./validate.js";
 import { cfg } from "./config.js";
 import { contributeMany, registerHost, hostForToken, hostTokenState, isEnrolled, hostLiveCount, feedRows, prune, purgeHost } from "./db.js";
+import { guardWorker } from "./coastguard.ts"; // toolbox/coastguard halt guard
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 const bearer = (request) => {
@@ -171,7 +172,7 @@ async function route(request, env) {
   return new Response("not found", { status: 404 });
 }
 
-export default {
+export default guardWorker({
   async fetch(request, env, ctx) {
     // Anything that throws (a bad [vars] value from cfg(), a D1 failure) is a
     // 500 with a JSON body — never a 200, never an empty feed. The bash client
@@ -191,4 +192,4 @@ export default {
       (err) => console.error(`swarm prune FAILED: ${err?.message || err}`)   // surfaced, not swallowed
     ));
   },
-};
+});
