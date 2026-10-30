@@ -36,7 +36,7 @@ MAX_SUB=1000
 # sha256 of the canonical guard files. The toolbox self-test fails when these
 # fall behind the files; a vendored copy that differs fails its repo's CI.
 GUARD_RS_SHA=84ed7cb069cc604a4b221f7adf62b94426a69c82503edbe1d135c1f9d9762237
-GUARD_TS_SHA=428abecce898600e25d720d581d8622e96f5c9ecb89263062e76d2f117c5249b
+GUARD_TS_SHA=ea351f3bf05671f856a17df302399868399a6baad07b1bb5b2c5578643236ae2
 here="$(cd "$(dirname "$0")" && pwd)"
 
 check_one() {
@@ -174,9 +174,14 @@ if os.path.exists(os.path.join(base, "Cargo.toml")):
             if stmts and stmts[0].startswith("console_error_panic_hook::set_once"):
                 stmts = stmts[1:]
             first = stmts[0] if stmts else ""
-            if not re.match(r"if\s+coastguard::halted\(\s*&\s*\w+\s*\)", first):
+            if kind in ("queue",):
+                errs.append(f"{os.path.relpath(f, base)}: Rust #[event({kind})] has no halt rule yet (a bare return acks and drops the batch); add one to the toolbox")
+                continue
+            # The check must be the first statement AND must return: a guard
+            # that only logs would pass a looser match and stop nothing.
+            if not re.match(r"if\s+coastguard::halted\(\s*&\s*\w+\s*\)\s*\{\s*return\b", first):
                 rel = os.path.relpath(f, base)
-                errs.append(f"{rel}: #[event({kind})] does not start with `if coastguard::halted(&env)`")
+                errs.append(f"{rel}: #[event({kind})] does not start with `if coastguard::halted(&env) {{ return ... }}`")
         if re.search(r"#\[durable_object\]", text):
             errs.append(f"{os.path.relpath(f, base)}: Rust Durable Objects are not covered by the guard yet (add a rule to the toolbox)")
     if handlers == 0:
@@ -194,6 +199,10 @@ else:
     except OSError:
         mtext = ""
         errs.append(f"main {cfg['main']} not found")
+    srcs = [f for f in files(root, (".ts", ".js", ".mjs")) if os.path.abspath(f) != os.path.abspath(guard)]
+    for f in srcs:
+        if re.search(r"extends\s+WorkerEntrypoint\b", strip_comments(read(f), "'\"`")):
+            errs.append(f"{os.path.relpath(f, base)}: WorkerEntrypoint classes have no halt rule yet; add one to the toolbox")
     if mtext:
         if not re.search(r"export\s+default\s+guardWorker\s*\(", mtext):
             errs.append(f"{cfg['main']}: default export is not wrapped in guardWorker(...)")

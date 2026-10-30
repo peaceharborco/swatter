@@ -10,7 +10,8 @@
 //   queue              retryAll after 12 h: messages are kept, not processed
 //   email              rejected
 //   Durable Object     fetch 503; alarm returns WITHOUT rescheduling (this is
-//                      what ends an alarm loop); a WebSocket message closes it
+//                      what ends an alarm loop); a WebSocket message closes it;
+//                      webSocketClose / webSocketError do nothing
 //
 // phcloudflare sets the secret through the Workers secrets API, which deploys
 // the same code and bindings at once; deleting it restores the Worker. A later
@@ -158,6 +159,16 @@ export function guardDurableObject<C extends DOClass>(Base: C): C {
         return undefined;
       }
       return own.call(this, ws, ...rest);
+    };
+  }
+
+  // A halted socket teardown does no work (no storage writes, no broadcast).
+  for (const name of ["webSocketClose", "webSocketError"]) {
+    if (!has(name)) continue;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const own = (Base.prototype as any)[name] as Fn;
+    proto[name] = function (this: unknown, ...args: unknown[]) {
+      return isHalted(this) ? undefined : own.apply(this, args);
     };
   }
 
