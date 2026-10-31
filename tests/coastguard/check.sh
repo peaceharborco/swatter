@@ -151,6 +151,99 @@ def files(root, exts):
             if n.endswith(exts) and not re.search(r"\.(test|spec)\.", n):
                 yield os.path.join(d, n)
 
+# --- Rust Durable Objects ---------------------------------------------------
+# Every method of `impl DurableObject for X` starts with
+# `if coastguard::halted(&self.env) { ... return ... }` (SPEC.md §0): fetch
+# answers 503, alarm returns without rescheduling, websocket_message closes the
+# socket, websocket_close/error do nothing. `new` only builds the struct. Any
+# other method has no rule yet and fails until the toolbox gives it one.
+RS_DO_METHODS = {"fetch", "alarm", "websocket_message", "websocket_close", "websocket_error"}
+
+def rust_code_only(text):
+    # One pass over the raw file: comments, strings (raw and byte strings
+    # too) and char literals become spaces, newlines kept, so only code is
+    # left for brace matching and every offset still lines up. Doing these
+    # in two passes let a raw string's quote-separated pieces read as code.
+    out, i, n = [], 0, len(text)
+    blank = lambda a, b: re.sub(r"[^\n]", " ", text[a:b])
+    while i < n:
+        prev = text[i - 1] if i else " "
+        raw = re.match(r'b?r(#*)"', text[i:i + 300]) if not (prev.isalnum() or prev == "_") else None
+        ch = re.match(r"'(\\u\{[0-9a-fA-F]{1,6}\}|\\x[0-9a-fA-F]{2}|\\.|[^\\'\n])'", text[i:i + 12])
+        if text.startswith("//", i):
+            j = text.find("\n", i); j = n if j < 0 else j
+            out.append(blank(i, j)); i = j
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2); j = n if j < 0 else j + 2
+            out.append(blank(i, j)); i = j
+        elif raw:
+            close = '"' + raw.group(1)
+            j = text.find(close, i + raw.end()); j = n if j < 0 else j + len(close)
+            out.append(blank(i, j)); i = j
+        elif text[i] == '"' or text.startswith('b"', i) and not (prev.isalnum() or prev == "_"):
+            j = i + (2 if text[i] == "b" else 1)
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            out.append(blank(i, j + 1)); i = j + 1
+        elif ch:
+            k = ch.end(); out.append(" " * k); i += k
+        else:
+            out.append(text[i]); i += 1
+    return "".join(out)
+
+def rust_block(text, open_at):
+    # Index just past the brace that closes the one at open_at.
+    depth = 0
+    for k in range(open_at, len(text)):
+        if text[k] == "{": depth += 1
+        elif text[k] == "}":
+            depth -= 1
+            if depth == 0: return k + 1
+    return len(text)
+
+# The halted branch: nothing but its return (websocket_message may close the
+# socket first). Any other statement there is work done while halted, and an
+# inner if/match could return on one path only.
+RS_HALT_BODY = re.compile(r"\s*return\b[^;{}]*;?\s*")
+RS_HALT_CLOSE = re.compile(r"\s*let\s+_\s*=\s*\w+\.close\([^;{}]*\)\s*;\s*return\b[^;{}]*;?\s*")
+
+def rust_do_errors(raw):
+    # Yields None for each guarded method (a handler counted), else a message.
+    t = rust_code_only(raw)
+    impls = list(re.finditer(r"\bimpl(?:\s*<[^>{]*>)?\s+(?:[\w:]+::)?DurableObject\s+for\s+(\w+)\b[^{]*\{", t))
+    marked = len(re.findall(r"#\[\s*durable_object\s*\]", t))
+    if marked > len(impls):
+        yield "#[durable_object] without its `impl DurableObject for ...` in the same file (the gate reads them together)"
+    for im in impls:
+        cls, start = im.group(1), im.end() - 1
+        end = rust_block(t, start)
+        k = start + 1
+        while True:
+            fm = re.compile(r"\bfn\s+(\w+)").search(t, k, end)
+            if not fm: break
+            name = fm.group(1)
+            body_at = t.find("{", fm.end())
+            body_end = rust_block(t, body_at)
+            k = body_end
+            if name == "new": continue
+            if name not in RS_DO_METHODS:
+                yield f"Durable Object {cls}::{name} has no halt rule yet (add one to the toolbox)"
+                continue
+            body = t[body_at + 1:body_end - 1]
+            g = re.match(r"\s*if\s+coastguard::halted\(\s*&\s*self\.env\s*\)\s*\{", body)
+            if not g:
+                yield f"Durable Object {cls}::{name} does not start with `if coastguard::halted(&self.env) {{ return ... }}`"
+                continue
+            inner = body[g.end():rust_block(body, g.end() - 1) - 1]
+            if name == "websocket_message":
+                if not RS_HALT_CLOSE.fullmatch(inner):
+                    yield f"Durable Object {cls}::{name}: halted, it must close the socket and return, nothing else"
+                    continue
+            elif not RS_HALT_BODY.fullmatch(inner):
+                yield f"Durable Object {cls}::{name}: the halt branch must only return"
+                continue
+            yield None
+
 # --- guard ----------------------------------------------------------------
 if os.path.exists(os.path.join(base, "Cargo.toml")):
     srcdir = os.path.join(base, "src")
@@ -182,8 +275,9 @@ if os.path.exists(os.path.join(base, "Cargo.toml")):
             if not re.match(r"if\s+coastguard::halted\(\s*&\s*\w+\s*\)\s*\{\s*return\b", first):
                 rel = os.path.relpath(f, base)
                 errs.append(f"{rel}: #[event({kind})] does not start with `if coastguard::halted(&env) {{ return ... }}`")
-        if re.search(r"#\[durable_object\]", text):
-            errs.append(f"{os.path.relpath(f, base)}: Rust Durable Objects are not covered by the guard yet (add a rule to the toolbox)")
+        for e in rust_do_errors(read(f)):
+            handlers += 1 if e is None else 0
+            if e: errs.append(f"{os.path.relpath(f, base)}: {e}")
     if handlers == 0:
         errs.append("no #[event(...)] handler found to check")
 else:
