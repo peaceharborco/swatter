@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `REPORT_METHOD="cloudflare"` sends the digest and email alerts through Cloudflare Email Sending. Set `CF_MAIL_ACCOUNT_ID` and `CF_MAIL_TOKEN_FILE`. A reply only counts as sent when it names the mail delivered or queued.
+- `REPORT_METHOD="cloudflare"` sends the digest and email alerts through Cloudflare Email Sending. Set `CF_MAIL_ACCOUNT_ID` and `CF_MAIL_TOKEN_FILE`. A reply only counts as sent when it names the mail delivered or queued, and a text-only alert gets an HTML card around it.
 
 ## [2.20.0] - 2026-10-23
 

@@ -68,6 +68,15 @@ has cf-to '"to":"ops@example.com"'
 has cf-from '"from":{"address":"swatter@x","name":"Swatter"}'
 has cf-text '"text":"body"'
 has cf-html '"html":"<p>h</p>"'
+: > "$CURL_BODY"
+_mailer_cloudflare "ops@example.com" "alert <x>" "line <one>" 2>/dev/null; check cf-text-only-rc "$?" "0"
+has cf-text-only-gets-html '"html":"<div'
+has cf-html-escapes-body 'line &lt;one&gt;'
+has cf-html-has-division-footer 'a division of'
+has cf-html-escapes-subject 'alert &lt;x&gt;'
+has cf-text-part-kept '"text":"line <one>"'
+: > "$CURL_BODY"
+_mailer_cloudflare "ops@example.com" "subj" "body" "<p>h</p>" 2>/dev/null
 check cf-token-not-on-argv "$(grep -c 'CFMAILTOKEN' "$CURL_BODY")" "0"
 cf_reply '{"success":true,"result":{"delivered":[],"queued":["ops@example.com"],"permanent_bounces":[]}}' 200
 BIG="$(head -c 1200000 /dev/zero | tr '\0' 'x')"; : > "$CURL_BODY"; export TMPDIR="$TMP"

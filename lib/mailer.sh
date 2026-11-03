@@ -80,6 +80,8 @@ _mailer_sendmail() {
 # Cloudflare Email Sending REST API. The token needs Email Sending: Edit, and
 # REPORT_FROM's domain must be onboarded on CF_MAIL_ACCOUNT_ID. A 200 can still
 # mean the mail went nowhere, so the reply has to name it delivered or queued.
+# A message with no html gets a plain card around its text, so every send through
+# this method carries an HTML part beside the plain one.
 _mailer_cloudflare() {
     local to="$1" subject="$2" body="$3" html="${4:-}"
     [[ "${SWATTER_HAVE_CURL}" -eq 1 && "${SWATTER_HAVE_JQ}" -eq 1 ]] || { log_error "cloudflare mail needs curl+jq"; return 1; }
@@ -96,12 +98,35 @@ _mailer_cloudflare() {
     printf '%s' "$html" > "$work/html"
     if ! jq -nc --arg to "${to}" --arg from "${REPORT_FROM}" \
         --arg fromname "${REPORT_FROM_NAME}" --arg subj "${subject}" \
+        --arg logo "${REPORT_LOGO_URL:-https://assets.peaceharbor.com/email/ph-lockup-stacked-studios-email-720w-v2.png}" \
+        --arg logoalt "${REPORT_LOGO_ALT:-Peace Harbor Studios}" \
         --rawfile body "$work/text" --rawfile html "$work/html" '{
         to:$to,
         from:{address:$from,name:$fromname},
         subject:$subj,
-        text:$body
-    } + (if $html=="" then {} else {html:$html} end)' > "$work/payload"; then
+        text:$body,
+        html:(if $html != "" then $html else
+            ("<div style=\"margin:0;padding:28px 16px;background:#F4F0E8;\">"
+            + "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td align=\"center\">"
+            + "<table role=\"presentation\" width=\"600\" cellpadding=\"0\" cellspacing=\"0\" "
+            + "style=\"max-width:600px;width:100%;background:#ffffff;border:1px solid #E3DCCB;border-radius:10px;\">"
+            + "<tr><td align=\"center\" style=\"background:#F4F0E8;padding:24px 28px 18px;"
+            + "border-bottom:3px solid #4A5568;border-radius:10px 10px 0 0;\">"
+            + "<img src=\"" + ($logo|@html) + "\" alt=\"" + ($logoalt|@html) + "\" width=\"360\" "
+            + "style=\"display:block;width:360px;max-width:80%;height:auto;\"></td></tr>"
+            + "<tr><td style=\"padding:22px 28px 24px;font-family:Manrope,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#1A1814;\">"
+            + "<p style=\"font-family:Sora,Helvetica,Arial,sans-serif;font-weight:600;font-size:17px;margin:0 0 12px;\">"
+            + ($subj|@html) + "</p>"
+            + "<div style=\"white-space:pre-wrap;word-break:break-word;\">" + ($body|@html) + "</div></td></tr>"
+            + "<tr><td style=\"background:#FBF9F4;border-top:1px solid #E3DCCB;padding:14px 28px 16px;"
+            + "font-family:Manrope,Helvetica,Arial,sans-serif;font-size:12px;color:#4A5568;line-height:1.6;border-radius:0 0 10px 10px;\">"
+            + "<b style=\"color:#1A1814;font-weight:600;\">Swatter</b> &middot; "
+            + "<a href=\"https://github.com/peaceharborco/swatter\" style=\"color:#2A5A6B;text-decoration:underline;\">GitHub</a><br>"
+            + "<a href=\"https://studios.peaceharbor.com\" style=\"color:#2A5A6B;text-decoration:underline;\">Peace Harbor Studios</a>"
+            + " &mdash; a division of "
+            + "<a href=\"https://peaceharbor.com\" style=\"color:#2A5A6B;text-decoration:underline;\">Peace Harbor Companies</a></td></tr>"
+            + "</table></td></tr></table></div>") end)
+    }' > "$work/payload"; then
         rm -rf "$work"
         log_error "cloudflare mail: could not build the message"; return 1
     fi
