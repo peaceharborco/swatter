@@ -13,6 +13,8 @@
 #
 # Delivery is method-pluggable for portability:
 #   sendmail (default) — pipe to the local MTA (/usr/sbin/sendmail or `mail`)
+#   cloudflare         — POST the Cloudflare Email Sending API; needs
+#                        CF_MAIL_ACCOUNT_ID and CF_MAIL_TOKEN_FILE
 #   sendgrid           — POST the SendGrid v3 API (for hosts whose IP can't send
 #                        direct-to-MX for the From domain); needs SENDGRID_KEY_FILE
 #

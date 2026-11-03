@@ -257,10 +257,12 @@ REPORT_FROM="swatter@localhost"
 # as a COMMENT that clients strip, so "Swatter (host)" would display as just
 # "Swatter". Brackets are not comment delimiters and display verbatim.
 REPORT_FROM_NAME="Swatter [$(hostname -f 2>/dev/null || hostname)]"
-REPORT_METHOD="sendmail"          # sendmail | sendgrid | brevo
+REPORT_METHOD="sendmail"          # sendmail | sendgrid | brevo | cloudflare
 SENDGRID_KEY_FILE=""
 BREVO_API_KEY=""
 BREVO_KEY_FILE=""
+CF_MAIL_ACCOUNT_ID=""
+CF_MAIL_TOKEN_FILE=""
 # Header logo on the HTML report. Blank = the Peace Harbor Studios lockup;
 # operators may point these at their own company logo (the footer branding is
 # part of the project and is not configurable).

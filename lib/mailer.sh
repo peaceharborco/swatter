@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lib/mailer.sh — shared email sender (sendmail | sendgrid | brevo).
+# lib/mailer.sh — shared email sender (sendmail | sendgrid | brevo | cloudflare).
 #
 # swatter_send_email <to> <subject> <body> [html] — dispatch on REPORT_METHOD.
 # Extracted from report.sh so the nightly digest and ops alerts share one path.
@@ -9,6 +9,7 @@ swatter_send_email() {
     case "${REPORT_METHOD:-sendmail}" in
         sendgrid) _mailer_sendgrid "$to" "$subject" "$body" "$html" ;;
         brevo)    _mailer_brevo    "$to" "$subject" "$body" "$html" ;;
+        cloudflare) _mailer_cloudflare "$to" "$subject" "$body" "$html" ;;
         *)        _mailer_sendmail "$to" "$subject" "$body" "$html" ;;
     esac
 }
@@ -74,6 +75,51 @@ _mailer_sendmail() {
           && { log_info "report sent to ${to} via mail"; return 0; }
     fi
     log_error "no MTA available (sendmail/mail) to send the report"; return 1
+}
+
+# Cloudflare Email Sending REST API. The token needs Email Sending: Edit, and
+# REPORT_FROM's domain must be onboarded on CF_MAIL_ACCOUNT_ID. A 200 can still
+# mean the mail went nowhere, so the reply has to name it delivered or queued.
+_mailer_cloudflare() {
+    local to="$1" subject="$2" body="$3" html="${4:-}"
+    [[ "${SWATTER_HAVE_CURL}" -eq 1 && "${SWATTER_HAVE_JQ}" -eq 1 ]] || { log_error "cloudflare mail needs curl+jq"; return 1; }
+    [[ "${CF_MAIL_ACCOUNT_ID:-}" =~ ^[0-9a-fA-F]{32}$ ]] || { log_error "cloudflare mail: CF_MAIL_ACCOUNT_ID must be a 32-character account id"; return 1; }
+    [[ -r "${CF_MAIL_TOKEN_FILE:-}" ]] || { log_error "cloudflare mail: token not readable: ${CF_MAIL_TOKEN_FILE:-unset}"; return 1; }
+    local key code
+    key="$(tr -d "[:space:]" < "${CF_MAIL_TOKEN_FILE}")"
+    [[ -n "$key" ]] || { log_error "cloudflare mail: token file is empty: ${CF_MAIL_TOKEN_FILE}"; return 1; }
+    # The body travels through files: Linux caps one argument at 128 KiB, and a
+    # large digest passed as an argument would never reach jq or curl.
+    local work
+    work="$(mktemp -d "${TMPDIR:-/tmp}/swatter-mail.XXXXXX")" || { log_error "cloudflare mail: cannot create a work directory"; return 1; }
+    printf '%s' "$body" > "$work/text"
+    printf '%s' "$html" > "$work/html"
+    if ! jq -nc --arg to "${to}" --arg from "${REPORT_FROM}" \
+        --arg fromname "${REPORT_FROM_NAME}" --arg subj "${subject}" \
+        --rawfile body "$work/text" --rawfile html "$work/html" '{
+        to:$to,
+        from:{address:$from,name:$fromname},
+        subject:$subj,
+        text:$body
+    } + (if $html=="" then {} else {html:$html} end)' > "$work/payload"; then
+        rm -rf "$work"
+        log_error "cloudflare mail: could not build the message"; return 1
+    fi
+    local cfg resp
+    cfg="$(swatter_curl_cfg "header = \"Authorization: Bearer ${key}\"")" || { rm -rf "$work"; log_error "cloudflare mail: cannot create curl config"; return 1; }
+    resp="$(trap 'rm -f "$cfg"; rm -rf "$work"' EXIT INT TERM
+        curl -sS --max-time 30 -X POST "https://api.cloudflare.com/client/v4/accounts/${CF_MAIL_ACCOUNT_ID}/email/sending/send" \
+        -K "$cfg" -H "Content-Type: application/json" \
+        --data-binary "@${work}/payload" -w '\n%{http_code}' 2>&1)"
+    rm -f "$cfg"; rm -rf "$work"
+    code="${resp##*$'\n'}"; local reply="${resp%"${code}"}"; reply="${reply%$'\n'}"
+    if [[ "$code" == "200" ]] && jq -e '.success == true
+            and ((.result.permanent_bounces // []) | length == 0)
+            and (((.result.delivered // []) + (.result.queued // [])) | length > 0)' <<<"$reply" >/dev/null 2>&1; then
+        log_info "report sent to ${to} via Cloudflare"; return 0
+    fi
+    reply="${reply//${key}/***}"
+    log_error "Cloudflare send failed (HTTP ${code:-000})${reply:+: $(printf '%s' "$reply" | tr '\n' ' ' | cut -c1-200)}"; return 1
 }
 
 _mailer_sendgrid() {

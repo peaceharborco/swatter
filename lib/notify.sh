@@ -2,7 +2,7 @@
 # lib/notify.sh — multi-channel ops-critical alerts (best-effort fan-out).
 #
 # swatter_notify <subject> <body> [dedup_key] — fans out to every CONFIGURED
-# channel (local mail, SendGrid/sendmail email, Twilio SMS, Slack/Discord/generic
+# channel (local mail, REPORT_METHOD email, Twilio SMS, Slack/Discord/generic
 # webhook). Each channel is independent and best-effort: a failure logs and
 # returns, never aborting the scan or the other channels. A keyed alert fires at
 # most once per ALERT_REPEAT_TTL (marker $STATE_DIR/alerted/<key>); no key = always.

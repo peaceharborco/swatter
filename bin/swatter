@@ -464,10 +464,14 @@ cmd_test_config() {
     echo "  origin-lock: $(swatter_origin_lock_summary)$( [[ "$(swatter_origin_lock_summary)" == *fail-open* ]] && echo ' (run: swatter refresh-feeds)' )"
     local ch=""
     [[ -n "${NOTIFY_EMAIL:-}" ]]     && ch="${ch}local-mail "
-    [[ -n "${ALERT_EMAIL:-}" ]]      && ch="${ch}sendgrid-email "
+    [[ -n "${ALERT_EMAIL:-}" ]]      && ch="${ch}email:${REPORT_METHOD:-sendmail} "
     [[ -n "${ALERT_SMS_TO:-}" && -n "${TWILIO_SID:-}" ]] && ch="${ch}twilio-sms "
     [[ -n "${ALERT_WEBHOOK_URL:-}" ]] && ch="${ch}webhook "
     echo "  alerts: ${ch:-none configured}"
+    if [[ "${REPORT_METHOD:-}" == "cloudflare" ]]; then
+        [[ "${CF_MAIL_ACCOUNT_ID:-}" =~ ^[0-9a-fA-F]{32}$ ]] || echo "  WARNING: REPORT_METHOD=cloudflare needs a 32-character CF_MAIL_ACCOUNT_ID — mail will not send"
+        [[ -r "${CF_MAIL_TOKEN_FILE:-}" && -s "${CF_MAIL_TOKEN_FILE:-}" ]] || echo "  WARNING: REPORT_METHOD=cloudflare needs a readable CF_MAIL_TOKEN_FILE — mail will not send"
+    fi
     [[ "${ABUSEIPDB_REPORT:-false}" == "true" ]] && echo "  abuseipdb reporting: ENABLED$( [[ -z "${ABUSEIPDB_KEY:-}" ]] && echo ' but ABUSEIPDB_KEY empty -> inert' )" || echo "  abuseipdb reporting: off"
 }
 

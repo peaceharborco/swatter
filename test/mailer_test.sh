@@ -50,6 +50,52 @@ _mailer_sendgrid "ops@example.com" "s" "b" 2>/dev/null; check sg-ok-rc "$?" "0"
 curl() { printf 'ARGS: %s\n' "$*" >> "$CURL_BODY"; printf '{"messageId":"x"}\n201'; }
 _mailer_brevo "ops@example.com" "s" "b" 2>/dev/null; check brevo-ok-rc "$?" "0"
 
+# Cloudflare: only a reply naming the mail delivered or queued counts as sent.
+CF_MAIL_ACCOUNT_ID="0123456789abcdef0123456789abcdef"
+CF_MAIL_TOKEN_FILE="$TMP/cf.token"; printf 'CFMAILTOKEN\n' > "$CF_MAIL_TOKEN_FILE"
+REPORT_METHOD="cloudflare"
+cf_reply() { CF_REPLY="$1"; CF_CODE="$2"; }
+curl() {
+    printf 'ARGS: %s\n' "$*" >> "$CURL_BODY"
+    local a; for a in "$@"; do [[ "$a" == @* ]] && { cat "${a#@}" >> "$CURL_BODY"; printf '\n' >> "$CURL_BODY"; }; done
+    printf '%s\n%s' "$CF_REPLY" "$CF_CODE"
+}
+: > "$CURL_BODY"
+cf_reply '{"success":true,"result":{"delivered":["ops@example.com"],"queued":[],"permanent_bounces":[]}}' 200
+swatter_send_email "ops@example.com" "subj" "body" "<p>h</p>" 2>/dev/null; check cf-delivered-rc "$?" "0"
+has cf-endpoint "accounts/0123456789abcdef0123456789abcdef/email/sending/send"
+has cf-to '"to":"ops@example.com"'
+has cf-from '"from":{"address":"swatter@x","name":"Swatter"}'
+has cf-text '"text":"body"'
+has cf-html '"html":"<p>h</p>"'
+check cf-token-not-on-argv "$(grep -c 'CFMAILTOKEN' "$CURL_BODY")" "0"
+cf_reply '{"success":true,"result":{"delivered":[],"queued":["ops@example.com"],"permanent_bounces":[]}}' 200
+BIG="$(head -c 1200000 /dev/zero | tr '\0' 'x')"; : > "$CURL_BODY"; export TMPDIR="$TMP"
+_mailer_cloudflare "ops@example.com" "s" "$BIG" "<p>$BIG</p>" 2>/dev/null; check cf-large-digest-rc "$?" "0"
+check cf-large-digest-carried "$(grep -c "\"text\":\"$(printf '%s' "$BIG" | head -c 1000)" "$CURL_BODY")" "1"
+check cf-work-dir-removed "$(ls -d "$TMP"/swatter-mail.* 2>/dev/null | wc -l | tr -d ' ')" "0"
+_mailer_cloudflare "ops@example.com" "s" "b" 2>/dev/null; check cf-queued-rc "$?" "0"
+cf_reply '{"success":true,"result":{"delivered":[],"queued":[],"permanent_bounces":[]}}' 200
+_mailer_cloudflare "ops@example.com" "s" "b" 2>/dev/null; check cf-nothing-sent-rc "$?" "1"
+cf_reply '{"success":true,"result":{"delivered":["a@x"],"queued":[],"permanent_bounces":["b@x"]}}' 200
+_mailer_cloudflare "ops@example.com" "s" "b" 2>/dev/null; check cf-bounce-rc "$?" "1"
+cf_reply '{"success":false,"errors":[{"message":"sender denied"}]}' 200
+_mailer_cloudflare "ops@example.com" "s" "b" 2>/dev/null; check cf-success-false-rc "$?" "1"
+cf_reply '{"errors":[{"message":"bad CFMAILTOKEN value"}]}' 401
+_mailer_cloudflare "ops@example.com" "s" "b" 2> "$ERR"; check cf-401-rc "$?" "1"
+check cf-401-code "$(grep -c 'HTTP 401' "$ERR")" "1"
+check cf-401-redacted "$(grep -c 'CFMAILTOKEN' "$ERR")" "0"
+cf_reply '{"success":true,"result":{"delivered":["a@x"]}}' 200
+CF_MAIL_ACCOUNT_ID="0123456789ABCDEF0123456789ABCDEF"
+_mailer_cloudflare "ops@example.com" "s" "b" 2>/dev/null; check cf-uppercase-account-rc "$?" "0"
+CF_MAIL_ACCOUNT_ID='bad/../path'
+_mailer_cloudflare "ops@example.com" "s" "b" 2>/dev/null; check cf-bad-account-rc "$?" "1"
+CF_MAIL_ACCOUNT_ID="0123456789abcdef0123456789abcdef"
+: > "$CF_MAIL_TOKEN_FILE"
+_mailer_cloudflare "ops@example.com" "s" "b" 2>/dev/null; check cf-empty-token-rc "$?" "1"
+CF_MAIL_TOKEN_FILE="$TMP/none"
+_mailer_cloudflare "ops@example.com" "s" "b" 2>/dev/null; check cf-missing-token-rc "$?" "1"
+
 echo "----------------------------------------"
 printf 'Total: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

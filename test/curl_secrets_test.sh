@@ -50,6 +50,14 @@ _mailer_sendgrid "ops@x" "s" "b" >/dev/null 2>&1
 argv_clean sendgrid "SGSECRETKEY"
 cfg_has sendgrid 'header = "Authorization: Bearer SGSECRETKEY"'
 
+# Cloudflare mail token.
+: > "$LOG"; MOCK_STDOUT="200"
+CF_MAIL_ACCOUNT_ID="0123456789abcdef0123456789abcdef"
+CF_MAIL_TOKEN_FILE="$TMP/cf.token"; printf 'CFMAILSECRET\n' > "$CF_MAIL_TOKEN_FILE"
+_mailer_cloudflare "ops@x" "s" "b" >/dev/null 2>&1
+argv_clean cloudflare-mail "CFMAILSECRET"
+cfg_has cloudflare-mail 'header = "Authorization: Bearer CFMAILSECRET"'
+
 # 3) Brevo key.
 : > "$LOG"; MOCK_STDOUT="201"
 BREVO_KEY_FILE=""; BREVO_API_KEY="BREVOSECRET"
